@@ -59,6 +59,19 @@ describe("lifecycle", () => {
     await expect(confirm(app, { reservationId: id2, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition" });
   });
 
+  it("a second confirm is invalid_transition, keeps the version, and emits no second event", async () => {
+    const id = await heldId();
+    const r = await confirm(app, { reservationId: id, ...ctx() });
+    expect(r.version).toBe(2);
+    await expect(confirm(app, { reservationId: id, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition" });
+    const row = await owner.query("select version from dastar.reservation where id = $1", [id]);
+    expect(row.rows[0].version).toBe(2);
+    const ob = await app.query("select count(*)::int as c from dastar.outbox where topic = 'reservation.confirmed' and payload->>'reservation_id' = $1", [id]);
+    expect(ob.rows[0].c).toBe(1);
+    await cancel(app, { reservationId: id, ...ctx(), reason: "guest" });
+    await expect(cancel(app, { reservationId: id, ...ctx(), reason: "guest" })).rejects.toMatchObject({ code: "invalid_transition" });
+  });
+
   it("mint, consume by confirm, and a stale token afterwards is rejected", async () => {
     const id = await heldId();
     const m = await mintConfirmToken(app, { reservationId: id, ...ctx() });

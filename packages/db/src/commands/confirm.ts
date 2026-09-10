@@ -13,9 +13,11 @@ export async function confirm(client: ClientBase, input: ConfirmInput, hooks: Co
   await client.query("begin");
   try {
     await setContext(client, { actor, traceId: input.traceId, venueId: input.venueId });
-    const locked = await client.query("select id, confirm_token_hash from dastar.reservation where id = $1 and venue_id = $2 for update", [input.reservationId, input.venueId]);
+    const locked = await client.query("select id, status, version, confirm_token_hash from dastar.reservation where id = $1 and venue_id = $2 for update", [input.reservationId, input.venueId]);
     if (locked.rowCount === 0) throw new DastarError("not_found", "reservation not found");
     await hooks.afterLock?.();
+    if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
+    if (locked.rows[0].status !== "held") throw new DastarError("invalid_transition", `cannot confirm a ${locked.rows[0].status} reservation`);
     if (input.confirmToken) {
       const stored = locked.rows[0].confirm_token_hash as Buffer | null;
       const presented = createHash("sha256").update(input.confirmToken).digest();

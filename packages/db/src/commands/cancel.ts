@@ -11,9 +11,11 @@ export async function cancel(client: ClientBase, input: CancelInput, hooks: Canc
   await client.query("begin");
   try {
     await setContext(client, { actor: input.actor, traceId: input.traceId, venueId: input.venueId });
-    const locked = await client.query("select id from dastar.reservation where id = $1 and venue_id = $2 for update", [input.reservationId, input.venueId]);
+    const locked = await client.query("select id, status, version from dastar.reservation where id = $1 and venue_id = $2 for update", [input.reservationId, input.venueId]);
     if (locked.rowCount === 0) throw new DastarError("not_found", "reservation not found");
     await hooks.afterLock?.();
+    if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
+    if (!["held", "confirmed", "seated"].includes(locked.rows[0].status)) throw new DastarError("invalid_transition", `cannot cancel a ${locked.rows[0].status} reservation`);
     const upd = await client.query(
       `update dastar.reservation set status = 'cancelled', cancel_reason = $3
         where id = $1 and ($2::int is null or version = $2)
