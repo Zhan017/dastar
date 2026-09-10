@@ -29,21 +29,20 @@ describe("idempotency (invariant 3, G2)", () => {
 
   it("two concurrent requests with one key: the second blocks on the claim and replays the first's outcome", async () => {
     const i = input();
-    const g = gate();
-    const first = hold(a, i, { afterClaim: g.wait });
+    const claimed = gate();
+    const release = gate();
+    const first = hold(a, i, { afterClaim: async () => { claimed.open(); await release.wait(); } });
+    await claimed.wait();
     const second = hold(b, i);
-    // The second request's insert genuinely blocks on the first's uncommitted claim row, but there is
-    // no signal for "it has reached that statement yet" other than polling pg_stat_activity itself; a
-    // single fixed sleep before checking is a race (observed flaky: two consecutive runs saw c === 0).
-    const waitingSql = "select count(*)::int as c from pg_stat_activity where datname = current_database() and usename = 'dastar_app' and wait_event_type = 'Lock' and state = 'active'";
     const deadline = Date.now() + 5_000;
-    let waitingCount = (await owner.query(waitingSql)).rows[0].c;
-    while (waitingCount !== 1 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 10));
-      waitingCount = (await owner.query(waitingSql)).rows[0].c;
+    for (;;) {
+      const waiting = await owner.query(
+        "select count(*)::int as c from pg_stat_activity where datname = current_database() and usename = 'dastar_app' and wait_event_type = 'Lock' and state = 'active'");
+      if (waiting.rows[0].c === 1) break;
+      if (Date.now() > deadline) throw new Error("second request never blocked on the idempotency claim");
+      await new Promise((r) => setTimeout(r, 20));
     }
-    expect(waitingCount).toBe(1);
-    g.open();
+    release.open();
     const [r1, r2] = await Promise.all([first, second]);
     expect(r1.ok).toBe(true);
     expect(r2).toEqual({ ...r1, replayed: true });
