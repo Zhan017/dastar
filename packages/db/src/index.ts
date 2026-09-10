@@ -4,3 +4,8 @@ export * from "./units.js";
 export * from "./outbox.js";
 export * from "./migrate.js";
 export * from "./commands/hold.js";
+export * from "./commands/confirm.js";
+export * from "./commands/cancel.js";
+export * from "./commands/expire.js";
+export * from "./commands/mint-token.js";
+export * from "./commands/get.js";
