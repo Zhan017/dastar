@@ -103,7 +103,7 @@ end $$;
 
 -- t46: config version bumps on unit and combo writes, never on reservations (D17)
 create function dastar.trg_config_version() returns trigger
-language plpgsql as $$
+language plpgsql security definer set search_path = pg_catalog, dastar as $$
 begin
   update dastar.venue set config_version = config_version + 1
    where id = coalesce(new.venue_id, old.venue_id);

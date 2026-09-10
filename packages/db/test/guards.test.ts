@@ -143,6 +143,20 @@ describe("guards", () => {
     await app.query("update dastar.reservation set confirm_token_hash = null where id = $1", [r.id]);
   });
 
+  it("token: leaving held clears the hash even when the statement does not", async () => {
+    const r1 = await held();
+    await app.query("update dastar.reservation set confirm_token_hash = decode('ee','hex') where id = $1", [r1.id]);
+    await app.query("update dastar.reservation set status = 'cancelled', cancel_reason = 'x' where id = $1", [r1.id]);
+    const after1 = (await app.query("select confirm_token_hash from dastar.reservation where id = $1", [r1.id])).rows[0].confirm_token_hash;
+    expect(after1).toBeNull();
+
+    const r2 = await held();
+    await app.query("update dastar.reservation set confirm_token_hash = decode('ee','hex') where id = $1", [r2.id]);
+    await app.query("update dastar.reservation set status = 'confirmed' where id = $1", [r2.id]);
+    const after2 = (await app.query("select confirm_token_hash from dastar.reservation where id = $1", [r2.id])).rows[0].confirm_token_hash;
+    expect(after2).toBeNull();
+  });
+
   it("DA004: audit rows cannot be changed or truncated, even by the owner", async () => {
     await expect(owner.query("update dastar.audit_log set actor = 'x' where id = (select min(id) from dastar.audit_log)")).rejects.toMatchObject({ code: "DA004" });
     await expect(owner.query("delete from dastar.audit_log where id = (select min(id) from dastar.audit_log)")).rejects.toMatchObject({ code: "DA004" });
