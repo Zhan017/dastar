@@ -1,6 +1,6 @@
 import type { ClientBase } from "pg";
 import { createHash } from "node:crypto";
-import { DastarError, STORED_OUTCOMES, mapPgError, type DastarErrorCode } from "../errors.js";
+import { DastarError, STORED_OUTCOMES, mapPgError, asDastarError, type DastarErrorCode } from "../errors.js";
 import { setContext, setActor } from "../context.js";
 import { sortUnitIds, LOCK_UNIT_SQL } from "../units.js";
 import { enqueue, reservationPayload } from "../outbox.js";
@@ -61,7 +61,7 @@ export async function hold(client: ClientBase, input: HoldInput, hooks: HoldHook
       const mapped = e instanceof DastarError ? e : mapPgError(e);
       // step 9: whole-transaction retry once on deadlock or serialization failure
       if (mapped?.retryable && mapped.code === "serialization_conflict" && attempt === 1) continue;
-      throw mapped ?? e;
+      throw mapped ?? asDastarError(e);
     }
   }
 }

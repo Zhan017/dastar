@@ -1,6 +1,6 @@
 import type { ClientBase } from "pg";
 import { createHash, randomBytes } from "node:crypto";
-import { DastarError, mapPgError } from "../errors.js";
+import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
 
 export type MintInput = { reservationId: string; actor: string; traceId: string; venueId: string; expectedVersion?: number };
@@ -26,6 +26,6 @@ export async function mintConfirmToken(client: ClientBase, input: MintInput): Pr
     return { token, version: upd.rows[0].version as number };
   } catch (e) {
     await client.query("rollback").catch(() => undefined);
-    throw e instanceof DastarError ? e : (mapPgError(e) ?? e);
+    throw asDastarError(e);
   }
 }

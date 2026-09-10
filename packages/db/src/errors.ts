@@ -4,7 +4,7 @@ export type DastarErrorCode =
   | "actor_required" | "range_mismatch" | "blackout" | "assignment_mismatch" | "combo_immutable"
   | "capacity_conflict" | "token_requires_held" | "forbidden_write" | "serialization_conflict"
   | "timeout" | "duration_out_of_range" | "combo_too_large" | "version_conflict" | "not_found"
-  | "forbidden" | "too_many_live_holds" | "overlap_set_too_large" | "assignment_inactive";
+  | "forbidden" | "too_many_live_holds" | "overlap_set_too_large" | "assignment_inactive" | "internal";
 
 export class DastarError extends Error {
   constructor(
@@ -56,5 +56,5 @@ export function mapPgError(e: unknown): DastarError | null {
 
 export function asDastarError(e: unknown): DastarError {
   if (e instanceof DastarError) return e;
-  return mapPgError(e) ?? (e instanceof Error ? Object.assign(new DastarError("forbidden_write", e.message), { cause: e }) : new DastarError("forbidden_write", String(e)));
+  return mapPgError(e) ?? (e instanceof Error ? Object.assign(new DastarError("internal", e.message), { cause: e }) : new DastarError("internal", String(e)));
 }

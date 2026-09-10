@@ -1,5 +1,5 @@
 import type { ClientBase } from "pg";
-import { mapPgError } from "../errors.js";
+import { asDastarError } from "../errors.js";
 import { enqueue, reservationPayload } from "../outbox.js";
 
 /** One sweeper batch (spec 10.4). Connect as dastar_worker. */
@@ -23,6 +23,6 @@ export async function expireDue(client: ClientBase, opts: { limit?: number } = {
     return { expired: upd.rows.map((r) => r.id as string) };
   } catch (e) {
     await client.query("rollback").catch(() => undefined);
-    throw mapPgError(e) ?? e;
+    throw asDastarError(e);
   }
 }

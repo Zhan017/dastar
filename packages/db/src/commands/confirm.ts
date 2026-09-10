@@ -1,6 +1,6 @@
 import type { ClientBase } from "pg";
 import { createHash } from "node:crypto";
-import { DastarError, mapPgError } from "../errors.js";
+import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
 import { enqueue, reservationPayload } from "../outbox.js";
 import type { Receipt } from "./hold.js";
@@ -35,6 +35,6 @@ export async function confirm(client: ClientBase, input: ConfirmInput, hooks: Co
     return { reservationId: row.id, status: row.status, version: row.version, auditId: Number(audit.rows[0].id), traceId: input.traceId };
   } catch (e) {
     await client.query("rollback").catch(() => undefined);
-    throw e instanceof DastarError ? e : (mapPgError(e) ?? e);
+    throw asDastarError(e);
   }
 }

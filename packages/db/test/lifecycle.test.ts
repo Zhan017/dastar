@@ -129,4 +129,9 @@ describe("lifecycle", () => {
     expect(await getReservation(app, "00000000-0000-7000-8000-000000000000")).toBeNull();
     expect(before!.history.map((h) => h.action)).toEqual(["insert"]);
   });
+
+  it("a malformed reservation id rejects with a DastarError, code internal", async () => {
+    await expect(confirm(app, { reservationId: "not-a-uuid", ...ctx() })).rejects.toMatchObject({ name: "DastarError", code: "internal" });
+    await app.query("select 1");
+  });
 });
