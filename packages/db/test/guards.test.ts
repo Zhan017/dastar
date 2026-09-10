@@ -11,7 +11,7 @@ describe("guards", () => {
   beforeAll(async () => {
     conn = await cloneDatabase("guards_test");
     owner = await connect(conn.owner);
-    app = await connect(conn.owner); // Task 5 changes this to conn.app
+    app = await connect(conn.app);
     await app.query("select set_config('dastar.actor', 'test', false), set_config('dastar.trace_id', 't1', false)");
     seed = await seedVenue(owner);
   });

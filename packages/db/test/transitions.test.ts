@@ -13,7 +13,7 @@ describe("state machine", () => {
   beforeAll(async () => {
     const c = await cloneDatabase("transitions_test");
     owner = await connect(c.owner);
-    app = await connect(c.owner); // Task 5 changes this to c.app
+    app = await connect(c.app);
     await app.query("select set_config('dastar.actor', 'test', false), set_config('dastar.trace_id', 't', false)");
     seed = await seedVenue(owner);
   });
