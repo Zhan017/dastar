@@ -10,7 +10,6 @@ export async function seedVenue(owner: ClientBase, opts: { units?: number } = {}
     const cap = i < 4 ? 4 : 2;
     units.push((await owner.query("insert into dastar.unit(venue_id, label, capacity_min, capacity_max) values ($1, $2, 1, $3) returning id", [venue, `T${i + 1}`, cap])).rows[0].id as string);
   }
-  const sorted = [...units].sort();
   const combos: Seed["combos"] = [];
   const pairs: [number, number][] = [[0, 1], [2, 3], [0, 2], [1, 3], [0, 3], [1, 2]];
   for (const [a, b] of pairs) {
@@ -19,6 +18,5 @@ export async function seedVenue(owner: ClientBase, opts: { units?: number } = {}
       [venue, `C${a + 1}${b + 1}`, members])).rows[0].id as string;
     combos.push({ id, units: members });
   }
-  void sorted;
   return { venue, units, combos };
 }

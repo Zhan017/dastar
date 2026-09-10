@@ -190,4 +190,24 @@ describe("guards", () => {
     const after = (await app.query("select config_version from dastar.venue where id = $1", [seed.venue])).rows[0].config_version;
     expect(Number(after)).toBe(Number(before) + 1);
   });
+
+  it("venue config_version bumps by exactly 1 on its own bookable-config change, and a unit write still adds exactly 1 more", async () => {
+    const before = (await app.query("select config_version from dastar.venue where id = $1", [seed.venue])).rows[0].config_version;
+    await app.query("update dastar.venue set hold_ttl_seconds = 900 where id = $1", [seed.venue]);
+    const afterVenue = (await app.query("select config_version from dastar.venue where id = $1", [seed.venue])).rows[0].config_version;
+    expect(Number(afterVenue)).toBe(Number(before) + 1);
+    await app.query("update dastar.unit set label = 'T1c' where id = $1", [seed.units[0]]);
+    const afterUnit = (await app.query("select config_version from dastar.venue where id = $1", [seed.venue])).rows[0].config_version;
+    expect(Number(afterUnit)).toBe(Number(afterVenue) + 1);
+  });
+
+  it("invariant 8: completed reservations keep their unit rows active as history", async () => {
+    const r = await held();
+    await app.query("update dastar.reservation set status = 'confirmed' where id = $1", [r.id]);
+    await app.query("update dastar.reservation set status = 'seated' where id = $1", [r.id]);
+    await app.query("update dastar.reservation set status = 'completed' where id = $1", [r.id]);
+    const rows = await app.query("select active from dastar.reservation_unit where reservation_id = $1", [r.id]);
+    expect(rows.rows.length).toBeGreaterThan(0);
+    expect(rows.rows.every((x) => x.active === true)).toBe(true);
+  });
 });

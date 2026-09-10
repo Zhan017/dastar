@@ -38,7 +38,7 @@ const BY_SQLSTATE: Record<string, DastarErrorCode> = {
 
 /** Domain outcomes that are stored under the idempotency key (spec D30). */
 export const STORED_OUTCOMES: ReadonlySet<DastarErrorCode> = new Set<DastarErrorCode>([
-  "hold_conflict", "party_does_not_fit", "blackout", "duration_out_of_range",
+  "hold_conflict", "party_does_not_fit", "blackout",
 ]);
 
 export function mapPgError(e: unknown): DastarError | null {

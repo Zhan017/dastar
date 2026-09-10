@@ -4,7 +4,6 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 import { hold, type HoldInput } from "../src/commands/hold.js";
-import { DastarError } from "../src/errors.js";
 
 describe("hold", () => {
   let conn: Conn; let owner: Client; let app: Client; let seed: Seed;
@@ -98,7 +97,10 @@ describe("hold", () => {
     const big = input({ partySize: 9 });
     expect(await hold(app, big)).toMatchObject({ ok: false, error: { code: "party_does_not_fit" } });
     expect(await hold(app, big)).toMatchObject({ ok: false, error: { code: "party_does_not_fit" }, replayed: true });
-    expect(await hold(app, input({ durationMinutes: 13 * 60 }))).toMatchObject({ ok: false, error: { code: "duration_out_of_range" } });
+    const badDuration = input({ durationMinutes: 13 * 60 });
+    await expect(hold(app, badDuration)).rejects.toMatchObject({ code: "duration_out_of_range" });
+    const idem = await app.query("select 1 from dastar.idempotency where venue_id = $1 and actor = $2 and key = $3", [badDuration.venueId, badDuration.actor, badDuration.idempotencyKey]);
+    expect(idem.rowCount).toBe(0);
     expect(await hold(app, input({ assignment: { kind: "unit", id: "00000000-0000-7000-8000-000000000000" } }))).toMatchObject({ ok: false, error: { code: "party_does_not_fit" } });
   });
 

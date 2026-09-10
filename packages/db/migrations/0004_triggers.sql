@@ -103,7 +103,7 @@ end $$;
 
 -- t46: config version bumps on unit and combo writes, never on reservations (D17)
 create function dastar.trg_config_version() returns trigger
-language plpgsql security definer set search_path = pg_catalog, dastar as $$
+language plpgsql security definer set search_path = pg_catalog, dastar, pg_temp as $$
 begin
   update dastar.venue set config_version = config_version + 1
    where id = coalesce(new.venue_id, old.venue_id);
@@ -123,9 +123,27 @@ begin
   return new;
 end $$;
 
+-- t48: config version bumps when a venue's own bookable config changes, skipping the
+-- cross-table bump t46 already applied by writing config_version directly (spec 6, 6.4)
+create function dastar.trg_venue_config_version() returns trigger
+language plpgsql as $$
+begin
+  if (new.hold_ttl_seconds is distinct from old.hold_ttl_seconds
+      or new.slot_minutes is distinct from old.slot_minutes
+      or new.availability_window_days is distinct from old.availability_window_days
+      or new.max_live_holds_per_actor is distinct from old.max_live_holds_per_actor
+      or new.config is distinct from old.config
+      or new.timezone is distinct from old.timezone
+      or new.name is distinct from old.name)
+     and new.config_version = old.config_version then
+    new.config_version := old.config_version + 1;
+  end if;
+  return new;
+end $$;
+
 -- t50: version and updated_at are managed here; a supplied version is overridden
 create function dastar.trg_version() returns trigger
-language plpgsql security definer set search_path = pg_catalog, dastar as $$
+language plpgsql as $$
 begin
   new.version := old.version + 1;
   new.updated_at := dastar.dastar_now();
@@ -147,7 +165,7 @@ end $$;
 
 -- t60: every insert and update is audited; the audit trigger is the only writer of audit_log (invariants 5, 6)
 create function dastar.trg_audit() returns trigger
-language plpgsql security definer set search_path = pg_catalog, dastar as $$
+language plpgsql security definer set search_path = pg_catalog, dastar, pg_temp as $$
 declare
   act text; b jsonb; a jsonb;
 begin
@@ -168,7 +186,7 @@ end $$;
 
 -- t70: unit rows flip inactive on cancel or expiry; this is the only writer of active (invariant 8)
 create function dastar.trg_sync_unit_rows() returns trigger
-language plpgsql security definer set search_path = pg_catalog, dastar as $$
+language plpgsql security definer set search_path = pg_catalog, dastar, pg_temp as $$
 begin
   if new.status in ('cancelled', 'expired') and old.status not in ('cancelled', 'expired') then
     update dastar.reservation_unit set active = false where reservation_id = new.id and active;
@@ -253,6 +271,9 @@ create trigger t46_config_version after insert or update or delete on dastar.uni
   for each row execute function dastar.trg_config_version();
 create trigger t47_combo_immutable before update of unit_ids, capacity_min, capacity_max on dastar.unit_combo
   for each row execute function dastar.trg_combo_immutable();
+
+create trigger t48_venue_config_version before update on dastar.venue
+  for each row execute function dastar.trg_venue_config_version();
 
 create trigger t10_audit_immutable before update or delete on dastar.audit_log
   for each row execute function dastar.trg_audit_immutable();

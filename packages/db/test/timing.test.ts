@@ -3,7 +3,6 @@ import type { Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 import { hold, type HoldInput } from "../src/commands/hold.js";
-import { cancel } from "../src/commands/cancel.js";
 
 function pct(xs: number[], p: number): number {
   const s = [...xs].sort((a, b) => a - b);

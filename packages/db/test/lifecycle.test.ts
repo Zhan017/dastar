@@ -86,6 +86,14 @@ describe("lifecycle", () => {
     expect(audit.rows[0].actor).toBe(`token:${id}`);
   });
 
+  it("an empty-string confirm token is not treated as absent; it is checked and rejected", async () => {
+    const id = await heldId();
+    await mintConfirmToken(app, { reservationId: id, ...ctx() });
+    await expect(confirm(app, { reservationId: id, actor: "token", traceId: "x", venueId: seed.venue, confirmToken: "" })).rejects.toMatchObject({ code: "forbidden" });
+    const row = await owner.query("select status from dastar.reservation where id = $1", [id]);
+    expect(row.rows[0].status).toBe("held");
+  });
+
   it("minting twice replaces the token; cancel clears it", async () => {
     const id = await heldId();
     const m1 = await mintConfirmToken(app, { reservationId: id, ...ctx() });

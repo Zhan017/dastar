@@ -2,7 +2,10 @@
 -- impact: instant-exclusive
 -- schema USAGE was granted in 0003 alongside the functions it makes callable
 grant usage on all sequences in schema dastar to dastar_app, dastar_worker;
-grant execute on all functions in schema dastar to dastar_app, dastar_worker, dastar_readonly;
+grant execute on function dastar.dastar_now() to dastar_app, dastar_worker, dastar_readonly;
+grant execute on function dastar.unit_lock_key(uuid) to dastar_app, dastar_worker, dastar_readonly;
+grant execute on function dastar.effective_status(dastar.reservation_status, timestamptz) to dastar_app, dastar_worker, dastar_readonly;
+grant execute on function dastar.require_actor() to dastar_app, dastar_worker, dastar_readonly;
 
 grant select on all tables in schema dastar to dastar_readonly;
 
