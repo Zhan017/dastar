@@ -163,4 +163,31 @@ describe("named interleavings (H1)", () => {
     expect((await pC).status).toBe("confirmed");
     await expect(pM).rejects.toMatchObject({ code: "token_requires_held" });
   });
+
+  it("confirm vs hold on the same unit and slot, both orders: the later one waits on the unit lock", async () => {
+    const u = seed.units[5]!;
+    // order 1: confirm holds the unit lock; a hold for the same slot waits, then conflicts with the confirmed row
+    const i1 = input("key:A", { assignment: { kind: "unit", id: u } });
+    const id = ok(await hold(A, i1));
+    const p = pause();
+    const pC = confirm(A, { reservationId: id, actor: "key:A", traceId: "cv", venueId: seed.venue }, { afterUnitLocks: p.hook });
+    await p.reached;
+    const pB = hold(B, input("key:B", { startsAt: i1.startsAt, assignment: { kind: "unit", id: u } }));
+    await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
+    p.release();
+    expect((await pC).status).toBe("confirmed");
+    expect(await pB).toMatchObject({ ok: false, error: { code: "hold_conflict" } });
+
+    // order 2: a hold holds the unit lock; a confirm of another reservation on the unit waits, then succeeds
+    const i2 = input("key:A", { assignment: { kind: "unit", id: u } });
+    const id2 = ok(await hold(A, i2));
+    const p2 = pause();
+    const pH = hold(A, input("key:A", { startsAt: i2.startsAt, assignment: { kind: "unit", id: u } }), { afterUnitLocks: p2.hook });
+    await p2.reached;
+    const pC2 = confirm(B, { reservationId: id2, actor: "key:B", traceId: "cv2", venueId: seed.venue });
+    await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
+    p2.release();
+    expect(await pH).toMatchObject({ ok: false, error: { code: "hold_conflict" } });
+    expect((await pC2).status).toBe("confirmed");
+  });
 });
