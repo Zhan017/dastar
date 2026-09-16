@@ -87,8 +87,8 @@ The spec has already been updated for all but the first and fifth of these (`cre
 8. The `rowCount === 0` version_conflict throws in confirm and cancel are unreachable after the pre-checks.
 9. Unused `cancel` import in timing.test.ts.
 10. `void sorted` dead code in seed.ts.
-11. The migration runner's retry count is five attempts, not five retries.
-12. In migrate.ts, the non-transactional apply path does not reset `lock_timeout` in its catch; harmless because the next file overwrites it and the connection closes on failure.
+11. Closed: `migrate()` takes `maxAttempts` (total attempts, default 5) and `lockTimeout` as options.
+12. Closed: the nontransactional path resets `lock_timeout` in a `finally` and is restricted to one concurrent index statement per file with validated recovery (`migrate-concurrent.test.ts`).
 13. In schema.test.ts, the schema tests assert SQLSTATE only, not constraint name.
 14. In 0002_schema.sql, `reservation_unit.during` has no own bounds CHECK; Task 4's DA008 guard requires equality with the checked reservation's `during`, so this closes there.
 15. In 0003_functions.sql, the schema grant also names `dastar_worker` and `dastar_readonly`, consistent with 0005's intent.

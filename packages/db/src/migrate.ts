@@ -6,9 +6,25 @@ import { createHash } from "node:crypto";
 export type Impact = "instant-exclusive" | "long-nonblocking" | "long-blocks-writes" | "long-blocks-all";
 type Header = { transaction: boolean; impact: Impact };
 
+export type MigrateOptions = {
+  allowBlocking?: boolean;
+  /** Postgres interval literal for lock_timeout, such as "3s" or "200ms". Default "3s". */
+  lockTimeout?: string;
+  /** Total attempts per file when a lock timeout (55P03) occurs. Default 5. */
+  maxAttempts?: number;
+  /** Observes every attempt of every file. */
+  onAttempt?: (file: string, attempt: number) => void;
+};
+
+export type ConcurrentIndexStatement =
+  | { op: "create"; schema: string; name: string; table: string; normalized: string }
+  | { op: "drop"; schema: string; name: string };
+
 const RUN_LOCK_KEY = 7411;
-const LOCK_TIMEOUT = "3s";
-const MAX_ATTEMPTS = 5;
+const LOCK_TIMEOUT_RE = /^\d+(ms|s|min)$/;
+const IDENT = "[a-z_][a-z0-9_]*";
+const CREATE_RE = new RegExp(`^create (?:unique )?index concurrently if not exists (${IDENT}) on (${IDENT})\\.(${IDENT}) using ${IDENT} \\(.+\\)$`);
+const DROP_RE = new RegExp(`^drop index concurrently if exists (${IDENT})\\.(${IDENT})$`);
 
 function parseHeader(name: string, sql: string): Header {
   const tx = /^--\s*transaction:\s*(yes|no)\s*$/m.exec(sql);
@@ -17,11 +33,45 @@ function parseHeader(name: string, sql: string): Header {
   return { transaction: tx[1] === "yes", impact: im[1] as Impact };
 }
 
+/** Lowercases, strips line and block comments, collapses whitespace, drops one trailing semicolon. */
+export function normalizeSql(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n]*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/;\s*$/, "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * A "transaction: no" file must be exactly one concurrent index statement in the spelling
+ * pg_get_indexdef produces (schema-qualified table, explicit "using <method>"), because the runner
+ * compares the file with the definition of any index that already exists under that name.
+ */
+export function parseConcurrentIndex(file: string, sql: string): ConcurrentIndexStatement {
+  const body = normalizeSql(sql);
+  if (body.includes(";")) throw new Error(`${file}: a "transaction: no" file must contain exactly one statement`);
+  const c = CREATE_RE.exec(body);
+  if (c) {
+    return { op: "create", name: c[1]!, schema: c[2]!, table: c[3]!, normalized: body.replace("index concurrently if not exists", "index") };
+  }
+  const d = DROP_RE.exec(body);
+  if (d) return { op: "drop", schema: d[1]!, name: d[2]! };
+  throw new Error(
+    `${file}: a "transaction: no" file must be one "create [unique] index concurrently if not exists <name> on <schema>.<table> using <method> (...)" or "drop index concurrently if exists <schema>.<name>" statement`,
+  );
+}
+
 export async function migrate(
   ownerConnectionString: string,
   migrationsDir: string,
-  opts: { allowBlocking?: boolean } = {},
+  opts: MigrateOptions = {},
 ): Promise<{ applied: string[] }> {
+  const lockTimeout = opts.lockTimeout ?? "3s";
+  const maxAttempts = opts.maxAttempts ?? 5;
+  if (!LOCK_TIMEOUT_RE.test(lockTimeout)) throw new Error(`lockTimeout must look like "3s" or "200ms", got "${lockTimeout}"`);
   const client = new Client({ connectionString: ownerConnectionString });
   await client.connect();
   const applied: string[] = [];
@@ -53,7 +103,7 @@ export async function migrate(
       if ((header.impact === "long-blocks-writes" || header.impact === "long-blocks-all") && !opts.allowBlocking) {
         throw new Error(`${file}: impact ${header.impact} requires a maintenance window; pass allowBlocking`);
       }
-      await applyWithRetry(client, file, sql, header, version, checksum);
+      await applyWithRetry(client, file, sql, header, version, checksum, { lockTimeout, maxAttempts, onAttempt: opts.onAttempt });
       applied.push(file);
     }
   } finally {
@@ -63,27 +113,100 @@ export async function migrate(
   return { applied };
 }
 
-async function applyWithRetry(client: Client, file: string, sql: string, header: Header, version: number, checksum: Buffer): Promise<void> {
+type Attempt = { lockTimeout: string; maxAttempts: number; onAttempt: MigrateOptions["onAttempt"] };
+
+async function applyWithRetry(client: Client, file: string, sql: string, header: Header, version: number, checksum: Buffer, a: Attempt): Promise<void> {
+  // refused before any statement for this file reaches the database
+  const concurrent = header.transaction ? null : parseConcurrentIndex(file, sql);
   for (let attempt = 1; ; attempt++) {
+    a.onAttempt?.(file, attempt);
     try {
-      if (header.transaction) {
+      if (concurrent === null) {
         await client.query("begin");
-        await client.query(`set local lock_timeout = '${LOCK_TIMEOUT}'`);
+        await client.query(`set local lock_timeout = '${a.lockTimeout}'`);
         await client.query(sql);
-        await client.query("insert into dastar.schema_migration(version, name, checksum) values ($1, $2, $3)", [version, file, checksum]);
+        await record(client, version, file, checksum);
         await client.query("commit");
       } else {
-        await client.query(`set lock_timeout = '${LOCK_TIMEOUT}'`);
-        await client.query(sql);
-        await client.query("reset lock_timeout");
-        await client.query("insert into dastar.schema_migration(version, name, checksum) values ($1, $2, $3)", [version, file, checksum]);
+        await applyConcurrent(client, file, sql, concurrent, version, checksum, a.lockTimeout);
       }
       return;
     } catch (e: unknown) {
-      if (header.transaction) await client.query("rollback").catch(() => undefined);
+      if (concurrent === null) await client.query("rollback").catch(() => undefined);
       const code = (e as { code?: string }).code;
-      if (code === "55P03" && attempt < MAX_ATTEMPTS) continue;
+      if (code === "55P03" && attempt < a.maxAttempts) continue;
       throw e;
     }
   }
+}
+
+type Relation = { relkind: string; table: string | null; definition: string | null; valid: boolean; ready: boolean };
+
+async function findRelation(client: Client, schema: string, name: string): Promise<Relation | null> {
+  const r = await client.query(
+    `select c.relkind, t.relname as table_name, i.indisvalid, i.indisready,
+            case when c.relkind = 'i' then pg_get_indexdef(c.oid) end as definition
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+       left join pg_index i on i.indexrelid = c.oid
+       left join pg_class t on t.oid = i.indrelid
+      where n.nspname = $1 and c.relname = $2`,
+    [schema, name],
+  );
+  if (r.rowCount === 0) return null;
+  const row = r.rows[0];
+  return { relkind: row.relkind, table: row.table_name ?? null, definition: row.definition ?? null, valid: row.indisvalid === true, ready: row.indisready === true };
+}
+
+/**
+ * Existing object under the statement's name decides the action:
+ *   none                                            apply
+ *   same table, same definition, valid and ready    already applied: record the checksum only
+ *   same table, same definition, not valid          drop the leftover concurrently, then apply
+ *   anything else                                   abort; nothing is dropped
+ */
+async function applyConcurrent(client: Client, file: string, sql: string, stmt: ConcurrentIndexStatement, version: number, checksum: Buffer, lockTimeout: string): Promise<void> {
+  const existing = await findRelation(client, stmt.schema, stmt.name);
+  if (stmt.op === "create") {
+    if (existing) {
+      if (existing.relkind !== "i") {
+        throw new Error(`${file}: ${stmt.schema}.${stmt.name} exists and is not an index (relkind ${existing.relkind}); manual repair required`);
+      }
+      const same = existing.table === stmt.table && existing.definition !== null && normalizeSql(existing.definition) === stmt.normalized;
+      if (!same) {
+        throw new Error(
+          `${file}: index ${stmt.schema}.${stmt.name} exists with a different definition; manual repair required\n  existing: ${existing.definition ?? "?"} on ${existing.table ?? "?"}\n  file:     ${stmt.normalized}`,
+        );
+      }
+      if (existing.valid && existing.ready) {
+        await record(client, version, file, checksum);
+        return;
+      }
+      await withLockTimeout(client, lockTimeout, `drop index concurrently if exists ${stmt.schema}.${stmt.name}`);
+    }
+    await withLockTimeout(client, lockTimeout, sql);
+  } else {
+    if (!existing) {
+      await record(client, version, file, checksum);
+      return;
+    }
+    if (existing.relkind !== "i") {
+      throw new Error(`${file}: ${stmt.schema}.${stmt.name} exists and is not an index (relkind ${existing.relkind}); manual repair required`);
+    }
+    await withLockTimeout(client, lockTimeout, sql);
+  }
+  await record(client, version, file, checksum);
+}
+
+async function withLockTimeout(client: Client, lockTimeout: string, sql: string): Promise<void> {
+  await client.query(`set lock_timeout = '${lockTimeout}'`);
+  try {
+    await client.query(sql);
+  } finally {
+    await client.query("reset lock_timeout").catch(() => undefined);
+  }
+}
+
+async function record(client: Client, version: number, file: string, checksum: Buffer): Promise<void> {
+  await client.query("insert into dastar.schema_migration(version, name, checksum) values ($1, $2, $3)", [version, file, checksum]);
 }
