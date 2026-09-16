@@ -109,4 +109,4 @@ The spec has already been updated for all but the first and fifth of these (`cre
 30. `unit_combo.unit_ids` has no distinct-members or in-venue check; a duplicated member makes a combo unbookable; CHECK constraints cannot hold subqueries, so this is trigger or function territory for M2.
 31. `unit_lock_key` uses md5, unavailable on FIPS builds; `hashtextextended` is a drop-in.
 32. `dastar_readonly` is granted but no test connects as it.
-33. `hold()` begins and commits on a caller-supplied client without checking for an open transaction.
+33. Closed: commands run only through the pool-owned handle (`createDastar`), which checks out and releases its own connection; the client-taking functions are internal.
