@@ -44,7 +44,10 @@ const pids = new WeakMap<PoolClient, number>();
  *  - every command runs on a client checked out here and is released only after it has settled;
  *  - on an error the handle probes the client with one `rollback`; a failed probe destroys the connection;
  *  - past the deadline the backend is cancelled, the command is given the grace period to settle, and a
- *    connection that still has not settled is discarded rather than returned.
+ *    connection that still has not settled is discarded rather than returned;
+ *  - a connection error recorded while the client was checked out discards the connection at release even
+ *    when the command itself succeeded, and both the backend-pid lookup and the rollback probe are bounded
+ *    by the deadline and the grace period respectively.
  */
 export function createDastar(opts: DastarOptions): Dastar {
   const acquireTimeoutMs = opts.acquireTimeoutMs ?? 5_000;
@@ -114,12 +117,19 @@ export function createDastar(opts: DastarOptions): Dastar {
 
   async function settle(client: PoolClient, r: Settled<unknown>, finish: (err?: Error) => void): Promise<void> {
     if (r.ok) { finish(); return; }
-    try {
-      await client.query("rollback");
-      finish();
-    } catch (probe) {
-      finish(probe instanceof Error ? probe : new Error(String(probe)));
+    let probeTimer: NodeJS.Timeout | undefined;
+    const probe = client.query("rollback").then(() => "ok" as const, (e: unknown) => ({ failed: e }));
+    const limit = new Promise<"timeout">((res) => { probeTimer = setTimeout(() => res("timeout"), cancelGraceMs); });
+    const outcome = await Promise.race([probe, limit]);
+    clearTimeout(probeTimer);
+    if (outcome === "ok") { finish(); return; }
+    if (outcome === "timeout") {
+      probe.then(() => undefined, () => undefined);
+      finish(new Error(`dastar: rollback probe did not answer within ${cancelGraceMs}ms; connection discarded`));
+      return;
     }
+    const e = outcome.failed;
+    finish(e instanceof Error ? e : new Error(String(e)));
   }
 
   async function run<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -135,23 +145,20 @@ export function createDastar(opts: DastarOptions): Dastar {
       const fatal = err ?? connectionError;
       if (fatal) client.release(fatal); else client.release();
     };
-    let pid = pids.get(client);
-    if (pid === undefined) {
-      try {
-        pid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid as number;
-        pids.set(client, pid);
-      } catch (e) {
-        finish(e instanceof Error ? e : new Error(String(e)));
-        throw asDastarError(e);
-      }
-    }
-    const work: Promise<Settled<T>> = fn(client).then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e }));
+    let pid: number | undefined = pids.get(client);
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<"deadline">((res) => { timer = setTimeout(() => res("deadline"), deadlineMs); });
+    const work: Promise<Settled<T>> = (async () => {
+      if (pid === undefined) {
+        pid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid as number;
+        pids.set(client, pid);
+      }
+      return await fn(client);
+    })().then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e }));
     let result = await Promise.race([work, deadline]);
     clearTimeout(timer);
     if (result === "deadline") {
-      await cancelBackend(pid);
+      if (pid !== undefined) await cancelBackend(pid);
       let graceTimer: NodeJS.Timeout | undefined;
       const grace = new Promise<"grace">((res) => { graceTimer = setTimeout(() => res("grace"), cancelGraceMs); });
       const second = await Promise.race([work, grace]);

@@ -30,7 +30,11 @@ export type HoldHooks = {
   afterUnitLocks?: () => Promise<void>;
   afterOverlapLocks?: () => Promise<void>;
   beforeCommit?: () => Promise<void>;
-  /** Called before the single whole-transaction retry on 40P01 or 40001. */
+  /**
+   * Called before the single whole-transaction retry on 40P01 or 40001. `sqlstate` is `""` for the two
+   * retryable failures the command raises itself (an idempotency row that vanished or has no stored
+   * outcome yet); Postgres errors carry their SQLSTATE.
+   */
   onRetry?: (info: { attempt: number; sqlstate: string; error: DastarError }) => void;
 };
 

@@ -53,6 +53,10 @@ describe("concurrent-index migration mode", () => {
     expect(normalizeSql("CREATE INDEX a_idx ON dastar.a USING btree (x)")).toBe("create index a_idx on dastar.a using btree (x)");
   });
 
+  it("refuses a zero-magnitude lock timeout before connecting", async () => {
+    await expect(migrate("postgres://invalid", "/nonexistent", { lockTimeout: "0s" })).rejects.toThrow(/non-zero/);
+  });
+
   it("recovers from a failed concurrent build: the invalid leftover is validated, dropped, and rebuilt", async () => {
     const conn = await createEmptyDatabase("cic_case1");
     try {
@@ -136,7 +140,7 @@ describe("concurrent-index migration mode", () => {
       const r = await migrate(conn.owner, d, {
         lockTimeout: "200ms",
         maxAttempts: 5,
-        onAttempt: (_file, attempt) => { attempts.push(attempt); if (attempt === 2) void blocker.query("rollback"); },
+        onAttempt: (_file, attempt) => { attempts.push(attempt); if (attempt === 2) blocker.query("rollback").catch(() => undefined); },
       });
       expect(r.applied).toEqual(["0002_idx.sql"]);
       expect(attempts.length).toBeGreaterThanOrEqual(2);

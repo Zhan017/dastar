@@ -21,7 +21,7 @@ export type ConcurrentIndexStatement =
   | { op: "drop"; schema: string; name: string };
 
 const RUN_LOCK_KEY = 7411;
-const LOCK_TIMEOUT_RE = /^\d+(ms|s|min)$/;
+const LOCK_TIMEOUT_RE = /^(?!0+(ms|s|min)$)\d+(ms|s|min)$/;
 const IDENT = "[a-z_][a-z0-9_]*";
 const CREATE_RE = new RegExp(`^create (?:unique )?index concurrently if not exists (${IDENT}) on (${IDENT})\\.(${IDENT}) using ${IDENT} \\(.+\\)$`);
 const DROP_RE = new RegExp(`^drop index concurrently if exists (${IDENT})\\.(${IDENT})$`);
@@ -71,7 +71,7 @@ export async function migrate(
 ): Promise<{ applied: string[] }> {
   const lockTimeout = opts.lockTimeout ?? "3s";
   const maxAttempts = opts.maxAttempts ?? 5;
-  if (!LOCK_TIMEOUT_RE.test(lockTimeout)) throw new Error(`lockTimeout must look like "3s" or "200ms", got "${lockTimeout}"`);
+  if (!LOCK_TIMEOUT_RE.test(lockTimeout)) throw new Error(`lockTimeout must be a non-zero value like "3s" or "200ms", got "${lockTimeout}"`);
   const client = new Client({ connectionString: ownerConnectionString });
   await client.connect();
   const applied: string[] = [];
