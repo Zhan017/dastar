@@ -146,4 +146,29 @@ describe("concurrent-index migration mode", () => {
       await dropDatabase("cic_case5");
     }
   });
+
+  it("drop: removes an existing index and records it; a missing index is recorded only; a non-index aborts and drops nothing", async () => {
+    const conn = await createEmptyDatabase("cic_case6");
+    try {
+      const d = await dir({ "0001_scratch.sql": SCRATCH });
+      await migrate(conn.owner, d);
+      await withOwner(conn.owner, (c) => c.query("create index scratch_id on dastar.scratch using btree (id)"));
+      await writeFile(join(d, "0002_drop_existing.sql"), HEAD_CIC + "drop index concurrently if exists dastar.scratch_id;\n");
+      await writeFile(join(d, "0003_drop_missing.sql"), HEAD_CIC + "drop index concurrently if exists dastar.scratch_nope;\n");
+      const r = await migrate(conn.owner, d);
+      expect(r.applied).toEqual(["0002_drop_existing.sql", "0003_drop_missing.sql"]);
+      expect(await indexState(conn.owner, "scratch_id")).toBeNull();
+      expect(await recorded(conn.owner, "0002_drop_existing.sql")).toBe(true);
+      expect(await recorded(conn.owner, "0003_drop_missing.sql")).toBe(true);
+
+      // a relation of another kind under the target name aborts without touching it
+      await writeFile(join(d, "0004_drop_table_name.sql"), HEAD_CIC + "drop index concurrently if exists dastar.scratch;\n");
+      await expect(migrate(conn.owner, d)).rejects.toThrow(/not an index/);
+      const table = await withOwner(conn.owner, async (c) => (await c.query("select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'dastar' and c.relname = 'scratch' and c.relkind = 'r'")).rowCount);
+      expect(table).toBe(1);
+      expect(await recorded(conn.owner, "0004_drop_table_name.sql")).toBe(false);
+    } finally {
+      await dropDatabase("cic_case6");
+    }
+  });
 });

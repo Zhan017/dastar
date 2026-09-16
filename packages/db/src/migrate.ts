@@ -170,7 +170,7 @@ async function applyConcurrent(client: Client, file: string, sql: string, stmt: 
   if (stmt.op === "create") {
     if (existing) {
       if (existing.relkind !== "i") {
-        throw new Error(`${file}: ${stmt.schema}.${stmt.name} exists and is not an index (relkind ${existing.relkind}); manual repair required`);
+        throw new Error(`${file}: ${stmt.schema}.${stmt.name} exists and is not an index (relkind ${existing.relkind}); the file would create it on ${stmt.table} as: ${stmt.normalized}; manual repair required`);
       }
       const same = existing.table === stmt.table && existing.definition !== null && normalizeSql(existing.definition) === stmt.normalized;
       if (!same) {
@@ -191,7 +191,7 @@ async function applyConcurrent(client: Client, file: string, sql: string, stmt: 
       return;
     }
     if (existing.relkind !== "i") {
-      throw new Error(`${file}: ${stmt.schema}.${stmt.name} exists and is not an index (relkind ${existing.relkind}); manual repair required`);
+      throw new Error(`${file}: ${stmt.schema}.${stmt.name} exists and is not an index (relkind ${existing.relkind}); the file would drop index ${stmt.schema}.${stmt.name}; manual repair required`);
     }
     await withLockTimeout(client, lockTimeout, sql);
   }
