@@ -67,6 +67,9 @@ describe("pool-owned handle", () => {
   it("acquire timeout produces pool_timeout and the late connection is released", async () => {
     const pool = makePool(1, "H3");
     const d = createDastar({ pool, acquireTimeoutMs: 200 });
+    // establish the pool's single physical connection first, so the 200 ms below measures only the wait for it
+    const warm = await pool.connect();
+    warm.release();
     const p = pause();
     const pHold = d.hold(input(), { afterUnitLocks: p.hook });
     await p.reached;
