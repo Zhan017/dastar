@@ -29,7 +29,7 @@ Who the actor is, which venue a call belongs to, and which capability a key hold
 |---|---|---|
 | `dastar_owner` | Migrations | Owns everything |
 | `dastar_app` | Commands | Statement timeout 10 s, idle-in-transaction timeout 30 s |
-| `dastar_worker` | Sweeper, publisher, retention | UPDATE and DELETE on the outbox, DELETE on idempotency rows, bypasses row-level security |
+| `dastar_worker` | Sweeper, publisher, retention | UPDATE and DELETE on the outbox, DELETE on idempotency rows, will bypass row-level security once it is enabled |
 | `dastar_readonly` | Reporting | SELECT only |
 
 ## Confirm tokens
