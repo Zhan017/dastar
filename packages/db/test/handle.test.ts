@@ -133,4 +133,29 @@ describe("pool-owned handle", () => {
     await d.close();
     await pool.end();
   });
+
+  it("two commands past their deadline at once share one canceller connection", async () => {
+    const pool = makePool(2, "H7");
+    const d = createDastar({ pool, deadlineMs: 500, cancelGraceMs: 2_000, cancellerConnectionString: conn.app });
+    const u = seed.units[4]!;
+    const blocker = await connectAs(conn.app, "H7blocker");
+    await blocker.query("begin");
+    await blocker.query("select pg_advisory_xact_lock(dastar.unit_lock_key($1::uuid))", [u]);
+    const results = await Promise.allSettled([
+      d.hold(input({ assignment: { kind: "unit", id: u } })),
+      d.hold(input({ assignment: { kind: "unit", id: u } })),
+    ]);
+    for (const r of results) {
+      expect(r.status).toBe("rejected");
+      expect((r as PromiseRejectedResult).reason).toMatchObject({ code: "timeout", retryable: true });
+    }
+    await eventually(async () => (await states("dastar-canceller")).length === 1);
+    expect(pool.totalCount).toBe(2);
+    expect(pool.idleCount).toBe(2);
+    await blocker.query("rollback");
+    await blocker.end();
+    await d.close();
+    await eventually(async () => (await states("dastar-canceller")).length === 0);
+    await pool.end();
+  });
 });

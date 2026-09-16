@@ -50,7 +50,22 @@ export function createDastar(opts: DastarOptions): Dastar {
   const acquireTimeoutMs = opts.acquireTimeoutMs ?? 5_000;
   const deadlineMs = opts.deadlineMs ?? 12_000;
   const cancelGraceMs = opts.cancelGraceMs ?? 2_000;
-  let canceller: Client | null = null;
+  let cancellerPromise: Promise<Client> | null = null;
+
+  /** All callers share one canceller connection; the connecting promise is memoized so concurrent deadlines cannot open two. */
+  function canceller(url: string): Promise<Client> {
+    if (cancellerPromise) return cancellerPromise;
+    let p: Promise<Client>;
+    p = (async () => {
+      const c = new Client({ connectionString: url, application_name: "dastar-canceller" });
+      await c.connect();
+      c.on("error", () => { if (cancellerPromise === p) cancellerPromise = null; });
+      return c;
+    })();
+    cancellerPromise = p;
+    p.catch(() => { if (cancellerPromise === p) cancellerPromise = null; });
+    return p;
+  }
 
   async function acquire(timeoutMs: number): Promise<PoolClient> {
     const pending = opts.pool.connect();
@@ -74,17 +89,14 @@ export function createDastar(opts: DastarOptions): Dastar {
 
   async function cancelBackend(pid: number): Promise<boolean> {
     if (opts.cancellerConnectionString) {
+      const p = canceller(opts.cancellerConnectionString);
       try {
-        if (!canceller) {
-          const c = new Client({ connectionString: opts.cancellerConnectionString });
-          await c.connect();
-          c.on("error", () => { canceller = null; });
-          canceller = c;
-        }
-        const r = await canceller.query("select pg_cancel_backend($1) as ok", [pid]);
+        const c = await p;
+        const r = await c.query("select pg_cancel_backend($1) as ok", [pid]);
         return r.rows[0].ok === true;
       } catch {
-        if (canceller) { canceller.end().catch(() => undefined); canceller = null; }
+        if (cancellerPromise === p) cancellerPromise = null;
+        p.then((c) => c.end().catch(() => undefined), () => undefined);
         return false;
       }
     }
@@ -163,7 +175,9 @@ export function createDastar(opts: DastarOptions): Dastar {
     getReservation: (reservationId) => run((c) => getReservation(c, reservationId)),
     expireDue: (o) => run((c) => expireDue(c, o)),
     close: async () => {
-      if (canceller) { await canceller.end().catch(() => undefined); canceller = null; }
+      const p = cancellerPromise;
+      cancellerPromise = null;
+      if (p) await p.then((c) => c.end(), () => undefined).catch(() => undefined);
     },
   };
 }
