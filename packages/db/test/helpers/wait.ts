@@ -45,3 +45,20 @@ export function pause(): { hook: () => Promise<void>; reached: Promise<void>; re
   const g = gate();
   return { hook: async () => { r.open(); await g.wait(); }, reached: r.wait(), release: g.open };
 }
+
+/**
+ * pg_stat_database.deadlocks is flushed by the detecting backend at most about once per second,
+ * so a single read can miss the last deadlock. Read until the value has not changed for 1.2 s,
+ * or give up after 6 s and return the last value.
+ */
+export async function deadlockCountStable(owner: ClientBase): Promise<number> {
+  const started = Date.now();
+  let last = await deadlockCount(owner);
+  let stableSince = Date.now();
+  for (;;) {
+    await new Promise((res) => setTimeout(res, 100));
+    const next = await deadlockCount(owner);
+    if (next !== last) { last = next; stableSince = Date.now(); }
+    if (Date.now() - stableSince >= 1_200 || Date.now() - started >= 6_000) return last;
+  }
+}

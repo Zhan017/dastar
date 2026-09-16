@@ -103,8 +103,8 @@ The spec has already been updated for all but the first and fifth of these (`cre
 24. In confirm.ts, an empty-string `confirmToken` is treated as absent.
 25. Parked: in interleavings.test.ts, the fourth-review interleaving case is evidence of queueing, not of id-order correctness; no single-pause test can interpose between row locks taken by one statement, so falsifying wrong id-order locking needs the mixed-load run in item 5.
 26. In interleavings.test.ts, cases 5, 6, and 8 assert wait type Lock without narrowing the event.
-27. `hold()`'s retry-once on 40P01/40001 and its give-up on the second occurrence have never executed; the next plan adds a test that forces a real deadlock with two raw connections in its own file, since it increments `pg_stat_database.deadlocks`.
-28. `pg_stat_database.deadlocks` is flushed at most about once per second per backend, so the interleavings `afterAll` could miss a deadlock in the last case; a poll-until-stable read or an assertion that hold's retry never fired would close it.
+27. Closed: `hold()`'s retry on 40P01 and its give-up on the second occurrence are exercised in `hold-retry.test.ts` (a real deadlock with two connections, and injected failures for the exhaustion path).
+28. Closed: the interleavings `afterAll` reads `pg_stat_database.deadlocks` until the value is stable for 1.2 s (`deadlockCountStable`).
 29. `dastar.schema_migration` is created by the runner, not by a numbered migration, so the migration set is not self-applicable with psql.
 30. `unit_combo.unit_ids` has no distinct-members or in-venue check; a duplicated member makes a combo unbookable; CHECK constraints cannot hold subqueries, so this is trigger or function territory for M2.
 31. `unit_lock_key` uses md5, unavailable on FIPS builds; `hashtextextended` is a drop-in.

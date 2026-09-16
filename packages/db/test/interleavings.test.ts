@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
-import { connectAs, waitForBackend, deadlockCount, pause } from "./helpers/wait.js";
+import { connectAs, waitForBackend, deadlockCountStable, pause } from "./helpers/wait.js";
 import { hold, type HoldInput, type HoldOutcome } from "../src/commands/hold.js";
 import { confirm } from "../src/commands/confirm.js";
 import { cancel } from "../src/commands/cancel.js";
@@ -21,10 +21,10 @@ describe("named interleavings (H1)", () => {
     await owner.query("select set_config('dastar.actor', 'owner', false), set_config('dastar.trace_id', 'owner', false)");
     seed = await seedVenue(owner);
     await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = $1", [seed.venue]);
-    deadlocksAtStart = await deadlockCount(owner);
+    deadlocksAtStart = await deadlockCountStable(owner);
   });
   afterAll(async () => {
-    expect(await deadlockCount(owner)).toBe(deadlocksAtStart);
+    expect(await deadlockCountStable(owner)).toBe(deadlocksAtStart);
     await A.end(); await B.end(); await W.end(); await owner.end(); await dropDatabase("interleavings_test");
   });
 
