@@ -157,4 +157,13 @@ describe("attack suite as dastar_app (boundary A)", () => {
     await app.query("insert into dastar.idempotency(venue_id, actor, key, request_hash, purge_at) values ($1, 'attacker', 'k', decode('00','hex'), now() + interval '1 day')", [seed.venue]);
     await app.query("update dastar.idempotency set response = '{}'::jsonb where venue_id = $1 and actor = 'attacker' and key = 'k'", [seed.venue]);
   });
+
+  it("cannot change a reservation's assignment, party, range, or venue (42501)", async () => {
+    const r = await held();
+    await rejects("update dastar.reservation set assignment_id = $2 where id = $1", [r.id, seed.units[1]], "42501");
+    await rejects("update dastar.reservation set assignment_kind = 'combo' where id = $1", [r.id], "42501");
+    await rejects("update dastar.reservation set party_size = 1 where id = $1", [r.id], "42501");
+    await rejects("update dastar.reservation set during = $2::tstzrange where id = $1", [r.id, r.during], "42501");
+    await rejects("update dastar.reservation set venue_id = $2 where id = $1", [r.id, otherVenue], "42501");
+  });
 });
