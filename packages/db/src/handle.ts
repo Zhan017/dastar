@@ -100,25 +100,36 @@ export function createDastar(opts: DastarOptions): Dastar {
     }
   }
 
-  async function settle(client: PoolClient, r: Settled<unknown>): Promise<void> {
-    if (r.ok) { client.release(); return; }
+  async function settle(client: PoolClient, r: Settled<unknown>, finish: (err?: Error) => void): Promise<void> {
+    if (r.ok) { finish(); return; }
     try {
       await client.query("rollback");
-      client.release();
+      finish();
     } catch (probe) {
-      client.release(probe instanceof Error ? probe : new Error(String(probe)));
+      finish(probe instanceof Error ? probe : new Error(String(probe)));
     }
   }
 
   async function run<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await acquire(acquireTimeoutMs);
+    // pg-pool detaches its own 'error' listener while a client is checked out. A connection error that
+    // arrives between statements (a terminated backend, a dropped socket) would otherwise be an unhandled
+    // 'error' event and crash the process. Record it and discard the connection at release.
+    let connectionError: Error | null = null;
+    const onError = (e: Error): void => { connectionError = e; };
+    client.on("error", onError);
+    const finish = (err?: Error): void => {
+      client.removeListener("error", onError);
+      const fatal = err ?? connectionError;
+      if (fatal) client.release(fatal); else client.release();
+    };
     let pid = pids.get(client);
     if (pid === undefined) {
       try {
         pid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid as number;
         pids.set(client, pid);
       } catch (e) {
-        client.release(e instanceof Error ? e : new Error(String(e)));
+        finish(e instanceof Error ? e : new Error(String(e)));
         throw asDastarError(e);
       }
     }
@@ -134,12 +145,12 @@ export function createDastar(opts: DastarOptions): Dastar {
       const second = await Promise.race([work, grace]);
       clearTimeout(graceTimer);
       if (second === "grace") {
-        client.release(new Error("dastar: command did not settle after cancellation; connection discarded"));
+        finish(new Error("dastar: command did not settle after cancellation; connection discarded"));
         throw new DastarError("timeout", `command exceeded ${deadlineMs}ms and did not settle within ${cancelGraceMs}ms after cancellation`, undefined, true);
       }
       result = second;
     }
-    await settle(client, result);
+    await settle(client, result, finish);
     if (result.ok) return result.v;
     throw asDastarError(result.e);
   }
