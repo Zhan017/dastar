@@ -30,6 +30,8 @@ export type HoldHooks = {
   afterUnitLocks?: () => Promise<void>;
   afterOverlapLocks?: () => Promise<void>;
   beforeCommit?: () => Promise<void>;
+  /** Called before the single whole-transaction retry on 40P01 or 40001. */
+  onRetry?: (info: { attempt: number; sqlstate: string; error: DastarError }) => void;
 };
 
 const MAX_OVERLAP_SET = 64;
@@ -60,7 +62,10 @@ export async function hold(client: ClientBase, input: HoldInput, hooks: HoldHook
     } catch (e) {
       const mapped = e instanceof DastarError ? e : mapPgError(e);
       // step 9: whole-transaction retry once on deadlock or serialization failure
-      if (mapped?.retryable && mapped.code === "serialization_conflict" && attempt === 1) continue;
+      if (mapped?.retryable && mapped.code === "serialization_conflict" && attempt === 1) {
+        hooks.onRetry?.({ attempt, sqlstate: mapped.sqlstate ?? "", error: mapped });
+        continue;
+      }
       throw mapped ?? asDastarError(e);
     }
   }
