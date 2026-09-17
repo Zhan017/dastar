@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:net";
 import { Pool, type Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
-import { connectAs, pause } from "./helpers/wait.js";
+import { connectAs, pause, outcome } from "./helpers/wait.js";
 import { createDastar } from "../src/handle.js";
 import type { HoldInput } from "../src/commands/hold.js";
 
@@ -132,11 +132,11 @@ describe("pool-owned handle", () => {
     const d = createDastar({ pool });
     const u = seed.units[3]!;
     const p = pause();
-    const pHold = d.hold(input({ assignment: { kind: "unit", id: u } }), { afterUnitLocks: p.hook });
+    const pHold = outcome(d.hold(input({ assignment: { kind: "unit", id: u } }), { afterUnitLocks: p.hook }));
     await p.reached;
     await owner.query("select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and application_name = 'H6'");
     p.release();
-    await expect(pHold).rejects.toMatchObject({ code: "internal" });
+    expect(await pHold).toMatchObject({ ok: false, error: { code: "internal" } });
     await eventually(() => pool.totalCount === 0);
     expect((await d.hold(input({ assignment: { kind: "unit", id: u } }))).ok).toBe(true);
     await d.close();

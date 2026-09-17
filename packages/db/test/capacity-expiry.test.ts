@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
-import { connectAs, waitForBackend, deadlockCountStable, pause } from "./helpers/wait.js";
+import { connectAs, waitForBackend, deadlockCountStable, pause, outcome } from "./helpers/wait.js";
 import { hold, type HoldInput } from "../src/commands/hold.js";
 import { confirm } from "../src/commands/confirm.js";
 
@@ -58,11 +58,11 @@ describe("capacity edit versus confirmation near expiry (invariant 4)", () => {
     const pC = confirm(A, { reservationId: id, actor: "key:A", traceId: "c", venueId: seed.venue }, { afterUnitLocks: p.hook });
     await p.reached;
     await setClock(B, "2040-01-01T00:00:00Z"); // B judges the hold expired
-    const pEdit = B.query("update dastar.unit set capacity_max = 2 where id = $1", [u]);
+    const pEdit = outcome(B.query("update dastar.unit set capacity_max = 2 where id = $1", [u]));
     await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
     p.release();
     expect((await pC).status).toBe("confirmed");
-    await expect(pEdit).rejects.toMatchObject({ code: "DA012" });
+    expect(await pEdit).toMatchObject({ ok: false, error: { code: "DA012" } });
     await setClock(B, null);
     await invariant4HoldsAt("2040-01-01T00:00:00Z");
   });
@@ -73,10 +73,10 @@ describe("capacity edit versus confirmation near expiry (invariant 4)", () => {
     await B.query("begin");
     await B.query("select set_config('dastar.now', '2040-01-01T00:00:00Z', true)"); // B judges the hold expired
     await B.query("update dastar.unit set capacity_max = 2 where id = $1", [u]); // holds the unit lock until commit
-    const pC = confirm(A, { reservationId: id, actor: "key:A", traceId: "c2", venueId: seed.venue });
+    const pC = outcome(confirm(A, { reservationId: id, actor: "key:A", traceId: "c2", venueId: seed.venue }));
     await waitForBackend(owner, "A", { type: "Lock", event: "advisory" });
     await B.query("commit");
-    await expect(pC).rejects.toMatchObject({ code: "party_does_not_fit" });
+    expect(await pC).toMatchObject({ ok: false, error: { code: "party_does_not_fit" } });
     expect((await owner.query("select status from dastar.reservation where id = $1", [id])).rows[0].status).toBe("held");
     await invariant4HoldsAt("2040-01-01T00:00:00Z");
   });

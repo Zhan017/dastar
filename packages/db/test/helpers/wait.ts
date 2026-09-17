@@ -62,3 +62,10 @@ export async function deadlockCountStable(owner: ClientBase): Promise<number> {
     if (Date.now() - stableSince >= 1_200 || Date.now() - started >= 6_000) return last;
   }
 }
+
+export type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/** Attaches handlers at creation so an expected rejection is never unhandled while the test awaits something else. */
+export function outcome<T>(p: Promise<T>): Promise<Outcome<T>> {
+  return p.then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));
+}
