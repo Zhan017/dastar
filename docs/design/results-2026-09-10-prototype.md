@@ -87,8 +87,8 @@ The spec has already been updated for all but the first and fifth of these (`cre
 8. The `rowCount === 0` version_conflict throws in confirm and cancel are unreachable after the pre-checks.
 9. Unused `cancel` import in timing.test.ts.
 10. `void sorted` dead code in seed.ts.
-11. The migration runner's retry count is five attempts, not five retries.
-12. In migrate.ts, the non-transactional apply path does not reset `lock_timeout` in its catch; harmless because the next file overwrites it and the connection closes on failure.
+11. Closed: `migrate()` takes `maxAttempts` (total attempts, default 5) and `lockTimeout` as options.
+12. Closed: the nontransactional path resets `lock_timeout` in a `finally` and is restricted to one concurrent index statement per file with validated recovery (`migrate-concurrent.test.ts`).
 13. In schema.test.ts, the schema tests assert SQLSTATE only, not constraint name.
 14. In 0002_schema.sql, `reservation_unit.during` has no own bounds CHECK; Task 4's DA008 guard requires equality with the checked reservation's `during`, so this closes there.
 15. In 0003_functions.sql, the schema grant also names `dastar_worker` and `dastar_readonly`, consistent with 0005's intent.
@@ -103,10 +103,10 @@ The spec has already been updated for all but the first and fifth of these (`cre
 24. In confirm.ts, an empty-string `confirmToken` is treated as absent.
 25. Parked: in interleavings.test.ts, the fourth-review interleaving case is evidence of queueing, not of id-order correctness; no single-pause test can interpose between row locks taken by one statement, so falsifying wrong id-order locking needs the mixed-load run in item 5.
 26. In interleavings.test.ts, cases 5, 6, and 8 assert wait type Lock without narrowing the event.
-27. `hold()`'s retry-once on 40P01/40001 and its give-up on the second occurrence have never executed; the next plan adds a test that forces a real deadlock with two raw connections in its own file, since it increments `pg_stat_database.deadlocks`.
-28. `pg_stat_database.deadlocks` is flushed at most about once per second per backend, so the interleavings `afterAll` could miss a deadlock in the last case; a poll-until-stable read or an assertion that hold's retry never fired would close it.
+27. Closed: `hold()`'s retry on 40P01 and its give-up on the second occurrence are exercised in `hold-retry.test.ts` (a real deadlock with two connections, and injected failures for the exhaustion path).
+28. Closed: the interleavings `afterAll` reads `pg_stat_database.deadlocks` until the value is stable for 1.2 s (`deadlockCountStable`).
 29. `dastar.schema_migration` is created by the runner, not by a numbered migration, so the migration set is not self-applicable with psql.
 30. `unit_combo.unit_ids` has no distinct-members or in-venue check; a duplicated member makes a combo unbookable; CHECK constraints cannot hold subqueries, so this is trigger or function territory for M2.
 31. `unit_lock_key` uses md5, unavailable on FIPS builds; `hashtextextended` is a drop-in.
-32. `dastar_readonly` is granted but no test connects as it.
-33. `hold()` begins and commits on a caller-supplied client without checking for an open transaction.
+32. Partly closed: `handle.test.ts` connects as `dastar_readonly` for the cancellation case; no test yet asserts what that role can read.
+33. Closed: commands run only through the pool-owned handle (`createDastar`), which checks out and releases its own connection; the client-taking functions are internal.

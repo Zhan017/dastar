@@ -210,4 +210,19 @@ describe("guards", () => {
     expect(rows.rows.length).toBeGreaterThan(0);
     expect(rows.rows.every((x) => x.active === true)).toBe(true);
   });
+
+  it("invariant 4 on confirm: a hold that a capacity edit treated as expired cannot be confirmed outside the new range", async () => {
+    await owner.query("select set_config('dastar.actor', 'owner', false), set_config('dastar.trace_id', 'o', false)");
+    const u = seed.units[1]!; // capacity 1..4
+    const r = await held([u], "unit", u, 4);
+    // the editor judges the hold expired by its own clock, so the guard lets the shrink through
+    await setClock(owner, "2040-01-01T00:00:00Z");
+    await owner.query("update dastar.unit set capacity_max = 2 where id = $1", [u]);
+    await setClock(owner, null);
+    // the confirming session's clock says the hold is live: the expiry guard passes, the fit check must refuse
+    await expect(app.query("update dastar.reservation set status = 'confirmed' where id = $1", [r.id])).rejects.toMatchObject({ code: "DA003" });
+    // a cancel is never blocked by capacity
+    await app.query("update dastar.reservation set status = 'cancelled', cancel_reason = 'guest' where id = $1", [r.id]);
+    await owner.query("update dastar.unit set capacity_max = 4 where id = $1", [u]);
+  });
 });

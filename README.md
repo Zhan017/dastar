@@ -65,7 +65,7 @@ The [prototype report](docs/design/results-2026-09-10-prototype.md) records a pa
 
 Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load remain unmeasured. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap.
 
-This is an early implementation for evaluation. Transaction composition and the interaction between capacity edits and confirmation near expiry still need validation before production integration. Commands currently manage transactions on the supplied client; do not call them inside an existing host transaction.
+This is an early implementation for evaluation. Transaction composition and the interaction between capacity edits and confirmation near expiry still need validation before production integration. Commands run on connections they check out from a pool you supply and never join a host transaction.
 
 ## Where it fits
 

@@ -4,7 +4,8 @@ export type DastarErrorCode =
   | "actor_required" | "range_mismatch" | "blackout" | "assignment_mismatch" | "combo_immutable"
   | "capacity_conflict" | "token_requires_held" | "forbidden_write" | "serialization_conflict"
   | "timeout" | "duration_out_of_range" | "combo_too_large" | "version_conflict" | "not_found"
-  | "forbidden" | "too_many_live_holds" | "overlap_set_too_large" | "assignment_inactive" | "internal";
+  | "forbidden" | "too_many_live_holds" | "overlap_set_too_large" | "assignment_inactive"
+  | "pool_timeout" | "internal";
 
 export class DastarError extends Error {
   constructor(
@@ -12,6 +13,7 @@ export class DastarError extends Error {
     message: string,
     public readonly detail?: string,
     public readonly retryable: boolean = false,
+    public readonly sqlstate?: string,
   ) {
     super(message);
     this.name = "DastarError";
@@ -44,14 +46,14 @@ export const STORED_OUTCOMES: ReadonlySet<DastarErrorCode> = new Set<DastarError
 export function mapPgError(e: unknown): DastarError | null {
   const pe = e as { code?: string; message?: string; detail?: string; constraint?: string };
   if (!pe || typeof pe.code !== "string") return null;
-  if (pe.code === "40P01" || pe.code === "40001") return new DastarError("serialization_conflict", pe.message ?? pe.code, pe.detail, true);
-  if (pe.code === "57014") return new DastarError("timeout", pe.message ?? pe.code, pe.detail, true);
+  if (pe.code === "40P01" || pe.code === "40001") return new DastarError("serialization_conflict", pe.message ?? pe.code, pe.detail, true, pe.code);
+  if (pe.code === "57014") return new DastarError("timeout", pe.message ?? pe.code, pe.detail, true, pe.code);
   if (pe.code === "23514") {
-    if (pe.constraint === "duration_out_of_range") return new DastarError("duration_out_of_range", pe.message ?? "", pe.detail);
-    if (pe.constraint === "combo_too_large") return new DastarError("combo_too_large", pe.message ?? "", pe.detail);
+    if (pe.constraint === "duration_out_of_range") return new DastarError("duration_out_of_range", pe.message ?? "", pe.detail, false, pe.code);
+    if (pe.constraint === "combo_too_large") return new DastarError("combo_too_large", pe.message ?? "", pe.detail, false, pe.code);
   }
   const code = BY_SQLSTATE[pe.code];
-  return code ? new DastarError(code, pe.message ?? pe.code, pe.detail) : null;
+  return code ? new DastarError(code, pe.message ?? pe.code, pe.detail, false, pe.code) : null;
 }
 
 export function asDastarError(e: unknown): DastarError {

@@ -3,12 +3,13 @@ import type { Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
-import { connectAs, waitForBackend, deadlockCount, pause } from "./helpers/wait.js";
+import { connectAs, waitForBackend, deadlockCountStable, pause, outcome } from "./helpers/wait.js";
 import { hold, type HoldInput, type HoldOutcome } from "../src/commands/hold.js";
 import { confirm } from "../src/commands/confirm.js";
 import { cancel } from "../src/commands/cancel.js";
 import { expireDue } from "../src/commands/expire.js";
 import { mintConfirmToken } from "../src/commands/mint-token.js";
+import { getReservation } from "../src/commands/get.js";
 
 describe("named interleavings (H1)", () => {
   let conn: Conn; let owner: Client; let A: Client; let B: Client; let W: Client; let seed: Seed;
@@ -21,10 +22,10 @@ describe("named interleavings (H1)", () => {
     await owner.query("select set_config('dastar.actor', 'owner', false), set_config('dastar.trace_id', 'owner', false)");
     seed = await seedVenue(owner);
     await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = $1", [seed.venue]);
-    deadlocksAtStart = await deadlockCount(owner);
+    deadlocksAtStart = await deadlockCountStable(owner);
   });
   afterAll(async () => {
-    expect(await deadlockCount(owner)).toBe(deadlocksAtStart);
+    expect(await deadlockCountStable(owner)).toBe(deadlocksAtStart);
     await A.end(); await B.end(); await W.end(); await owner.end(); await dropDatabase("interleavings_test");
   });
 
@@ -112,11 +113,11 @@ describe("named interleavings (H1)", () => {
     const p = pause();
     const pA = confirm(A, { reservationId: id, actor: "key:A", traceId: "a", venueId: seed.venue }, { afterLock: p.hook });
     await p.reached;
-    const pB = confirm(B, { reservationId: id, actor: "key:B", traceId: "b", venueId: seed.venue, expectedVersion: 1 });
+    const pB = outcome(confirm(B, { reservationId: id, actor: "key:B", traceId: "b", venueId: seed.venue, expectedVersion: 1 }));
     await waitForBackend(owner, "B", { type: "Lock" });
     p.release();
     expect((await pA).status).toBe("confirmed");
-    await expect(pB).rejects.toMatchObject({ code: "version_conflict" });
+    expect(await pB).toMatchObject({ ok: false, error: { code: "version_conflict" } });
     await expect(confirm(B, { reservationId: id, actor: "key:B", traceId: "b2", venueId: seed.venue })).rejects.toMatchObject({ code: "invalid_transition" });
   });
 
@@ -139,11 +140,11 @@ describe("named interleavings (H1)", () => {
     const pA = hold(A, input("key:A", { partySize: 4, assignment: { kind: "unit", id: u } }), { afterUnitLocks: p.hook });
     await p.reached;
     await B.query("select set_config('dastar.actor','key:B',false)");
-    const pEdit = B.query("update dastar.unit set capacity_max = 2 where id = $1", [u]);
+    const pEdit = outcome(B.query("update dastar.unit set capacity_max = 2 where id = $1", [u]));
     await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
     p.release();
     ok(await pA);
-    await expect(pEdit).rejects.toMatchObject({ code: "DA012" });
+    expect(await pEdit).toMatchObject({ ok: false, error: { code: "DA012" } });
 
     const u2 = seed.units[1]!;
     await B.query("update dastar.unit set capacity_max = 2 where id = $1", [u2]);
@@ -157,10 +158,53 @@ describe("named interleavings (H1)", () => {
     const p = pause();
     const pC = confirm(A, { reservationId: id, actor: "key:A", traceId: "a", venueId: seed.venue }, { afterLock: p.hook });
     await p.reached;
-    const pM = mintConfirmToken(B, { reservationId: id, actor: "key:B", traceId: "m", venueId: seed.venue });
+    const pM = outcome(mintConfirmToken(B, { reservationId: id, actor: "key:B", traceId: "m", venueId: seed.venue }));
     await waitForBackend(owner, "B", { type: "Lock" });
     p.release();
     expect((await pC).status).toBe("confirmed");
-    await expect(pM).rejects.toMatchObject({ code: "token_requires_held" });
+    expect(await pM).toMatchObject({ ok: false, error: { code: "token_requires_held" } });
+  });
+
+  it("confirm vs hold on the same unit and slot, both orders: the later one waits on the unit lock", async () => {
+    const u = seed.units[5]!;
+    // order 1: confirm holds the unit lock; a hold for the same slot waits, then conflicts with the confirmed row
+    const i1 = input("key:A", { assignment: { kind: "unit", id: u } });
+    const id = ok(await hold(A, i1));
+    const p = pause();
+    const pC = confirm(A, { reservationId: id, actor: "key:A", traceId: "cv", venueId: seed.venue }, { afterUnitLocks: p.hook });
+    await p.reached;
+    const pB = hold(B, input("key:B", { startsAt: i1.startsAt, assignment: { kind: "unit", id: u } }));
+    await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
+    p.release();
+    expect((await pC).status).toBe("confirmed");
+    expect(await pB).toMatchObject({ ok: false, error: { code: "hold_conflict" } });
+
+    // order 2: a hold holds the unit lock; a confirm of another reservation on the unit waits, then succeeds
+    const i2 = input("key:A", { assignment: { kind: "unit", id: u } });
+    const id2 = ok(await hold(A, i2));
+    const p2 = pause();
+    const pH = hold(A, input("key:A", { startsAt: i2.startsAt, assignment: { kind: "unit", id: u } }), { afterUnitLocks: p2.hook });
+    await p2.reached;
+    const pC2 = confirm(B, { reservationId: id2, actor: "key:B", traceId: "cv2", venueId: seed.venue });
+    await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
+    p2.release();
+    expect(await pH).toMatchObject({ ok: false, error: { code: "hold_conflict" } });
+    expect((await pC2).status).toBe("confirmed");
+  });
+
+  it("a read sees one snapshot: a confirmation that lands between the row and the history is invisible to it", async () => {
+    const id = ok(await hold(A, input("key:A", { assignment: { kind: "unit", id: seed.units[3]! } })));
+    const before = await getReservation(A, id);
+    const p = pause();
+    const pRead = getReservation(A, id, { afterRow: p.hook });
+    await p.reached;
+    expect((await confirm(B, { reservationId: id, actor: "key:B", traceId: "snap", venueId: seed.venue })).status).toBe("confirmed");
+    p.release();
+    const view = await pRead;
+    expect(view?.status).toBe("held");
+    expect(view?.history).toEqual(before?.history);
+    const after = await getReservation(A, id);
+    expect(after?.status).toBe("confirmed");
+    expect(after?.history.length).toBeGreaterThan(before!.history.length);
   });
 });

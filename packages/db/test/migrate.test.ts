@@ -46,7 +46,7 @@ describe("migration runner", () => {
     try {
       const dir = await mkdtemp(join(tmpdir(), "dastar-mig-"));
       await writeFile(join(dir, "0001_t.sql"), "-- transaction: yes\n-- impact: instant-exclusive\ncreate table dastar.t_d(id int);\n");
-      await writeFile(join(dir, "0002_idx.sql"), "-- transaction: no\n-- impact: long-nonblocking\ncreate index concurrently t_d_idx on dastar.t_d(id);\n");
+      await writeFile(join(dir, "0002_idx.sql"), "-- transaction: no\n-- impact: long-nonblocking\ncreate index concurrently if not exists t_d_idx on dastar.t_d using btree (id);\n");
       const r = await migrate(conn.owner, dir);
       expect(r.applied).toEqual(["0001_t.sql", "0002_idx.sql"]);
     } finally {
