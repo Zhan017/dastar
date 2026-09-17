@@ -8,7 +8,11 @@ import { getReservation, type ReservationView } from "./commands/get.js";
 import { expireDue } from "./commands/expire.js";
 
 export type DastarOptions = {
-  /** Host-configured pool connected as dastar_app (commands) or dastar_worker (expireDue). */
+  /**
+   * Host-configured pool connected as dastar_app (commands) or dastar_worker (expireDue). Attach an `error`
+   * listener to it: a client discarded by the handle can still emit a late error, which pg-pool re-emits on
+   * the pool, and an unhandled pool error ends the process.
+   */
   pool: Pool;
   /** How long a call waits for a pooled connection. Default 5000. */
   acquireTimeoutMs?: number;

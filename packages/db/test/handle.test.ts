@@ -32,7 +32,12 @@ describe("pool-owned handle", () => {
     const start = new Date(Date.UTC(2043, 0, 1 + Math.floor(n / 8), 8 + (n % 8)));
     return { venueId: seed.venue, actor: "key:H", traceId: `h${n}`, idempotencyKey: `h-k${n}`, partySize: 2, startsAt: start.toISOString(), durationMinutes: 60, assignment: { kind: "unit", id: seed.units[0]! }, ...over };
   }
-  const makePool = (max: number, appName: string) => new Pool({ connectionString: conn.app, max, application_name: appName });
+  const poolErrors: Error[] = [];
+  const makePool = (max: number, appName: string) => {
+    const pool = new Pool({ connectionString: conn.app, max, application_name: appName });
+    pool.on("error", (e) => { poolErrors.push(e); });
+    return pool;
+  };
   const states = async (appName: string) =>
     (await owner.query("select state from pg_stat_activity where datname = current_database() and application_name = $1", [appName])).rows.map((r) => r.state as string);
   const advisoryLocks = async (appName: string) =>
