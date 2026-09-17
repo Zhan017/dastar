@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Client } from "pg";
 import { migrate } from "@dastar/db";
 import { seedBench } from "./seed.js";
@@ -11,23 +12,44 @@ function withDatabase(url: string, name: string): string {
   return u.toString();
 }
 
-/** Creates and migrates a throwaway database; returns its owner connection string. */
-export async function prepareNaiveDatabase(adminUrl: string, name: string, migrationsDir: string): Promise<string> {
+/** Only databases this harness created are ever dropped; the name pattern is the guard. */
+export const NAIVE_DB_RE = /^dastar_naive_[0-9a-f]{8}$/;
+
+export function naiveDatabaseName(): string {
+  return `dastar_naive_${randomBytes(4).toString("hex")}`;
+}
+
+/** Creates and migrates a throwaway database under a fresh generated name; refuses a name that already exists. */
+export async function createThrowawayDatabase(adminUrl: string, name: string, migrationsDir: string): Promise<string> {
+  if (!NAIVE_DB_RE.test(name)) throw new Error(`naive: refusing to create ${name}; the name must match ${NAIVE_DB_RE}`);
   const admin = new Client({ connectionString: adminUrl });
   await admin.connect();
-  await admin.query(`drop database if exists "${name}" with (force)`);
-  await admin.query(`create database "${name}"`);
-  await admin.end();
+  try {
+    const exists = await admin.query("select 1 from pg_database where datname = $1", [name]);
+    if (exists.rowCount !== 0) throw new Error(`naive: database ${name} already exists; refusing to touch it`);
+    await admin.query(`create database "${name}"`);
+  } finally {
+    await admin.end();
+  }
   const url = withDatabase(adminUrl, name);
   await migrate(url, migrationsDir);
   return url;
 }
 
+export async function prepareNaiveDatabase(adminUrl: string, migrationsDir: string): Promise<{ name: string; url: string }> {
+  const name = naiveDatabaseName();
+  return { name, url: await createThrowawayDatabase(adminUrl, name, migrationsDir) };
+}
+
 export async function dropNaiveDatabase(adminUrl: string, name: string): Promise<void> {
+  if (!NAIVE_DB_RE.test(name)) throw new Error(`naive: refusing to drop ${name}; only databases named like ${NAIVE_DB_RE} are dropped`);
   const admin = new Client({ connectionString: adminUrl });
   await admin.connect();
-  await admin.query(`drop database if exists "${name}" with (force)`);
-  await admin.end();
+  try {
+    await admin.query(`drop database if exists "${name}" with (force)`);
+  } finally {
+    await admin.end();
+  }
 }
 
 /** Removes the two protections a plain application would not have: the exclusion constraint and the unit locks taken by the fit trigger. */

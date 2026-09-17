@@ -9,7 +9,7 @@ import { createEmptyDatabase, dropDatabase } from "./helpers/db.js";
 const HEAD_TX = "-- transaction: yes\n-- impact: instant-exclusive\n";
 const HEAD_CIC = "-- transaction: no\n-- impact: long-nonblocking\n";
 const SCRATCH = HEAD_TX + `
-create table dastar.scratch(id int, x int);
+create table dastar.scratch(id int, x int, kind text);
 create function dastar.boom(v int) returns int language plpgsql immutable as $$
 begin
   if v = 42 then raise exception 'boom' using errcode = 'P0001'; end if;
@@ -51,6 +51,11 @@ describe("concurrent-index migration mode", () => {
     expect(() => parseConcurrentIndex("f", "create index concurrently a_idx on dastar.a (x)")).toThrow(/must be one/);
     expect(() => parseConcurrentIndex("f", "create index concurrently if not exists a_idx on dastar.a using btree (x); select 1")).toThrow(/exactly one statement/);
     expect(normalizeSql("CREATE INDEX a_idx ON dastar.a USING btree (x)")).toBe("create index a_idx on dastar.a using btree (x)");
+    expect(normalizeSql("CREATE INDEX a ON dastar.t USING btree (x) WHERE (kind = 'VIP')")).toBe("create index a on dastar.t using btree (x) where (kind = 'VIP')");
+    expect(normalizeSql("create index a on dastar.t using btree (x) where (kind = 'VIP')")).not.toBe(normalizeSql("create index a on dastar.t using btree (x) where (kind = 'vip')"));
+    expect(normalizeSql("-- don't\ncreate   index a on dastar.t using btree (x) where (kind = 'a--b /* c */  d');")).toBe("create index a on dastar.t using btree (x) where (kind = 'a--b /* c */  d')");
+    expect(normalizeSql("create index a on dastar.t using btree (x) where (kind = 'it''s')")).toBe("create index a on dastar.t using btree (x) where (kind = 'it''s')");
+    expect(() => normalizeSql("create index a on dastar.t using btree (x) where (kind = 'open")).toThrow(/unterminated/);
   });
 
   it("refuses a zero-magnitude lock timeout before connecting", async () => {
@@ -173,6 +178,26 @@ describe("concurrent-index migration mode", () => {
       expect(await recorded(conn.owner, "0004_drop_table_name.sql")).toBe(false);
     } finally {
       await dropDatabase("cic_case6");
+    }
+  });
+
+  it("a literal that differs only in case is a different definition, and an identical literal is the same index", async () => {
+    const conn = await createEmptyDatabase("cic_case7");
+    try {
+      const d = await dir({ "0001_scratch.sql": SCRATCH });
+      await migrate(conn.owner, d);
+      await withOwner(conn.owner, (c) => c.query("create index scratch_vip on dastar.scratch using btree (id) where (kind = 'VIP'::text)"));
+      const before = await indexState(conn.owner, "scratch_vip");
+      await writeFile(join(d, "0002_idx.sql"), HEAD_CIC + "create index concurrently if not exists scratch_vip on dastar.scratch using btree (id) where (kind = 'vip'::text);\n");
+      await expect(migrate(conn.owner, d)).rejects.toThrow(/different definition/);
+      expect(await indexState(conn.owner, "scratch_vip")).toEqual(before);
+      expect(await recorded(conn.owner, "0002_idx.sql")).toBe(false);
+      await writeFile(join(d, "0002_idx.sql"), HEAD_CIC + "create index concurrently if not exists scratch_vip on dastar.scratch using btree (id) where (kind = 'VIP'::text);\n");
+      const r = await migrate(conn.owner, d);
+      expect(r.applied).toEqual(["0002_idx.sql"]);
+      expect(await indexState(conn.owner, "scratch_vip")).toEqual(before);
+    } finally {
+      await dropDatabase("cic_case7");
     }
   });
 });

@@ -38,7 +38,7 @@ A token is 32 random bytes; the database stores its SHA-256. A token is minted o
 
 ## Connections
 
-Commands run on connections they check out from the pool the host supplies and return them only after the command has settled. A command that exceeds its deadline is cancelled in the database before its connection is reused, and a connection whose state is uncertain is discarded. Commands never join a host transaction.
+Commands run on connections they check out from the pool the host supplies and return them only after the command has settled. A command that exceeds its deadline is cancelled in the database through a bounded request, and its connection is discarded rather than reused, whether or not the command settles in time. A connection whose state is uncertain is discarded. Commands never join a host transaction.
 
 ## Reporting a vulnerability
 

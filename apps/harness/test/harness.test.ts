@@ -4,7 +4,7 @@ import { createDastar } from "@dastar/db";
 import { cloneDatabase, dropDatabase, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedBench } from "../src/seed.js";
 import { runRace } from "../src/race.js";
-import { disableProtections, runNaive } from "../src/naive.js";
+import { disableProtections, runNaive, NAIVE_DB_RE, createThrowawayDatabase, dropNaiveDatabase } from "../src/naive.js";
 
 describe("harness", () => {
   let race: Conn; let naive: Conn;
@@ -32,5 +32,24 @@ describe("harness", () => {
     expect(r.n).toBe(20);
     expect(r.committed).toBe(20);
     expect(r.overlaps).toBeGreaterThan(0);
+  });
+
+  it("the throwaway database is created only under a generated name and never replaces an existing one", async () => {
+    const adminUrl = `${process.env.DASTAR_TEST_PG_BASE}/postgres`;
+    const migrations = new URL("../../../packages/db/migrations", import.meta.url).pathname;
+    await expect(dropNaiveDatabase(adminUrl, "harness_naive")).rejects.toThrow(/refusing to drop/);
+    const admin = new Client({ connectionString: adminUrl });
+    await admin.connect();
+    expect((await admin.query("select 1 from pg_database where datname = 'harness_naive'")).rowCount).toBe(1);
+    const taken = "dastar_naive_deadbeef";
+    await admin.query(`drop database if exists "${taken}" with (force)`);
+    await admin.query(`create database "${taken}"`);
+    await expect(createThrowawayDatabase(adminUrl, taken, migrations)).rejects.toThrow(/already exists/);
+    expect((await admin.query("select 1 from pg_database where datname = $1", [taken])).rowCount).toBe(1);
+    await expect(createThrowawayDatabase(adminUrl, "not_a_naive_name", migrations)).rejects.toThrow(/must match/);
+    await dropNaiveDatabase(adminUrl, taken);
+    expect((await admin.query("select 1 from pg_database where datname = $1", [taken])).rowCount).toBe(0);
+    expect(NAIVE_DB_RE.test(taken)).toBe(true);
+    await admin.end();
   });
 });

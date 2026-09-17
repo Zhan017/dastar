@@ -7,9 +7,11 @@ export type ReservationView = {
   history: { action: string; actor: string; at: string }[];
 };
 
-/** Both reads share one snapshot, so the history never runs ahead of the row. */
-export async function getReservation(client: ClientBase, reservationId: string): Promise<ReservationView | null> {
-  await client.query("begin read only");
+export type GetHooks = { afterRow?: () => Promise<void> };
+
+/** One snapshot for both reads (repeatable read), so the history never runs ahead of the row. */
+export async function getReservation(client: ClientBase, reservationId: string, hooks: GetHooks = {}): Promise<ReservationView | null> {
+  await client.query("begin isolation level repeatable read read only");
   try {
     const r = await client.query(
       `select id, venue_id, status as stored_status, dastar.effective_status(status, hold_expires_at) as status,
@@ -17,6 +19,7 @@ export async function getReservation(client: ClientBase, reservationId: string):
          from dastar.reservation where id = $1`,
       [reservationId],
     );
+    await hooks.afterRow?.();
     let view: ReservationView | null = null;
     if (r.rowCount !== 0) {
       const row = r.rows[0];

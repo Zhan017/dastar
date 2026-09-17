@@ -9,6 +9,7 @@ import { confirm } from "../src/commands/confirm.js";
 import { cancel } from "../src/commands/cancel.js";
 import { expireDue } from "../src/commands/expire.js";
 import { mintConfirmToken } from "../src/commands/mint-token.js";
+import { getReservation } from "../src/commands/get.js";
 
 describe("named interleavings (H1)", () => {
   let conn: Conn; let owner: Client; let A: Client; let B: Client; let W: Client; let seed: Seed;
@@ -189,5 +190,21 @@ describe("named interleavings (H1)", () => {
     p2.release();
     expect(await pH).toMatchObject({ ok: false, error: { code: "hold_conflict" } });
     expect((await pC2).status).toBe("confirmed");
+  });
+
+  it("a read sees one snapshot: a confirmation that lands between the row and the history is invisible to it", async () => {
+    const id = ok(await hold(A, input("key:A", { assignment: { kind: "unit", id: seed.units[3]! } })));
+    const before = await getReservation(A, id);
+    const p = pause();
+    const pRead = getReservation(A, id, { afterRow: p.hook });
+    await p.reached;
+    expect((await confirm(B, { reservationId: id, actor: "key:B", traceId: "snap", venueId: seed.venue })).status).toBe("confirmed");
+    p.release();
+    const view = await pRead;
+    expect(view?.status).toBe("held");
+    expect(view?.history).toEqual(before?.history);
+    const after = await getReservation(A, id);
+    expect(after?.status).toBe("confirmed");
+    expect(after?.history.length).toBeGreaterThan(before!.history.length);
   });
 });

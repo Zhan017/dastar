@@ -16,7 +16,6 @@ const { positionals, values } = parseArgs({
     "app-url": { type: "string" },
     "admin-url": { type: "string" },
     n: { type: "string", default: "500" },
-    database: { type: "string", default: "dastar_naive" },
     keep: { type: "boolean", default: false },
   },
 });
@@ -45,10 +44,15 @@ if (command === "race") {
   process.exit(r.winners === 1 && r.conflicts === r.n - 1 && r.overlaps === 0 ? 0 : 1);
 } else if (command === "naive") {
   const admin = need("admin-url");
-  const url = await prepareNaiveDatabase(admin, values.database!, MIGRATIONS);
-  await disableProtections(url);
-  const r = await runNaive(url, n);
-  if (!values.keep) await dropNaiveDatabase(admin, values.database!);
+  const { name, url } = await prepareNaiveDatabase(admin, MIGRATIONS);
+  let r: Awaited<ReturnType<typeof runNaive>>;
+  try {
+    await disableProtections(url);
+    r = await runNaive(url, n);
+  } finally {
+    if (values.keep) console.log(`kept database ${name}`);
+    else await dropNaiveDatabase(admin, name);
+  }
   const path = await writeReport("naive", r);
   console.log(`naive n=${r.n}: committed=${r.committed} overlapping pairs=${r.overlaps} (what a plain check-then-insert does)`);
   console.log(`report: ${path}`);
@@ -57,6 +61,6 @@ if (command === "race") {
   const r = await migrate(need("owner-url"), MIGRATIONS);
   console.log(`migrate: applied ${r.applied.length} file(s)${r.applied.length ? ": " + r.applied.join(", ") : ""}`);
 } else {
-  console.error("usage: migrate --owner-url <url> | race --owner-url <url> --app-url <url> [--n 500] | naive --admin-url <url> [--n 50] [--database name] [--keep]");
+  console.error("usage: migrate --owner-url <url> | race --owner-url <url> --app-url <url> [--n 500] | naive --admin-url <url> [--n 50] [--keep]");
   process.exit(2);
 }

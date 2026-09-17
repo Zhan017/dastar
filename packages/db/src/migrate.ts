@@ -33,16 +33,49 @@ function parseHeader(name: string, sql: string): Header {
   return { transaction: tx[1] === "yes", impact: im[1] as Impact };
 }
 
-/** Lowercases, strips line and block comments, collapses whitespace, drops one trailing semicolon. */
+/**
+ * Lowercases, collapses whitespace, and strips line and block comments outside single-quoted literals;
+ * keeps every literal verbatim (its case, its spaces, its '' escapes); drops one trailing semicolon.
+ * Double-quoted identifiers are not part of the concurrent-index grammar and fail its regex.
+ */
 export function normalizeSql(sql: string): string {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\n]*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/;\s*$/, "")
-    .trim()
-    .toLowerCase();
+  let out = "";
+  let space = false;
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i]!;
+    const next = sql[i + 1];
+    if (ch === "'") {
+      let j = i + 1;
+      for (;;) {
+        if (j >= n) throw new Error("unterminated string literal in a migration statement");
+        if (sql[j] === "'") {
+          if (sql[j + 1] === "'") { j += 2; continue; }
+          break;
+        }
+        j += 1;
+      }
+      out += sql.slice(i, j + 1);
+      space = false;
+      i = j + 1;
+    } else if (ch === "-" && next === "-") {
+      while (i < n && sql[i] !== "\n") i += 1;
+      if (!space) { out += " "; space = true; }
+    } else if (ch === "/" && next === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      i = end === -1 ? n : end + 2;
+      if (!space) { out += " "; space = true; }
+    } else if (/\s/.test(ch)) {
+      if (!space) { out += " "; space = true; }
+      i += 1;
+    } else {
+      out += ch.toLowerCase();
+      space = false;
+      i += 1;
+    }
+  }
+  return out.trim().replace(/;$/, "").trim();
 }
 
 /**
@@ -52,7 +85,7 @@ export function normalizeSql(sql: string): string {
  */
 export function parseConcurrentIndex(file: string, sql: string): ConcurrentIndexStatement {
   const body = normalizeSql(sql);
-  if (body.includes(";")) throw new Error(`${file}: a "transaction: no" file must contain exactly one statement`);
+  if (body.includes(";")) throw new Error(`${file}: a "transaction: no" file must contain exactly one statement, and its literals may not contain semicolons`);
   const c = CREATE_RE.exec(body);
   if (c) {
     return { op: "create", name: c[1]!, schema: c[2]!, table: c[3]!, normalized: body.replace("index concurrently if not exists", "index") };

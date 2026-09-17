@@ -14,7 +14,7 @@ export type DastarOptions = {
   acquireTimeoutMs?: number;
   /** Wall-clock budget for one command; above the 10 s statement timeout on purpose. Default 12000. */
   deadlineMs?: number;
-  /** After a cancel request, how long to wait for the command to settle before the connection is discarded. Default 2000. */
+  /** Budget after the deadline for the cancel request and for the command to settle; the connection is discarded at its end either way. Default 2000. */
   cancelGraceMs?: number;
   /**
    * Dedicated connection used only for pg_cancel_backend, same role as the pool. Never a pool client,
@@ -43,8 +43,9 @@ const pids = new WeakMap<PoolClient, number>();
  * Connection contract:
  *  - every command runs on a client checked out here and is released only after it has settled;
  *  - on an error the handle probes the client with one `rollback`; a failed probe destroys the connection;
- *  - past the deadline the backend is cancelled, the command is given the grace period to settle, and a
- *    connection that still has not settled is discarded rather than returned;
+ *  - past the deadline the grace period starts at once, the backend is cancelled within it through a bounded
+ *    request, and the connection is discarded whether or not the command settles, so a late cancel can never
+ *    reach a backend serving another command;
  *  - a connection error recorded while the client was checked out discards the connection at release even
  *    when the command itself succeeded, and both the backend-pid lookup and the rollback probe are bounded
  *    by the deadline and the grace period respectively.
@@ -60,7 +61,7 @@ export function createDastar(opts: DastarOptions): Dastar {
     if (cancellerPromise) return cancellerPromise;
     let p: Promise<Client>;
     p = (async () => {
-      const c = new Client({ connectionString: url, application_name: "dastar-canceller" });
+      const c = new Client({ connectionString: url, application_name: "dastar-canceller", connectionTimeoutMillis: cancelGraceMs, statement_timeout: cancelGraceMs });
       await c.connect();
       c.on("error", () => { if (cancellerPromise === p) cancellerPromise = null; });
       return c;
@@ -105,14 +106,13 @@ export function createDastar(opts: DastarOptions): Dastar {
     }
     const c = await acquire(500).catch(() => null);
     if (!c) return false;
-    try {
-      const r = await c.query("select pg_cancel_backend($1) as ok", [pid]);
-      return r.rows[0].ok === true;
-    } catch {
-      return false;
-    } finally {
-      c.release();
-    }
+    const q = c.query("select pg_cancel_backend($1) as ok", [pid]).then((r) => r.rows[0].ok === true, () => false);
+    q.then(() => c.release(), () => c.release());
+    let limitTimer: NodeJS.Timeout | undefined;
+    const limit = new Promise<false>((res) => { limitTimer = setTimeout(() => res(false), cancelGraceMs); });
+    const ok = await Promise.race([q, limit]);
+    clearTimeout(limitTimer);
+    return ok;
   }
 
   async function settle(client: PoolClient, r: Settled<unknown>, finish: (err?: Error) => void): Promise<void> {
@@ -158,16 +158,22 @@ export function createDastar(opts: DastarOptions): Dastar {
     let result = await Promise.race([work, deadline]);
     clearTimeout(timer);
     if (result === "deadline") {
-      if (pid !== undefined) await cancelBackend(pid);
+      // the cleanup budget starts now and covers both the cancel request and the wait for settlement;
+      // the cancel request is never awaited beyond it
       let graceTimer: NodeJS.Timeout | undefined;
       const grace = new Promise<"grace">((res) => { graceTimer = setTimeout(() => res("grace"), cancelGraceMs); });
+      if (pid !== undefined) void cancelBackend(pid).catch(() => false);
       const second = await Promise.race([work, grace]);
       clearTimeout(graceTimer);
+      // a connection whose command passed its deadline is never returned to the pool: a cancel request
+      // still in flight must not reach a backend that has been handed to another command
       if (second === "grace") {
-        finish(new Error("dastar: command did not settle after cancellation; connection discarded"));
-        throw new DastarError("timeout", `command exceeded ${deadlineMs}ms and did not settle within ${cancelGraceMs}ms after cancellation`, undefined, true);
+        finish(new Error("dastar: command did not settle within the grace period after its deadline; connection discarded"));
+        throw new DastarError("timeout", `command exceeded ${deadlineMs}ms and did not settle within ${cancelGraceMs}ms`, undefined, true);
       }
-      result = second;
+      finish(new Error("dastar: command passed its deadline; connection discarded"));
+      if (second.ok) return second.v;
+      throw asDastarError(second.e);
     }
     await settle(client, result, finish);
     if (result.ok) return result.v;

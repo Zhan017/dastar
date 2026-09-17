@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createServer, type Server } from "node:net";
 import { Pool, type Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
@@ -82,7 +83,7 @@ describe("pool-owned handle", () => {
     await pool.end();
   });
 
-  it("deadline: cancels the blocked backend, the command settles with timeout, the client returns idle", async () => {
+  it("deadline: cancels the blocked backend, the command settles with timeout, the connection is discarded", async () => {
     const pool = makePool(1, "H4");
     const d = createDastar({ pool, deadlineMs: 800, cancelGraceMs: 2_000, cancellerConnectionString: conn.app });
     const u = seed.units[1]!;
@@ -93,12 +94,12 @@ describe("pool-owned handle", () => {
     await expect(d.hold(input({ assignment: { kind: "unit", id: u } }))).rejects.toMatchObject({ code: "timeout", retryable: true });
     expect(Date.now() - t0).toBeGreaterThanOrEqual(800);
     expect(Date.now() - t0).toBeLessThan(2_500);
-    expect(pool.totalCount).toBe(1);
-    expect(await states("H4")).toEqual(["idle"]);
+    await eventually(() => pool.totalCount === 0);
     expect(await advisoryLocks("H4")).toBe(0);
     await blocker.query("rollback");
     await blocker.end();
     expect((await d.hold(input({ assignment: { kind: "unit", id: u } }))).ok).toBe(true);
+    await eventually(async () => (await states("H4")).length === 1);
     await d.close();
     await pool.end();
   });
@@ -153,12 +154,37 @@ describe("pool-owned handle", () => {
       expect((r as PromiseRejectedResult).reason).toMatchObject({ code: "timeout", retryable: true });
     }
     await eventually(async () => (await states("dastar-canceller")).length === 1);
-    expect(pool.totalCount).toBe(2);
-    expect(pool.idleCount).toBe(2);
+    await eventually(() => pool.totalCount === 0);
     await blocker.query("rollback");
     await blocker.end();
     await d.close();
     await eventually(async () => (await states("dastar-canceller")).length === 0);
     await pool.end();
+  });
+
+  it("a canceller that never answers cannot extend the deadline; the connection is discarded and the pool recovers", async () => {
+    // a TCP endpoint that accepts and never replies stands in for a stalled canceller; the socket is resumed
+    // (and its bytes discarded) so the server notices the client's close instead of leaving it half-open forever
+    const blackHole: Server = createServer((socket) => socket.resume());
+    await new Promise<void>((res) => blackHole.listen(0, "127.0.0.1", () => res()));
+    const port = (blackHole.address() as { port: number }).port;
+    const pool = makePool(1, "H8");
+    const d = createDastar({ pool, deadlineMs: 300, cancelGraceMs: 500, cancellerConnectionString: `postgres://dastar_app:app@127.0.0.1:${port}/none` });
+    const u = seed.units[5]!;
+    const blocker = await connectAs(conn.app, "H8blocker");
+    await blocker.query("begin");
+    await blocker.query("select pg_advisory_xact_lock(dastar.unit_lock_key($1::uuid))", [u]);
+    const t0 = Date.now();
+    await expect(d.hold(input({ assignment: { kind: "unit", id: u } }))).rejects.toMatchObject({ code: "timeout", retryable: true });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeGreaterThanOrEqual(800);
+    expect(elapsed).toBeLessThan(2_000);
+    expect(pool.totalCount).toBe(0);
+    await blocker.query("rollback");
+    await blocker.end();
+    expect((await d.hold(input({ assignment: { kind: "unit", id: u } }))).ok).toBe(true);
+    await d.close();
+    await pool.end();
+    await new Promise<void>((res) => blackHole.close(() => res()));
   });
 });
