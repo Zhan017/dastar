@@ -12,7 +12,7 @@ The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
 ## Run the tests
 
-You need Node.js 22 or newer, pnpm 10, and a running Docker daemon. The recorded prototype run used Node.js 26; Node.js 22 compatibility has not yet been verified.
+You need Node.js 22 or newer, pnpm 10, and a running Docker daemon. The test suite runs on Node.js 22 and 26 in continuous integration.
 
 ```bash
 git clone https://github.com/Zhan017/dastar.git
