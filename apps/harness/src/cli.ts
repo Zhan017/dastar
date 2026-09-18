@@ -17,6 +17,8 @@ const { positionals, values } = parseArgs({
     "admin-url": { type: "string" },
     n: { type: "string", default: "500" },
     keep: { type: "boolean", default: false },
+    units: { type: "string", default: "6" },
+    combos: { type: "string", default: "2" },
   },
 });
 
@@ -60,7 +62,13 @@ if (command === "race") {
 } else if (command === "migrate") {
   const r = await migrate(need("owner-url"), MIGRATIONS);
   console.log(`migrate: applied ${r.applied.length} file(s)${r.applied.length ? ": " + r.applied.join(", ") : ""}`);
+} else if (command === "seed") {
+  const owner = new Client({ connectionString: need("owner-url") });
+  await owner.connect();
+  const seeded = await seedBench(owner, { units: Number(values.units), combos: Number(values.combos) });
+  await owner.end();
+  console.log(JSON.stringify(seeded, null, 2));
 } else {
-  console.error("usage: migrate --owner-url <url> | race --owner-url <url> --app-url <url> [--n 500] | naive --admin-url <url> [--n 50] [--keep]");
+  console.error("usage: migrate --owner-url <url> | race --owner-url <url> --app-url <url> [--n 500] | naive --admin-url <url> [--n 50] [--keep] | seed --owner-url <url> [--units 6] [--combos 2]");
   process.exit(2);
 }

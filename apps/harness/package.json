@@ -7,6 +7,7 @@
     "migrate": "tsx src/cli.ts migrate",
     "race": "tsx src/cli.ts race",
     "naive": "tsx src/cli.ts naive",
+    "seed": "tsx src/cli.ts seed",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

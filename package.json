@@ -9,6 +9,9 @@
     "typecheck": "pnpm -r typecheck",
     "race": "pnpm --filter @dastar/harness race",
     "naive": "pnpm --filter @dastar/harness naive",
-    "migrate": "pnpm --filter @dastar/harness migrate"
+    "migrate": "pnpm --filter @dastar/harness migrate",
+    "seed": "pnpm --filter @dastar/harness seed",
+    "keys:create": "pnpm --filter @dastar/api keys:create",
+    "api": "pnpm --filter @dastar/api start"
   }
 }
