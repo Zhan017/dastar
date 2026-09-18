@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type Server } from "node:net";
-import { Pool, type Client } from "pg";
+import { Pool, type Client, type PoolClient } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 import { connectAs, pause, outcome } from "./helpers/wait.js";
@@ -191,5 +191,39 @@ describe("pool-owned handle", () => {
     await d.close();
     await pool.end();
     await new Promise<void>((res) => blackHole.close(() => res()));
+  });
+});
+
+describe("connection accounting when the cancel request itself stalls", () => {
+  it("discards the command's client and the borrowed cancel client, each exactly once", async () => {
+    type Stub = { releases: (Error | undefined)[]; listeners: number; client: PoolClient };
+    const never = new Promise<never>(() => undefined);
+    function stubClient(answersPid: boolean): Stub {
+      const s: Stub = { releases: [], listeners: 0, client: undefined as unknown as PoolClient };
+      const c = {
+        query: (text: unknown) => (answersPid && typeof text === "string" && text.includes("pg_backend_pid") ? Promise.resolve({ rows: [{ pid: 4242 }] }) : never),
+        on: () => { s.listeners += 1; return c; },
+        removeListener: () => { s.listeners -= 1; return c; },
+        release: (err?: Error) => { s.releases.push(err); },
+      };
+      s.client = c as unknown as PoolClient;
+      return s;
+    }
+    const first = stubClient(true);
+    const second = stubClient(false);
+    const handed = [first, second];
+    let acquisitions = 0;
+    const pool = { connect: async () => handed[acquisitions++]!.client } as unknown as Pool;
+    const d = createDastar({ pool, deadlineMs: 50, cancelGraceMs: 100 });
+    await expect(d.getReservation("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({ code: "timeout" });
+    await eventually(() => second.releases.length === 1);
+    expect(acquisitions).toBe(2);
+    expect(first.releases).toHaveLength(1);
+    expect(first.releases[0]).toBeInstanceOf(Error);
+    expect(second.releases).toHaveLength(1);
+    expect(second.releases[0]).toBeInstanceOf(Error);
+    expect(first.listeners).toBe(0);
+    expect(second.listeners).toBe(0);
+    await d.close();
   });
 });

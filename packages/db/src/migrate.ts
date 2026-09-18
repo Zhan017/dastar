@@ -33,10 +33,24 @@ function parseHeader(name: string, sql: string): Header {
   return { transaction: tx[1] === "yes", impact: im[1] as Impact };
 }
 
+/** Index just past the closing quote of the quoted run that starts at `start`; a doubled quote is an escape. */
+function endOfQuoted(sql: string, start: number, quote: "'" | '"', what: string): number {
+  let j = start + 1;
+  for (;;) {
+    if (j >= sql.length) throw new Error(`unterminated ${what} in a migration statement`);
+    if (sql[j] === quote) {
+      if (sql[j + 1] === quote) { j += 2; continue; }
+      return j + 1;
+    }
+    j += 1;
+  }
+}
+
 /**
- * Lowercases, collapses whitespace, and strips line and block comments outside single-quoted literals;
- * keeps every literal verbatim (its case, its spaces, its '' escapes); drops one trailing semicolon.
- * Double-quoted identifiers are not part of the concurrent-index grammar and fail its regex.
+ * Lowercases, collapses whitespace, and strips line and block comments outside quoted text; keeps every
+ * single-quoted literal and every double-quoted identifier verbatim (case, spaces, doubled-quote escapes);
+ * drops one trailing semicolon. A quoted identifier that Postgres would print unquoted therefore compares
+ * unequal to the canonical spelling and is refused as a different definition, never accepted as the same.
  */
 export function normalizeSql(sql: string): string {
   let out = "";
@@ -46,19 +60,11 @@ export function normalizeSql(sql: string): string {
   while (i < n) {
     const ch = sql[i]!;
     const next = sql[i + 1];
-    if (ch === "'") {
-      let j = i + 1;
-      for (;;) {
-        if (j >= n) throw new Error("unterminated string literal in a migration statement");
-        if (sql[j] === "'") {
-          if (sql[j + 1] === "'") { j += 2; continue; }
-          break;
-        }
-        j += 1;
-      }
-      out += sql.slice(i, j + 1);
+    if (ch === "'" || ch === '"') {
+      const end = endOfQuoted(sql, i, ch, ch === "'" ? "string literal" : "quoted identifier");
+      out += sql.slice(i, end);
       space = false;
-      i = j + 1;
+      i = end;
     } else if (ch === "-" && next === "-") {
       while (i < n && sql[i] !== "\n") i += 1;
       if (!space) { out += " "; space = true; }
