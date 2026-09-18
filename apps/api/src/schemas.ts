@@ -27,3 +27,15 @@ export const ReceiptSchema = z.object({
 export function toReceipt(r: Receipt): z.infer<typeof ReceiptSchema> {
   return { reservation_id: r.reservationId, status: r.status, version: r.version, audit_id: r.auditId, trace_id: r.traceId };
 }
+
+export const IdParam = z.object({ id: z.guid().openapi({ param: { name: "id", in: "path" } }) });
+
+export const HoldBodySchema = z.object({
+  party_size: z.number().int().min(1),
+  starts_at: z.iso.datetime({ offset: true }),
+  duration_minutes: z.number().int().min(1),
+  assignment: z.object({ kind: z.enum(["unit", "combo"]), id: z.guid() }),
+  external_ref: z.string().min(1).max(200).optional(),
+}).openapi("HoldRequest");
+
+export const HoldResponseSchema = z.object({ receipt: ReceiptSchema, hold_expires_at: z.string(), replayed: z.boolean() }).openapi("HoldResponse");

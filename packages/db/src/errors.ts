@@ -52,6 +52,8 @@ export function mapPgError(e: unknown): DastarError | null {
     if (pe.constraint === "duration_out_of_range") return new DastarError("duration_out_of_range", pe.message ?? "", pe.detail, false, pe.code);
     if (pe.constraint === "combo_too_large") return new DastarError("combo_too_large", pe.message ?? "", pe.detail, false, pe.code);
   }
+  // the first statement of a hold claims an idempotency row that references the venue
+  if (pe.code === "23503" && pe.constraint === "idempotency_venue_id_fkey") return new DastarError("not_found", "venue not found", pe.detail, false, pe.code);
   const code = BY_SQLSTATE[pe.code];
   return code ? new DastarError(code, pe.message ?? pe.code, pe.detail, false, pe.code) : null;
 }
