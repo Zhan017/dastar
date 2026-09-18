@@ -23,8 +23,8 @@ export type DastarOptions = {
   /**
    * Dedicated connection used only for pg_cancel_backend, same role as the pool. Never a pool client,
    * because an exhausted pool must not block cancellation. Without it the handle borrows a pool client for
-   * the cancel request, acquired within 500 ms and discarded if the request does not answer within the
-   * grace period.
+   * the cancel request, acquired within 500 ms and discarded if the request fails or does not answer within
+   * the grace period.
    */
   cancellerConnectionString?: string;
 };
@@ -112,14 +112,16 @@ export function createDastar(opts: DastarOptions): Dastar {
     const c = await acquire(500).catch(() => null);
     if (!c) return false;
     // same hazard as the command's own client: no pool listener while checked out
-    const onError = (): void => undefined;
+    let fallbackError: Error | null = null;
+    const onError = (e: Error): void => { fallbackError = e; };
     c.on("error", onError);
     let released = false;
     const finishFallback = (err?: Error): void => {
       if (released) return;
       released = true;
       c.removeListener("error", onError);
-      if (err) c.release(err); else c.release();
+      const fatal = err ?? fallbackError;
+      if (fatal) c.release(fatal); else c.release();
     };
     const q = c.query("select pg_cancel_backend($1) as ok", [pid]).then(
       (r) => ({ ok: r.rows[0].ok === true }),

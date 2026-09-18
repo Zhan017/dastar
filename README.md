@@ -51,7 +51,7 @@ docker rm -f dastar-demo
 
 `race` sends 500 holds for the same slot, released together. It exits 0 only when exactly one wins, the other 499 receive `hold_conflict`, and a SQL check finds zero overlapping active rows.
 
-`naive` creates a throwaway database under a generated name, removes the exclusion constraint and the fit trigger there, and lets 50 workers each confirm the slot is free before any of them inserts. Every worker commits, and the same SQL check counts 1225 overlapping pairs. It never touches an existing database and drops only the one it created.
+`naive` creates a throwaway database under a generated name, drops the exclusion constraint and disables the fit trigger there, and lets 50 workers each confirm the slot is free before any of them inserts. Every worker commits, and the same SQL check counts 1225 overlapping pairs. It never touches an existing database and drops only the one it created.
 
 ## How it works
 
