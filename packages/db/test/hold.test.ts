@@ -151,4 +151,9 @@ describe("hold", () => {
     await expect(hold(app, big)).rejects.toMatchObject({ code: "overlap_set_too_large", retryable: true });
     await setClock(app, null);
   });
+
+  it("reports an unknown venue as not_found", async () => {
+    await expect(hold(app, input({ venueId: "00000000-0000-0000-0000-000000000000" }))).rejects.toMatchObject({ code: "not_found", sqlstate: "23503" });
+    expect((await hold(app, input())).ok).toBe(true);
+  });
 });

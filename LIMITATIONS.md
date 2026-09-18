@@ -11,3 +11,6 @@ Known costs and gaps, each with the decision or measurement behind it.
 - **Holds occupy inventory for their TTL.** The levers under a rush are a short per-venue TTL and the per-actor live-holds cap.
 - **Unmeasured until the load runs:** throughput at the target rate, pool exhaustion and recovery, vacuum under churn, migrations under load. The results files under `docs/design/` say what has run.
 - **Quantity inventory is out of scope.** Dastar models exclusive units, not pools of identical tickets.
+- **The reference API has no rate limiting.** The per-actor live-holds cap is the only built-in brake; put a limiter in front of it.
+- **Key lookups and readiness are plain reads.** They wait a bounded time for a connection and have their own read deadline. A read past its deadline discards its connection without cancelling the backend; the role's statement timeout then ends the statement.
+- **Request bodies are limited to 64 KB**, and numeric inputs have ceilings; larger values are refused as validation errors.

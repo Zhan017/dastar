@@ -86,6 +86,26 @@ describe("lifecycle", () => {
     expect(audit.rows[0].actor).toBe(`token:${id}`);
   });
 
+  it("a token is judged before the reservation is described: used, cleared, and wrong tokens are all just wrong", async () => {
+    const used = await heldId();
+    const m = await mintConfirmToken(app, { reservationId: used, ...ctx() });
+    await confirm(app, { reservationId: used, actor: "token", traceId: "x", venueId: seed.venue, confirmToken: m.token });
+    await expect(confirm(app, { reservationId: used, actor: "token", traceId: "x", venueId: seed.venue, confirmToken: m.token })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(confirm(app, { reservationId: used, actor: "token", traceId: "x", venueId: seed.venue, confirmToken: "guess" })).rejects.toMatchObject({ code: "forbidden" });
+
+    const cancelled = await heldId();
+    const m2 = await mintConfirmToken(app, { reservationId: cancelled, ...ctx() });
+    await cancel(app, { reservationId: cancelled, ...ctx(), reason: "guest" });
+    await expect(confirm(app, { reservationId: cancelled, actor: "token", traceId: "x", venueId: seed.venue, confirmToken: m2.token })).rejects.toMatchObject({ code: "forbidden" });
+
+    const held = await heldId();
+    await mintConfirmToken(app, { reservationId: held, ...ctx() });
+    await expect(confirm(app, { reservationId: held, actor: "token", traceId: "x", venueId: seed.venue, confirmToken: "guess", expectedVersion: 99 })).rejects.toMatchObject({ code: "forbidden" });
+    // a key caller, who is authenticated by the host, still gets the state-specific answers
+    await expect(confirm(app, { reservationId: used, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition" });
+    await expect(confirm(app, { reservationId: held, ...ctx(), expectedVersion: 99 })).rejects.toMatchObject({ code: "version_conflict" });
+  });
+
   it("an empty-string confirm token is not treated as absent; it is checked and rejected", async () => {
     const id = await heldId();
     await mintConfirmToken(app, { reservationId: id, ...ctx() });

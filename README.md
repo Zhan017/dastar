@@ -6,9 +6,9 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype.** The database core, a pool-owned TypeScript API, a concurrency harness, and their tests are implemented and run in CI on Node.js 22 and 26. The HTTP API, availability search, agent tools, and public demo are planned. The package is not yet published to npm.
+**Status: engine prototype.** The database core, a pool-owned TypeScript API, a reference HTTP API, a concurrency harness, and their tests are implemented and run in CI on Node.js 22 and 26. Availability search, agent tools, and a public demo are planned. The package is not yet published to npm.
 
-[Run the tests](#run-the-tests) · [See the race](#see-the-race) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
+[Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
 [Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
@@ -45,13 +45,37 @@ docker exec dastar-demo psql -U dastar_owner -d postgres -c "alter role dastar_a
 
 pnpm race --owner-url postgres://dastar_owner:owner@localhost:55432/postgres --app-url postgres://dastar_app:app@localhost:55432/postgres --n 500
 pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --n 50
-
-docker rm -f dastar-demo
 ```
 
 `race` sends 500 holds for the same slot, released together. It exits 0 only when exactly one wins, the other 499 receive `hold_conflict`, and a SQL check finds zero overlapping active rows.
 
 `naive` creates a throwaway database under a generated name, drops the exclusion constraint and disables the fit trigger there, and lets 50 workers each confirm the slot is free before any of them inserts. Every worker commits, and the same SQL check counts 1225 overlapping pairs. It never touches an existing database and drops only the one it created.
+
+## Run the reference API
+
+A small HTTP server over the same engine: five routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
+
+```bash
+pnpm seed --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label demo --capabilities hold,confirm,cancel,read
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm api
+```
+
+`seed` prints a venue id and its unit ids. `keys:create` prints a key once; only its hash is stored. From another terminal, with those values in `VENUE`, `UNIT`, and `KEY`:
+
+```bash
+curl -s -X POST localhost:8080/v1/venues/$VENUE/holds \
+  -H "authorization: Bearer $KEY" -H "idempotency-key: friday-1" -H "content-type: application/json" \
+  -d '{"party_size":2,"starts_at":"2030-06-07T19:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"'$UNIT'"}}'
+```
+
+The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, and `/health/ready` reports whether the database is reachable and migrated.
+
+When you are done:
+
+```bash
+docker rm -f dastar-demo
+```
 
 ## How it works
 
@@ -112,8 +136,9 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Migrations | Ordered, checksummed files with lock timeouts; concurrent index builds with validated recovery |
 | Verification | Raw-SQL attacks, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18 |
+| Reference API | Five v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
 
-Authentication and capability checks belong to the host application. The current library does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and retention workers are still planned.
+Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and retention workers are still planned.
 
 ## Evidence and current limits
 
@@ -133,7 +158,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Complete the engine release:** run the contention and recovery measurements on target hardware and add a reference HTTP API.
+1. **Complete the engine release:** run the contention and recovery measurements on target hardware.
 2. **Add availability:** schedules, blackouts, and assignment ranking.
 3. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
 4. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
@@ -150,6 +175,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Raw-SQL attack tests](packages/db/test/attack.test.ts)
 - [Concurrency interleavings](packages/db/test/interleavings.test.ts) and [capacity edits versus confirmation](packages/db/test/capacity-expiry.test.ts)
 - [Race and naive harness](apps/harness)
+- [Reference API](apps/api)
 - [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
 

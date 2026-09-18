@@ -40,6 +40,10 @@ A token is 32 random bytes; the database stores its SHA-256. A token is minted o
 
 Commands run on connections they check out from the pool the host supplies and return them only after the command has settled. A command that exceeds its deadline is cancelled in the database through a bounded request, and its connection is discarded rather than reused, whether or not the command settles in time. A connection whose state is uncertain is discarded. Commands never join a host transaction.
 
+## Reference API
+
+Keys are 32 random bytes shown once at creation; the database stores their SHA-256, a capability list (`hold`, `confirm`, `cancel`, `read`), and an optional venue list. A revoked key stops working at the next request. Authorization is declared per route, never as one blanket rule. A venue or reservation outside a key's venues reads as absent. Confirmation accepts either a key with `confirm` or a single-use token. With a token no key is needed; a presented key is checked for validity and then ignored. The token is checked with one plain read before the engine is involved, and again by the engine under the row lock before anything that describes the reservation. An absent reservation and a token that is wrong, replaced, already used, or cleared by a cancellation or an expiry do the same work and receive the same refusal, so the response tells a caller without a valid token nothing about a reservation, and such a caller never takes a lock. Key callers receive state-specific errors. A valid token for an expired but unswept hold can receive `hold_expired`; invalid or cleared tokens receive the generic refusal. No response other than token minting carries a token, and no log entry carries a token or a key.
+
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting on this repository. If it is unavailable, open an issue stating only that you have a security report and how to reach you; do not put details in the public issue.

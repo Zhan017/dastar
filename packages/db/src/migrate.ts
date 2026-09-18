@@ -33,6 +33,19 @@ function parseHeader(name: string, sql: string): Header {
   return { transaction: tx[1] === "yes", impact: im[1] as Impact };
 }
 
+export type MigrationFile = { version: number; file: string; sql: string; checksum: Buffer };
+
+/** The shipped migration set in order, with the checksum the runner records. The runner and readiness checks both read it. */
+export async function readMigrationFiles(migrationsDir: string): Promise<MigrationFile[]> {
+  const files = (await readdir(migrationsDir)).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
+  const out: MigrationFile[] = [];
+  for (const file of files) {
+    const sql = await readFile(join(migrationsDir, file), "utf8");
+    out.push({ version: Number(file.slice(0, 4)), file, sql, checksum: createHash("sha256").update(sql).digest() });
+  }
+  return out;
+}
+
 /** Index just past the closing quote of the quoted run that starts at `start`; a doubled quote is an escape. */
 function endOfQuoted(sql: string, start: number, quote: "'" | '"', what: string): number {
   let j = start + 1;
@@ -124,15 +137,11 @@ export async function migrate(
          checksum bytea not null,
          applied_at timestamptz not null default now())`,
     );
-    const files = (await readdir(migrationsDir)).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
     const done = new Map<number, Buffer>();
     for (const r of (await client.query("select version, checksum from dastar.schema_migration")).rows) {
       done.set(r.version as number, r.checksum as Buffer);
     }
-    for (const file of files) {
-      const version = Number(file.slice(0, 4));
-      const sql = await readFile(join(migrationsDir, file), "utf8");
-      const checksum = createHash("sha256").update(sql).digest();
+    for (const { version, file, sql, checksum } of await readMigrationFiles(migrationsDir)) {
       const prev = done.get(version);
       if (prev) {
         if (!prev.equals(checksum)) throw new Error(`checksum mismatch for applied migration ${file}`);

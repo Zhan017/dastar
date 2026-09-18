@@ -1,5 +1,5 @@
 import type { ClientBase } from "pg";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
 import { sortUnitIds, LOCK_UNIT_SQL } from "../units.js";
@@ -47,13 +47,16 @@ export async function confirm(client: ClientBase, input: ConfirmInput, hooks: Co
       throw new DastarError("assignment_mismatch", "assignment changed while confirming; retry");
     }
     await hooks.afterLock?.();
-    if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
-    if (locked.rows[0].status !== "held") throw new DastarError("invalid_transition", `cannot confirm a ${locked.rows[0].status} reservation`);
     if (input.confirmToken !== undefined) {
+      // The token is the credential, so it is checked before anything that describes the reservation: a caller
+      // without a valid token learns neither its version nor its status. A token that was replaced, used, or
+      // cleared by a cancellation or an expiry has no stored hash to match and is simply wrong.
       const stored = locked.rows[0].confirm_token_hash as Buffer | null;
       const presented = createHash("sha256").update(input.confirmToken).digest();
-      if (!stored || !stored.equals(presented)) throw new DastarError("forbidden", "confirm token does not match");
+      if (!stored || stored.length !== presented.length || !timingSafeEqual(stored, presented)) throw new DastarError("forbidden", "confirm token does not match");
     }
+    if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
+    if (locked.rows[0].status !== "held") throw new DastarError("invalid_transition", `cannot confirm a ${locked.rows[0].status} reservation`);
     const upd = await client.query(
       `update dastar.reservation set status = 'confirmed', confirm_token_hash = null
         where id = $1 and ($2::int is null or version = $2)
