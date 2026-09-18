@@ -39,3 +39,16 @@ export const HoldBodySchema = z.object({
 }).openapi("HoldRequest");
 
 export const HoldResponseSchema = z.object({ receipt: ReceiptSchema, hold_expires_at: z.string(), replayed: z.boolean() }).openapi("HoldResponse");
+
+export const ReservationSchema = z.object({
+  id: z.string(), venue_id: z.string(), status: z.string(), stored_status: z.string(), party_size: z.number().int(),
+  during: z.string(), assignment: z.object({ kind: z.string(), id: z.string() }), hold_expires_at: z.string(),
+  version: z.number().int(), external_ref: z.string().nullable(),
+  history: z.array(z.object({ action: z.string(), actor: z.string(), at: z.string() })),
+}).openapi("Reservation");
+
+export const ReceiptResponseSchema = z.object({ receipt: ReceiptSchema }).openapi("ReceiptResponse");
+export const CancelBodySchema = z.object({ reason: z.string().min(1).max(500), expected_version: z.number().int().min(1).optional() }).openapi("CancelRequest");
+export const ConfirmBodySchema = z.object({ confirm_token: z.string().min(1).max(200).optional(), expected_version: z.number().int().min(1).optional() }).openapi("ConfirmRequest");
+export const MintBodySchema = z.object({ expected_version: z.number().int().min(1).optional() }).openapi("ConfirmTokenRequest");
+export const MintResponseSchema = z.object({ confirm_token: z.string(), version: z.number().int() }).openapi("ConfirmTokenResponse");

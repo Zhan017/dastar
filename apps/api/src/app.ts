@@ -4,6 +4,7 @@ import type { Deps, Env, LogEntry } from "./env.js";
 import { ApiProblem, fromUnknown, problemBody } from "./problem.js";
 import { register as registerHealth } from "./routes/health.js";
 import { register as registerHolds } from "./routes/holds.js";
+import { register as registerReservations } from "./routes/reservations.js";
 
 const TRACE_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 
@@ -43,6 +44,7 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
   app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", { type: "http", scheme: "bearer" });
   registerHealth(app, deps);
   registerHolds(app, deps);
+  registerReservations(app, deps);
   app.doc("/openapi.json", { openapi: "3.0.0", info: { title: "Dastar reference API", version: "0.1.0" } });
   return app;
 }
