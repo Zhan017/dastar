@@ -20,6 +20,11 @@ async function acquire(pool: Pool, acquireMs: number): Promise<PoolClient> {
 
 export type ReadLimits = { acquireMs: number; readMs: number };
 
+/** The limits for a read made on behalf of a request: key lookups and the confirm-token check. */
+export function readLimits(deps: { acquireTimeoutMs?: number; readTimeoutMs?: number }): ReadLimits {
+  return { acquireMs: deps.acquireTimeoutMs ?? 5_000, readMs: deps.readTimeoutMs ?? 2_000 };
+}
+
 /**
  * One short read outside the engine handle: a bounded wait for a connection, a deadline on the read itself,
  * an error listener while the client is checked out (pg-pool detaches its own), and exactly one release.

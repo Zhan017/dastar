@@ -1,7 +1,9 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createRoute, type OpenAPIHono } from "@hono/zod-openapi";
 import type { ReservationView } from "@dastar/db";
 import type { ApiKey, Deps, Env } from "../env.js";
 import { requireCapability, requireKey } from "../auth.js";
+import { readLimits, withClient } from "../db.js";
 import { ApiProblem } from "../problem.js";
 import {
   CancelBodySchema, ConfirmBodySchema, IdParam, MintBodySchema, MintResponseSchema,
@@ -9,6 +11,7 @@ import {
 } from "../schemas.js";
 
 const TOKEN_REFUSED = "confirm token does not match";
+const NO_HASH = Buffer.alloc(32);
 
 export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   /** A reservation outside the key's venues reads as absent. */
@@ -82,10 +85,19 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const body = c.req.valid("json");
     const version = body.expected_version !== undefined ? { expectedVersion: body.expected_version } : {};
     if (body.confirm_token !== undefined) {
-      // the token is the credential: no key, no scope, no version to assert; absent and mismatched read the same
-      const view = await deps.dastar.getReservation(id);
-      if (!view) throw new ApiProblem(403, "forbidden", TOKEN_REFUSED);
-      const receipt = await deps.dastar.confirm({ reservationId: id, actor: "token", traceId: c.get("traceId"), venueId: view.venueId, confirmToken: body.confirm_token });
+      // The token is the credential: no key, no scope, no version to assert. It is checked with one plain read
+      // before the engine is involved, so an absent reservation and a wrong, replaced, used, or cleared token do
+      // the same work and receive the same refusal, and a caller without a valid token never takes a lock.
+      const presented = createHash("sha256").update(body.confirm_token).digest();
+      const row = await withClient(deps.pool, readLimits(deps), async (cl) => {
+        const r = await cl.query("select venue_id, confirm_token_hash from dastar.reservation where id = $1", [id]);
+        return r.rows[0] as { venue_id: string; confirm_token_hash: Buffer | null } | undefined;
+      });
+      const stored = row?.confirm_token_hash ?? null;
+      const matches = timingSafeEqual(stored !== null && stored.length === presented.length ? stored : NO_HASH, presented) && stored !== null;
+      if (!row || !matches) throw new ApiProblem(403, "forbidden", TOKEN_REFUSED);
+      // the engine checks the token again under the row lock, so a token replaced in between is still refused
+      const receipt = await deps.dastar.confirm({ reservationId: id, actor: "token", traceId: c.get("traceId"), venueId: row.venue_id, confirmToken: body.confirm_token });
       return c.json({ receipt: toReceipt(receipt) }, 200);
     }
     const key = requireKey(c);

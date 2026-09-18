@@ -110,6 +110,23 @@ describe("reservation routes", () => {
     expect(await byKey.json()).toMatchObject({ code: "invalid_transition" });
   });
 
+  it("a caller without a valid token never reaches a lock: the refusal is prompt even while the unit is locked", async () => {
+    const id = await held();
+    await post(id, "confirm-token", {}, bearer(staff.key));
+    const blocker = await connect(conn.app);
+    await blocker.query("begin");
+    await blocker.query("select pg_advisory_xact_lock(dastar.unit_lock_key($1::uuid))", [seed.units[0]]);
+    try {
+      const t0 = Date.now();
+      const r = await post(id, "confirm", { confirm_token: "guess" }, {});
+      expect(r.status).toBe(403);
+      expect(Date.now() - t0).toBeLessThan(1_000);
+    } finally {
+      await blocker.query("rollback");
+      await blocker.end();
+    }
+  });
+
   it("a key without confirm may carry a token; a token dies with a cancellation", async () => {
     const id = await held();
     const { confirm_token } = await (await post(id, "confirm-token", {}, bearer(staff.key))).json() as { confirm_token: string };

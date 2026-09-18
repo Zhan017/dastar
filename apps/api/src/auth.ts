@@ -4,7 +4,7 @@ import { createMiddleware } from "hono/factory";
 import type { Pool } from "pg";
 import type { ApiKey, Deps, Env } from "./env.js";
 import { ApiProblem } from "./problem.js";
-import { withClient } from "./db.js";
+import { readLimits, withClient } from "./db.js";
 
 export type Capability = "hold" | "confirm" | "cancel" | "read";
 
@@ -27,7 +27,7 @@ export async function createKey(pool: Pool, opts: { label: string; capabilities:
 
 export async function findKey(deps: Deps, presented: string): Promise<ApiKey | null> {
   if (!KEY_RE.test(presented)) return null;
-  return withClient(deps.pool, { acquireMs: deps.acquireTimeoutMs ?? 5_000, readMs: deps.readTimeoutMs ?? 2_000 }, async (c) => {
+  return withClient(deps.pool, readLimits(deps), async (c) => {
     const r = await c.query("select id, capabilities, venue_ids from dastar.api_key where key_hash = $1 and revoked_at is null", [hashKey(presented)]);
     if (r.rowCount === 0) return null;
     return { id: r.rows[0].id as string, capabilities: r.rows[0].capabilities as string[], venueIds: (r.rows[0].venue_ids as string[] | null) ?? null };
