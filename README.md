@@ -6,28 +6,52 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: SQL prototype.** The database core and its tests are implemented. The HTTP API, availability search, agent tools, and public demo are planned. The package is not yet published to npm.
+**Status: engine prototype.** The database core, a pool-owned TypeScript API, a concurrency harness, and their tests are implemented and run in CI on Node.js 22 and 26. The HTTP API, availability search, agent tools, and public demo are planned. The package is not yet published to npm.
 
-[Run the tests](#run-the-tests) · [How it works](#how-it-works) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
+[Run the tests](#run-the-tests) · [See the race](#see-the-race) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
+
+[Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
 ## Run the tests
 
-You need Node.js 22 or newer, pnpm 10, and a running Docker daemon. The test suite runs on Node.js 22 and 26 in continuous integration.
+You need Node.js 22 or newer, pnpm 10, and a running Docker daemon.
 
 ```bash
 git clone https://github.com/Zhan017/dastar.git
 cd dastar
 pnpm install
-pnpm test:db
+pnpm test
 ```
 
-The suite starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
+`pnpm test` runs every package: the database suite and the harness suite. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
 
-To type-check:
+To run only the database package, or to type-check:
 
 ```bash
+pnpm test:db
 pnpm typecheck
 ```
+
+## See the race
+
+The harness fires concurrent holds at one table and one time slot through the public API. Then it repeats the experiment the way a plain application would write it.
+
+```bash
+docker run -d --name dastar-demo -e POSTGRES_USER=dastar_owner -e POSTGRES_PASSWORD=owner -p 55432:5432 postgres:18 -c max_connections=200
+until docker exec dastar-demo pg_isready -U dastar_owner; do sleep 1; done
+
+pnpm migrate --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
+docker exec dastar-demo psql -U dastar_owner -d postgres -c "alter role dastar_app password 'app'"
+
+pnpm race --owner-url postgres://dastar_owner:owner@localhost:55432/postgres --app-url postgres://dastar_app:app@localhost:55432/postgres --n 500
+pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --n 50
+
+docker rm -f dastar-demo
+```
+
+`race` sends 500 holds for the same slot, released together. It exits 0 only when exactly one wins, the other 499 receive `hold_conflict`, and a SQL check finds zero overlapping active rows.
+
+`naive` creates a throwaway database under a generated name, drops the exclusion constraint and disables the fit trigger there, and lets 50 workers each confirm the slot is free before any of them inserts. Every worker commits, and the same SQL check counts 1225 overlapping pairs. It never touches an existing database and drops only the one it created.
 
 ## How it works
 
@@ -44,18 +68,50 @@ Ranges use half-open bounds: a booking ending at 19:00 can be followed by one st
 
 The hold command claims an idempotency key, coordinates locks, clears expired overlapping holds, and attempts the booking in one transaction. The reservation, audit entries, outbox events, and stored outcome commit together.
 
-The application role has restricted table and column privileges. It cannot remove the exclusion constraint, edit audit rows, or directly deactivate occupancy rows. These protections apply within the documented application-role boundary; database owners remain trusted.
+The application role has restricted table and column privileges. It cannot remove the exclusion constraint, edit audit rows, or directly deactivate occupancy rows. These protections apply within the documented application-role boundary; database owners remain trusted. [SECURITY.md](SECURITY.md) states both boundaries, and [CORRECTNESS.md](CORRECTNESS.md) lists each invariant with the test that would show it broken.
+
+## Use the engine
+
+Inside this workspace the package is `@dastar/db`. Connect a pool as the application role and build one handle per process.
+
+```ts
+import { Pool } from "pg";
+import { createDastar } from "@dastar/db";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 16 });
+// Required: a connection the engine discards can still emit a late error, which pg-pool re-emits here.
+pool.on("error", (err) => console.error("pool error", err));
+
+const dastar = createDastar({ pool, cancellerConnectionString: process.env.DATABASE_URL });
+
+const held = await dastar.hold({
+  venueId, actor: "key:web", traceId: "req-1", idempotencyKey: "guest-42-friday",
+  partySize: 4, startsAt: "2030-06-07T19:00:00Z", durationMinutes: 90,
+  assignment: { kind: "unit", id: tableId },
+});
+
+if (held.ok) {
+  await dastar.confirm({ reservationId: held.receipt.reservationId, actor: "key:staff", traceId: "req-2", venueId });
+} else {
+  console.log(held.error.code); // hold_conflict, party_does_not_fit, blackout
+}
+```
+
+Each call checks out a pooled connection, runs one transaction, and returns the connection only after the command has settled. A command past its deadline is cancelled in the database and its connection is discarded. Commands never join a host transaction. Other failures throw a `DastarError` with a stable `code`. Authentication is the host's job: the library trusts the `actor` it is given.
 
 ## What exists today
 
 | Area | Implemented |
 |---|---|
 | Inventory | Venues, units with capacity ranges, and fixed unit combinations |
-| Reservations | Hold, confirm, cancel, batch expiry, token minting, and reads |
-| Retry handling | Stored hold outcomes scoped by venue, actor, and idempotency key, with a 24-hour retention policy |
+| Reservations | Hold, confirm, cancel, batch expiry, token minting, and reads, behind one pool-owned API |
+| Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
+| Retry handling | Stored hold outcomes scoped by venue, actor, and idempotency key, with a 24-hour retention policy; one retry on deadlock or serialization failure |
 | History | Trigger-written audit records, reservation versions, and transactional outbox writes |
-| Database protection | Exclusion and membership constraints, lifecycle guards, and restricted roles |
-| Verification | Raw-SQL attacks, transition tests, lifecycle tests, and controlled two-connection interleavings |
+| Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, and restricted roles |
+| Migrations | Ordered, checksummed files with lock timeouts; concurrent index builds with validated recovery |
+| Verification | Raw-SQL attacks, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
+| Harness | A race command and a naive counterexample, both runnable against any Postgres 18 |
 
 Authentication and capability checks belong to the host application. The current library does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and retention workers are still planned.
 
@@ -63,9 +119,11 @@ Authentication and capability checks belong to the host application. The current
 
 The [prototype report](docs/design/results-2026-09-10-prototype.md) records a passing Postgres 18 test run, eight controlled interleavings with no observed deadlocks, and initial single-connection timing samples. It includes the machine, commands, measurements, and open questions.
 
-Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load remain unmeasured. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap.
+The suites added since then cover the two findings that report left open. Commands own their connections, so a command can no longer commit or discard a host transaction. A capacity edit racing a confirmation near a hold's expiry is closed by lock order and a fit check on confirmation, with two-connection regression tests in both orders. They also cover a real two-connection deadlock that exercises the hold retry, confirmation racing holds, and the connection contract: timeouts, cancellation, and discarded connections.
 
-This is an early implementation for evaluation. Transaction composition and the interaction between capacity edits and confirmation near expiry still need validation before production integration. Commands run on connections they check out from a pool you supply and never join a host transaction.
+Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load remain unmeasured. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
+
+This is an early implementation for evaluation, not yet validated under production load.
 
 ## Where it fits
 
@@ -75,21 +133,24 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Complete the engine release:** resolve prototype findings, run the contention and recovery tests, and add a reference HTTP API and reproducible concurrency demo.
+1. **Complete the engine release:** run the contention and recovery measurements on target hardware and add a reference HTTP API.
 2. **Add availability:** schedules, blackouts, and assignment ranking.
 3. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
 4. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 
-The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the database prototype supplies the reservation and token primitives it will use.
+The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
 
 The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria.
 
 ## Explore the code
 
+- [Public API and connection contract](packages/db/src/handle.ts)
 - [Schema and migrations](packages/db/migrations)
 - [Reservation commands](packages/db/src/commands)
 - [Raw-SQL attack tests](packages/db/test/attack.test.ts)
-- [Concurrency interleavings](packages/db/test/interleavings.test.ts)
+- [Concurrency interleavings](packages/db/test/interleavings.test.ts) and [capacity edits versus confirmation](packages/db/test/capacity-expiry.test.ts)
+- [Race and naive harness](apps/harness)
+- [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
 
 Bug reports and reproducible counterexamples are welcome in [Issues](https://github.com/Zhan017/dastar/issues). Include the command, expected behavior, and observed result.

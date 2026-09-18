@@ -22,8 +22,9 @@ export type DastarOptions = {
   cancelGraceMs?: number;
   /**
    * Dedicated connection used only for pg_cancel_backend, same role as the pool. Never a pool client,
-   * because an exhausted pool must not block cancellation. Without it the handle tries a pool client for
-   * 500 ms and otherwise discards the connection after the grace period.
+   * because an exhausted pool must not block cancellation. Without it the handle borrows a pool client for
+   * the cancel request, acquired within 500 ms and discarded if the request fails or does not answer within
+   * the grace period.
    */
   cancellerConnectionString?: string;
 };
@@ -110,13 +111,37 @@ export function createDastar(opts: DastarOptions): Dastar {
     }
     const c = await acquire(500).catch(() => null);
     if (!c) return false;
-    const q = c.query("select pg_cancel_backend($1) as ok", [pid]).then((r) => r.rows[0].ok === true, () => false);
-    q.then(() => c.release(), () => c.release());
+    // same hazard as the command's own client: no pool listener while checked out
+    let fallbackError: Error | null = null;
+    const onError = (e: Error): void => { fallbackError = e; };
+    c.on("error", onError);
+    let released = false;
+    const finishFallback = (err?: Error): void => {
+      if (released) return;
+      released = true;
+      c.removeListener("error", onError);
+      const fatal = err ?? fallbackError;
+      if (fatal) c.release(fatal); else c.release();
+    };
+    const q = c.query("select pg_cancel_backend($1) as ok", [pid]).then(
+      (r) => ({ ok: r.rows[0].ok === true }),
+      (e: unknown) => ({ failed: e }),
+    );
     let limitTimer: NodeJS.Timeout | undefined;
-    const limit = new Promise<false>((res) => { limitTimer = setTimeout(() => res(false), cancelGraceMs); });
-    const ok = await Promise.race([q, limit]);
+    const limit = new Promise<"timeout">((res) => { limitTimer = setTimeout(() => res("timeout"), cancelGraceMs); });
+    const first = await Promise.race([q, limit]);
     clearTimeout(limitTimer);
-    return ok;
+    if (first === "timeout") {
+      // the cancel request itself stalled: this connection's state is unknown, so it is discarded, never returned
+      finishFallback(new Error(`dastar: cancel request did not answer within ${cancelGraceMs}ms; connection discarded`));
+      return false;
+    }
+    if ("failed" in first) {
+      finishFallback(first.failed instanceof Error ? first.failed : new Error(String(first.failed)));
+      return false;
+    }
+    finishFallback();
+    return first.ok;
   }
 
   async function settle(client: PoolClient, r: Settled<unknown>, finish: (err?: Error) => void): Promise<void> {

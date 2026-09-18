@@ -8,6 +8,7 @@
     "test:db": "pnpm --filter @dastar/db test",
     "typecheck": "pnpm -r typecheck",
     "race": "pnpm --filter @dastar/harness race",
-    "naive": "pnpm --filter @dastar/harness naive"
+    "naive": "pnpm --filter @dastar/harness naive",
+    "migrate": "pnpm --filter @dastar/harness migrate"
   }
 }
