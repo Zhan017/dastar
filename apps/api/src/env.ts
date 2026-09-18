@@ -13,4 +13,6 @@ export type Deps = {
   log?: (entry: LogEntry) => void;
   /** How long a key lookup or readiness check waits for a pooled connection. Default 5000. */
   acquireTimeoutMs?: number;
+  /** Deadline for a key lookup once it has a connection; past it the connection is discarded. Default 2000. */
+  readTimeoutMs?: number;
 };

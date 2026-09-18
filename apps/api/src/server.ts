@@ -10,6 +10,7 @@ const ConfigSchema = z.object({
   PORT: z.coerce.number().int().min(0).max(65535).default(8080),
   POOL_MAX: z.coerce.number().int().min(1).default(16),
   POOL_ACQUIRE_MS: z.coerce.number().int().min(1).default(5_000),
+  READ_TIMEOUT_MS: z.coerce.number().int().min(1).default(2_000),
   REQUEST_DEADLINE_MS: z.coerce.number().int().min(1).default(12_000),
 });
 export type Config = z.infer<typeof ConfigSchema>;
@@ -27,7 +28,7 @@ export function buildServer(config: Config) {
   const dastar = createDastar({
     pool, acquireTimeoutMs: config.POOL_ACQUIRE_MS, deadlineMs: config.REQUEST_DEADLINE_MS, cancellerConnectionString: config.DATABASE_URL,
   });
-  const app = createApp({ dastar, pool, migrationsDir: MIGRATIONS, acquireTimeoutMs: config.POOL_ACQUIRE_MS });
+  const app = createApp({ dastar, pool, migrationsDir: MIGRATIONS, acquireTimeoutMs: config.POOL_ACQUIRE_MS, readTimeoutMs: config.READ_TIMEOUT_MS });
   return { app, close: async (): Promise<void> => { await dastar.close(); await pool.end(); } };
 }
 

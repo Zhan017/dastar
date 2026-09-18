@@ -1,6 +1,5 @@
-import { readdir } from "node:fs/promises";
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
-import { DastarError } from "@dastar/db";
+import { DastarError, readMigrationFiles, type MigrationFile } from "@dastar/db";
 import type { Deps, Env } from "../env.js";
 import { withClient } from "../db.js";
 import { ApiProblem } from "../problem.js";
@@ -16,7 +15,7 @@ const live = createRoute({
 const ready = createRoute({
   method: "get",
   path: "/health/ready",
-  summary: "The database is reachable and at least as many migrations are applied as are shipped.",
+  summary: "The database is reachable and every shipped migration is applied with a matching checksum.",
   responses: {
     200: { description: "Ready", content: { "application/json": { schema: z.object({ status: z.literal("ready"), migrations: z.number().int() }) } } },
     503: { description: "Not ready", content: { "application/problem+json": { schema: ProblemSchema } } },
@@ -24,26 +23,34 @@ const ready = createRoute({
 });
 
 export function register(app: OpenAPIHono<Env>, deps: Deps): void {
-  const shipped = readdir(deps.migrationsDir).then((files) => files.filter((f) => /^\d{4}_.+\.sql$/.test(f)).length);
+  const shipped = readMigrationFiles(deps.migrationsDir);
   shipped.catch(() => undefined);
 
   app.openapi(live, (c) => c.json({ status: "live" as const }, 200));
 
   app.openapi(ready, async (c) => {
     const notReady = (detail: string): ApiProblem => new ApiProblem(503, "not_ready", detail, { "Retry-After": "1" });
-    let expected: number;
+    let required: MigrationFile[];
     try {
-      expected = await shipped;
+      required = await shipped;
     } catch {
       throw notReady("migration files unreadable");
     }
-    let applied: number;
+    let applied: Map<number, Buffer>;
     try {
-      applied = await withClient(deps.pool, 1_000, async (cl) => (await cl.query("select count(*)::int as n from dastar.schema_migration")).rows[0].n as number);
+      applied = await withClient(deps.pool, { acquireMs: 1_000, readMs: 1_000 }, async (cl) => {
+        const r = await cl.query("select version, checksum from dastar.schema_migration");
+        return new Map(r.rows.map((row) => [row.version as number, row.checksum as Buffer]));
+      });
     } catch (e) {
       throw notReady(e instanceof DastarError ? e.code : "database unreachable");
     }
-    if (applied < expected) throw notReady(`migrations applied ${applied} of ${expected}`);
-    return c.json({ status: "ready" as const, migrations: applied }, 200);
+    // every shipped migration must be there, unchanged; extra applied ones do not make up for a missing one
+    for (const m of required) {
+      const got = applied.get(m.version);
+      if (!got) throw notReady(`migration ${m.file} is not applied`);
+      if (!got.equals(m.checksum)) throw notReady(`migration ${m.file} differs from the applied one`);
+    }
+    return c.json({ status: "ready" as const, migrations: required.length }, 200);
   });
 }

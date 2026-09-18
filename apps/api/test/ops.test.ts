@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool, type Client } from "pg";
 import { serve } from "@hono/node-server";
-import { createDastar } from "@dastar/db";
+import { createDastar, readMigrationFiles } from "@dastar/db";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { createApp } from "../src/app.js";
@@ -44,19 +44,49 @@ describe("operations", () => {
     await api.close();
   });
 
-  it("not ready when the database is behind the shipped migrations", async () => {
+  it("not ready when the shipped set has a migration the database has not seen", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dastar-ready-"));
-    const shipped = (await readdir(MIGRATIONS)).filter((f) => /^\d{4}_.+\.sql$/.test(f)).length;
-    for (let k = 1; k <= shipped + 1; k++) await writeFile(join(dir, `${String(k).padStart(4, "0")}_x.sql`), "-- placeholder\n");
+    for (const m of await readMigrationFiles(MIGRATIONS)) await writeFile(join(dir, m.file), m.sql);
+    await writeFile(join(dir, "0099_extra.sql"), "-- transaction: yes\n-- impact: instant-exclusive\nselect 1;\n");
     const pool = new Pool({ connectionString: conn.app, max: 2, application_name: "api-ready-behind" });
     pool.on("error", () => undefined);
     const dastar = createDastar({ pool });
     const app = createApp({ dastar, pool, migrationsDir: dir, log: () => undefined });
     const r = await app.request("/health/ready");
     expect(r.status).toBe(503);
-    expect((await r.json() as { detail: string }).detail).toBe(`migrations applied ${shipped} of ${shipped + 1}`);
+    expect(await r.json()).toMatchObject({ code: "not_ready", detail: "migration 0099_extra.sql is not applied" });
     await dastar.close();
     await pool.end();
+  });
+
+  it("not ready when a shipped migration is missing, even if another row keeps the count the same", async () => {
+    const last = (await readMigrationFiles(MIGRATIONS)).at(-1)!;
+    const api = makeApi(conn, { appName: "api-ready-swap" });
+    await owner.query("update dastar.schema_migration set version = 9999 where version = $1", [last.version]);
+    try {
+      const r = await api.app.request("/health/ready");
+      expect(r.status).toBe(503);
+      expect(await r.json()).toMatchObject({ code: "not_ready", detail: `migration ${last.file} is not applied` });
+    } finally {
+      await owner.query("update dastar.schema_migration set version = $1 where version = 9999", [last.version]);
+    }
+    expect((await api.app.request("/health/ready")).status).toBe(200);
+    await api.close();
+  });
+
+  it("not ready when an applied migration differs from the shipped file", async () => {
+    const last = (await readMigrationFiles(MIGRATIONS)).at(-1)!;
+    const api = makeApi(conn, { appName: "api-ready-sum" });
+    await owner.query("update dastar.schema_migration set checksum = $2 where version = $1", [last.version, Buffer.from([0])]);
+    try {
+      const r = await api.app.request("/health/ready");
+      expect(r.status).toBe(503);
+      expect(await r.json()).toMatchObject({ code: "not_ready", detail: `migration ${last.file} differs from the applied one` });
+    } finally {
+      await owner.query("update dastar.schema_migration set checksum = $2 where version = $1", [last.version, last.checksum]);
+    }
+    expect((await api.app.request("/health/ready")).status).toBe(200);
+    await api.close();
   });
 
   it("not ready, and says so, when the migration files cannot be read", async () => {

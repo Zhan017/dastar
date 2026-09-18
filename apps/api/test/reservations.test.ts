@@ -55,6 +55,7 @@ describe("reservation routes", () => {
     const stale = await post(id, "cancel", { reason: "x", expected_version: 7 }, bearer(staff.key));
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ code: "version_conflict" });
+    expect((await post(id, "cancel", { reason: "x", expected_version: 3_000_000_000 }, bearer(staff.key))).status).toBe(400);
     const ok = await post(id, "cancel", { reason: "guest called", expected_version: 1 }, bearer(staff.key));
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ receipt: { reservation_id: id, status: "cancelled", version: 2 } });
@@ -96,8 +97,17 @@ describe("reservation routes", () => {
     const view = await (await get(id, staff)).json() as { history: { actor: string }[] };
     expect(view.history.at(-1)!.actor).toBe(`token:${id}`);
     const reuse = await post(id, "confirm", { confirm_token }, {});
-    expect(reuse.status).toBe(409);
-    expect(await reuse.json()).toMatchObject({ code: "invalid_transition" });
+    // a used token, a wrong token, and an absent reservation are one and the same refusal
+    const refusal = async (r: Response) => { const b = await r.json() as Record<string, unknown>; delete b.trace_id; return { status: r.status, body: b }; };
+    const usedToken = await refusal(reuse);
+    expect(usedToken).toMatchObject({ status: 403, body: { code: "forbidden" } });
+    expect(await refusal(await post(NIL, "confirm", { confirm_token }, {}))).toEqual(usedToken);
+    expect(await refusal(await post(await held(), "confirm", { confirm_token: "guess" }, {}))).toEqual(usedToken);
+    expect(await refusal(await post(id, "confirm", { confirm_token: "guess" }, {}))).toEqual(usedToken);
+    // a caller with a key still gets the state-specific answer
+    const byKey = await post(id, "confirm", {}, bearer(staff.key));
+    expect(byKey.status).toBe(409);
+    expect(await byKey.json()).toMatchObject({ code: "invalid_transition" });
   });
 
   it("a key without confirm may carry a token; a token dies with a cancellation", async () => {
@@ -109,7 +119,8 @@ describe("reservation routes", () => {
     const t2 = (await (await post(id2, "confirm-token", {}, bearer(staff.key))).json() as { confirm_token: string }).confirm_token;
     expect((await post(id2, "cancel", { reason: "changed plans" }, bearer(staff.key))).status).toBe(200);
     const dead = await post(id2, "confirm", { confirm_token: t2 }, {});
-    expect(dead.status).toBe(409);
-    expect(await dead.json()).toMatchObject({ code: "invalid_transition" });
+    expect(dead.status).toBe(403);
+    expect(await dead.json()).toMatchObject({ code: "forbidden", detail: "confirm token does not match" });
+    expect((await post(id2, "confirm", { confirm_token: "guess" }, {})).status).toBe(403);
   });
 });

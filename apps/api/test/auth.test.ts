@@ -74,13 +74,42 @@ describe("keys and authorization", () => {
     const small = new Pool({ connectionString: conn.app, max: 1, application_name: "api-auth-small" });
     small.on("error", () => undefined);
     const held = await small.connect();
-    const waited = withClient(small, 150, async (c) => (await c.query("select 1 as one")).rows[0].one as number).then(() => "resolved", (e: unknown) => e);
+    const waited = withClient(small, { acquireMs: 150, readMs: 1_000 }, async (c) => (await c.query("select 1 as one")).rows[0].one as number).then(() => "resolved", (e: unknown) => e);
     expect(await waited).toMatchObject({ code: "pool_timeout", retryable: true });
     held.release();
-    expect(await withClient(small, 1_000, async (c) => (await c.query("select 1 as one")).rows[0].one as number)).toBe(1);
-    const failed = withClient(small, 1_000, async (c) => { await c.query("select * from dastar.no_such_table"); return 0; }).then(() => "resolved", (e: unknown) => e);
+    expect(await withClient(small, { acquireMs: 1_000, readMs: 1_000 }, async (c) => (await c.query("select 1 as one")).rows[0].one as number)).toBe(1);
+    const failed = withClient(small, { acquireMs: 1_000, readMs: 1_000 }, async (c) => { await c.query("select * from dastar.no_such_table"); return 0; }).then(() => "resolved", (e: unknown) => e);
     expect(await failed).toMatchObject({ code: "42P01" });
     expect(small.totalCount).toBe(0);
+    await small.end();
+  });
+
+  it("withClient puts a deadline on the read itself and discards a connection that stops answering", async () => {
+    // a client whose query never settles stands in for a stalled network connection
+    const releases: (Error | undefined)[] = [];
+    let listeners = 0;
+    const stalled = {
+      query: () => new Promise<never>(() => undefined),
+      on: () => { listeners += 1; return stalled; },
+      removeListener: () => { listeners -= 1; return stalled; },
+      release: (err?: Error) => { releases.push(err); },
+    };
+    const stubPool = { connect: async () => stalled } as unknown as Pool;
+    const t0 = Date.now();
+    const stuck = withClient(stubPool, { acquireMs: 1_000, readMs: 150 }, async (c) => (await c.query("select 1")).rows).then(() => "resolved", (e: unknown) => e);
+    expect(await stuck).toMatchObject({ code: "timeout", retryable: true });
+    expect(Date.now() - t0).toBeLessThan(1_500);
+    expect(releases).toHaveLength(1);
+    expect(releases[0]).toBeInstanceOf(Error);
+    expect(listeners).toBe(0);
+
+    // the same against a real connection: the read outlives its deadline, the connection is discarded, the pool recovers
+    const small = new Pool({ connectionString: conn.app, max: 1, application_name: "api-auth-slow" });
+    small.on("error", () => undefined);
+    const slow = withClient(small, { acquireMs: 1_000, readMs: 200 }, async (c) => (await c.query("select pg_sleep(3)")).rowCount).then(() => "resolved", (e: unknown) => e);
+    expect(await slow).toMatchObject({ code: "timeout" });
+    expect(small.totalCount).toBe(0);
+    expect(await withClient(small, { acquireMs: 1_000, readMs: 1_000 }, async (c) => (await c.query("select 1 as one")).rows[0].one as number)).toBe(1);
     await small.end();
   });
 });

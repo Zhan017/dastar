@@ -18,24 +18,40 @@ async function acquire(pool: Pool, acquireMs: number): Promise<PoolClient> {
   }
 }
 
+export type ReadLimits = { acquireMs: number; readMs: number };
+
 /**
- * One short read outside the engine handle: a bounded wait for a connection, an error listener while it is
- * checked out (pg-pool detaches its own), and discard instead of return whenever the read failed or the
- * connection reported an error. The role's statement timeout bounds the read itself.
+ * One short read outside the engine handle: a bounded wait for a connection, a deadline on the read itself,
+ * an error listener while the client is checked out (pg-pool detaches its own), and exactly one release.
+ * The database's statement timeout cannot bound a connection that has stopped answering, so a read past its
+ * deadline discards the connection; so does a failed read or a connection that reported an error.
  */
-export async function withClient<T>(pool: Pool, acquireMs: number, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await acquire(pool, acquireMs);
+export async function withClient<T>(pool: Pool, limits: ReadLimits, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await acquire(pool, limits.acquireMs);
   let connectionError: Error | null = null;
   const onError = (e: Error): void => { connectionError = e; };
   client.on("error", onError);
-  try {
-    const out = await fn(client);
+  let released = false;
+  const finish = (err?: Error): void => {
+    if (released) return;
+    released = true;
     client.removeListener("error", onError);
-    if (connectionError) client.release(connectionError); else client.release();
-    return out;
-  } catch (e) {
-    client.removeListener("error", onError);
-    client.release(e instanceof Error ? e : new Error(String(e)));
-    throw e;
+    const fatal = err ?? connectionError;
+    if (fatal) client.release(fatal); else client.release();
+  };
+  const work = fn(client).then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e }));
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"deadline">((res) => { timer = setTimeout(() => res("deadline"), limits.readMs); });
+  const first = await Promise.race([work, deadline]);
+  clearTimeout(timer);
+  if (first === "deadline") {
+    finish(new Error(`dastar: read did not answer within ${limits.readMs}ms; connection discarded`));
+    throw new DastarError("timeout", `read exceeded ${limits.readMs}ms`, undefined, true);
   }
+  if (!first.ok) {
+    finish(first.e instanceof Error ? first.e : new Error(String(first.e)));
+    throw first.e;
+  }
+  finish();
+  return first.v;
 }
