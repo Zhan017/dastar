@@ -60,6 +60,7 @@ describe("keys and authorization", () => {
     const ok = await app.request(`/venues/${VENUE_A}/probe`, { headers: bearer(scoped.key) });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ key_id: scoped.id });
+    expect((await app.request(`/venues/${VENUE_A}/probe`, { headers: { authorization: `bearer ${scoped.key}` } })).status).toBe(200);
   });
 
   it("a token-capable route admits no key, validates a presented key, and does not consult its capabilities", async () => {

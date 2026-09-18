@@ -42,7 +42,7 @@ Commands run on connections they check out from the pool the host supplies and r
 
 ## Reference API
 
-Keys are 32 random bytes shown once at creation; the database stores their SHA-256, a capability list (`hold`, `confirm`, `cancel`, `read`), and an optional venue list. A revoked key stops working at the next request. Authorization is declared per route, never as one blanket rule. A venue or reservation outside a key's venues reads as absent. Confirmation accepts either a key with `confirm` or a single-use token and no key; with a token, an absent reservation and a wrong token answer identically. No response other than token minting carries a token, and no log entry carries a token or a key.
+Keys are 32 random bytes shown once at creation; the database stores their SHA-256, a capability list (`hold`, `confirm`, `cancel`, `read`), and an optional venue list. A revoked key stops working at the next request. Authorization is declared per route, never as one blanket rule. A venue or reservation outside a key's venues reads as absent. Confirmation accepts either a key with `confirm` or a single-use token. With a token no key is needed; a presented key is checked for validity and then ignored. While a reservation is held, an absent reservation and a wrong token answer identically. Once it is no longer held, a caller who knows its id and sends any token learns that status. Reservation ids are random and unguessable, and a version cannot be probed this way. No response other than token minting carries a token, and no log entry carries a token or a key.
 
 ## Reporting a vulnerability
 

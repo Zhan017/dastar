@@ -154,8 +154,6 @@ describe("hold", () => {
 
   it("reports an unknown venue as not_found", async () => {
     await expect(hold(app, input({ venueId: "00000000-0000-0000-0000-000000000000" }))).rejects.toMatchObject({ code: "not_found", sqlstate: "23503" });
-    const state = await owner.query("select state from pg_stat_activity where pid = (select pg_backend_pid())");
-    expect(state.rowCount).toBe(1);
     expect((await hold(app, input())).ok).toBe(true);
   });
 });

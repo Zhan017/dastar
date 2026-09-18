@@ -16,7 +16,7 @@ const live = createRoute({
 const ready = createRoute({
   method: "get",
   path: "/health/ready",
-  summary: "The database is reachable and every shipped migration is applied.",
+  summary: "The database is reachable and at least as many migrations are applied as are shipped.",
   responses: {
     200: { description: "Ready", content: { "application/json": { schema: z.object({ status: z.literal("ready"), migrations: z.number().int() }) } } },
     503: { description: "Not ready", content: { "application/problem+json": { schema: ProblemSchema } } },
@@ -32,9 +32,13 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   app.openapi(ready, async (c) => {
     const notReady = (detail: string): ApiProblem => new ApiProblem(503, "not_ready", detail, { "Retry-After": "1" });
     let expected: number;
-    let applied: number;
     try {
       expected = await shipped;
+    } catch {
+      throw notReady("migration files unreadable");
+    }
+    let applied: number;
+    try {
       applied = await withClient(deps.pool, 1_000, async (cl) => (await cl.query("select count(*)::int as n from dastar.schema_migration")).rows[0].n as number);
     } catch (e) {
       throw notReady(e instanceof DastarError ? e.code : "database unreachable");

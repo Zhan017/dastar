@@ -37,7 +37,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   const server = serve({ fetch: built.app.fetch, port: config.PORT }, (info) => {
     console.log(JSON.stringify({ ts: new Date().toISOString(), msg: "listening", port: info.port }));
   });
-  const stop = (): void => { server.close(() => { void built.close().then(() => process.exit(0)); }); };
+  const stop = (): void => { server.close(() => { void built.close().then(() => process.exit(0), () => process.exit(1)); }); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 }

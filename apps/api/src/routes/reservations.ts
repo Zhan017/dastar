@@ -72,7 +72,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
 
   const confirm = createRoute({
     method: "post", path: "/v1/reservations/{id}/confirm",
-    summary: "Confirm a held reservation with a key that has the confirm capability, or with a confirm token and no key.",
+    summary: "Confirm a held reservation with a key that has the confirm capability, or with a confirm token and no key. expected_version applies to the key path only.",
     security: [{ Bearer: [] }, {}], middleware: [requireCapability(deps, "confirm", { orToken: true })] as const,
     request: { params: IdParam, body: { required: true, content: json(ConfirmBodySchema) } },
     responses: { 200: { description: "Confirmed", content: json(ReceiptResponseSchema) }, ...problemResponses },
@@ -82,10 +82,10 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const body = c.req.valid("json");
     const version = body.expected_version !== undefined ? { expectedVersion: body.expected_version } : {};
     if (body.confirm_token !== undefined) {
-      // the token is the credential: no key, no scope; absent and mismatched read the same
+      // the token is the credential: no key, no scope, no version to assert; absent and mismatched read the same
       const view = await deps.dastar.getReservation(id);
       if (!view) throw new ApiProblem(403, "forbidden", TOKEN_REFUSED);
-      const receipt = await deps.dastar.confirm({ reservationId: id, actor: "token", traceId: c.get("traceId"), venueId: view.venueId, confirmToken: body.confirm_token, ...version });
+      const receipt = await deps.dastar.confirm({ reservationId: id, actor: "token", traceId: c.get("traceId"), venueId: view.venueId, confirmToken: body.confirm_token });
       return c.json({ receipt: toReceipt(receipt) }, 200);
     }
     const key = requireKey(c);

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { bodyLimit } from "hono/body-limit";
 import type { Deps, Env, LogEntry } from "./env.js";
 import { ApiProblem, fromUnknown, problemBody } from "./problem.js";
 import { register as registerHealth } from "./routes/health.js";
@@ -31,6 +32,9 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
       duration_ms: Date.now() - started, trace_id: c.get("traceId"), key_id: c.get("key")?.id ?? null,
     });
   });
+
+  // the confirm route parses a body without any credential, so the bound applies to every route
+  app.use("*", bodyLimit({ maxSize: 64 * 1024, onError: () => { throw new ApiProblem(400, "validation", "request body too large"); } }));
 
   app.onError((err, c) => {
     const p = fromUnknown(err);

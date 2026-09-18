@@ -13,3 +13,4 @@ Known costs and gaps, each with the decision or measurement behind it.
 - **Quantity inventory is out of scope.** Dastar models exclusive units, not pools of identical tickets.
 - **The reference API has no rate limiting.** The per-actor live-holds cap is the only built-in brake; put a limiter in front of it.
 - **Key lookups and readiness are plain reads.** They wait a bounded time for a connection and rely on the role's statement timeout rather than the engine's deadline and cancellation.
+- **Request bodies are limited to 64 KB**, and numeric inputs have ceilings; larger values are refused as validation errors.

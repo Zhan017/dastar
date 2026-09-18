@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { HTTPException } from "hono/http-exception";
 import { DastarError } from "@dastar/db";
 import { ApiProblem, STATUS_BY_CODE, problemFor, fromUnknown, problemBody } from "../src/problem.js";
 
@@ -23,7 +24,7 @@ describe("problem details", () => {
 
   it("renders a body with type, code, status, trace id, and extensions; 500 omits detail", () => {
     const p = problemFor("hold_conflict", "taken", { replayed: true });
-    expect(problemBody(p, "t1")).toEqual({ type: "https://dastar.dev/errors/hold_conflict", title: "hold conflict", status: 409, code: "hold_conflict", detail: "taken", trace_id: "t1", replayed: true });
+    expect(problemBody(p, "t1")).toEqual({ type: "https://dastar.dev/errors/hold_conflict", title: "hold conflict", status: 409, code: "hold_conflict", detail: "the assignment is already taken for an overlapping time range", trace_id: "t1", replayed: true });
     expect(problemBody(problemFor("internal", "secret cause"), "t2")).toEqual({ type: "https://dastar.dev/errors/internal", title: "internal", status: 500, code: "internal", trace_id: "t2" });
   });
 
@@ -32,5 +33,7 @@ describe("problem details", () => {
     const own = new ApiProblem(401, "unauthorized");
     expect(fromUnknown(own)).toBe(own);
     expect(fromUnknown(new Error("boom"))).toMatchObject({ status: 500, code: "internal" });
+    expect(fromUnknown(new HTTPException(415, { message: "unsupported" }))).toMatchObject({ status: 400, code: "validation" });
+    expect(fromUnknown(new DastarError("party_does_not_fit", "party of 9 does not fit"))).toMatchObject({ status: 422, message: "party of 9 does not fit" });
   });
 });

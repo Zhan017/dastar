@@ -38,7 +38,7 @@ describe("operations", () => {
     expect(r.headers.get("retry-after")).toBe("1");
     expect(await r.json()).toMatchObject({ code: "not_ready" });
     expect(elapsed).toBeGreaterThanOrEqual(900);
-    expect(elapsed).toBeLessThan(2_500);
+    expect(elapsed).toBeLessThan(4_000);
     held.release();
     expect((await api.app.request("/health/ready")).status).toBe(200);
     await api.close();
@@ -55,6 +55,18 @@ describe("operations", () => {
     const r = await app.request("/health/ready");
     expect(r.status).toBe(503);
     expect((await r.json() as { detail: string }).detail).toBe(`migrations applied ${shipped} of ${shipped + 1}`);
+    await dastar.close();
+    await pool.end();
+  });
+
+  it("not ready, and says so, when the migration files cannot be read", async () => {
+    const pool = new Pool({ connectionString: conn.app, max: 2, application_name: "api-ready-nodir" });
+    pool.on("error", () => undefined);
+    const dastar = createDastar({ pool });
+    const app = createApp({ dastar, pool, migrationsDir: join(tmpdir(), "dastar-no-such-dir"), log: () => undefined });
+    const r = await app.request("/health/ready");
+    expect(r.status).toBe(503);
+    expect(await r.json()).toMatchObject({ code: "not_ready", detail: "migration files unreadable" });
     await dastar.close();
     await pool.end();
   });

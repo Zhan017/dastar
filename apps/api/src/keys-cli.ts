@@ -26,7 +26,12 @@ export async function runKeysCli(argv: string[], env: Record<string, string | un
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const created = await runKeysCli(process.argv.slice(2), process.env);
-  console.log(JSON.stringify(created));
-  console.error("Store the key now; only its hash is kept.");
+  try {
+    const created = await runKeysCli(process.argv.slice(2), process.env);
+    console.log(JSON.stringify(created));
+    console.error("Store the key now; only its hash is kept.");
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
 }

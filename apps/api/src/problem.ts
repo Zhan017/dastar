@@ -1,3 +1,4 @@
+import { HTTPException } from "hono/http-exception";
 import { DastarError, type DastarErrorCode } from "@dastar/db";
 
 export type ProblemStatus = 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 503;
@@ -51,14 +52,31 @@ export const STATUS_BY_CODE = {
   combo_immutable: { status: 500 },
 } as const satisfies Record<DastarErrorCode, Mapping>;
 
+/**
+ * Detail text the API owns. For these codes the engine's message is the database's own sentence, which
+ * explains nothing to a client; every other code carries text written by a trigger or a command and passes through.
+ */
+const DETAIL_BY_CODE: Partial<Record<DastarErrorCode, string>> = {
+  hold_conflict: "the assignment is already taken for an overlapping time range",
+  forbidden_write: "the operation is not permitted",
+  serialization_conflict: "the operation conflicted with a concurrent one; retry",
+  timeout: "the operation timed out; retry",
+  pool_timeout: "the service is busy; retry",
+  overlap_set_too_large: "too many overlapping reservations to examine; retry",
+  duration_out_of_range: "the duration must be between 5 minutes and 12 hours",
+  combo_too_large: "a combination has between 2 and 6 units",
+};
+
 export function problemFor(code: DastarErrorCode, detail?: string, extensions: Record<string, unknown> = {}): ApiProblem {
   const m: Mapping = STATUS_BY_CODE[code];
-  return new ApiProblem(m.status, code, detail, m.retryAfter === undefined ? {} : { "Retry-After": m.retryAfter }, extensions);
+  return new ApiProblem(m.status, code, DETAIL_BY_CODE[code] ?? detail, m.retryAfter === undefined ? {} : { "Retry-After": m.retryAfter }, extensions);
 }
 
 export function fromUnknown(e: unknown): ApiProblem {
   if (e instanceof ApiProblem) return e;
   if (e instanceof DastarError) return problemFor(e.code, e.message);
+  // the framework's own rejections: unsupported media type, malformed or missing JSON, oversized body
+  if (e instanceof HTTPException && e.status < 500) return new ApiProblem(400, "validation", e.message);
   return new ApiProblem(500, "internal");
 }
 

@@ -84,6 +84,7 @@ describe("reservation routes", () => {
 
     const wrong = await post(id, "confirm", { confirm_token: "not-the-token" }, {});
     expect(wrong.status).toBe(403);
+    expect((await post(id, "confirm", { confirm_token: "not-the-token", expected_version: 99 }, {})).status).toBe(403);
     const missing = await post(NIL, "confirm", { confirm_token }, {});
     expect(missing.status).toBe(403);
     expect((await missing.json() as { detail: string }).detail).toBe((await (await post(id, "confirm", { confirm_token: "still-wrong" }, {})).json() as { detail: string }).detail);

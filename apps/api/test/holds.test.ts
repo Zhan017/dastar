@@ -56,7 +56,10 @@ describe("POST /v1/venues/{id}/holds", () => {
     const conflict = await send(b, "h3-b");
     expect(conflict.status).toBe(409);
     expect(conflict.headers.get("content-type")).toBe("application/problem+json");
-    expect(await conflict.json()).toMatchObject({ code: "hold_conflict", status: 409, replayed: false });
+    const conflictBody = await conflict.json();
+    expect(conflictBody).toMatchObject({ code: "hold_conflict", status: 409, replayed: false, detail: "the assignment is already taken for an overlapping time range" });
+    expect(conflict.headers.get("x-trace-id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(api.lines.at(-1)).toMatchObject({ status: 409, key_id: main.id });
     expect(await (await send(b, "h3-b")).json()).toMatchObject({ code: "hold_conflict", replayed: true });
     const misfit = await send(body({ party_size: 9 }), "h3-c");
     expect(misfit.status).toBe(422);
@@ -73,6 +76,8 @@ describe("POST /v1/venues/{id}/holds", () => {
     expect(detail).toContain("party_size");
     expect(detail).toContain("starts_at");
     expect((await api.app.request("/v1/venues/not-a-uuid/holds", jsonInit("POST", body(), { ...bearer(main.key), "idempotency-key": "h4-b" }))).status).toBe(400);
+    expect((await send(body({ duration_minutes: 200_000_000_000 }), "h4-c")).status).toBe(400);
+    expect((await send(body({ party_size: 1_000_000_000_000 }), "h4-d")).status).toBe(400);
   });
 
   it("403 without the hold capability, 404 outside the key's venues, 404 for an unknown venue", async () => {
@@ -92,5 +97,18 @@ describe("POST /v1/venues/{id}/holds", () => {
     expect(sixth.status).toBe(429);
     expect(sixth.headers.get("retry-after")).toBe("1");
     expect(await sixth.json()).toMatchObject({ code: "too_many_live_holds" });
+  });
+
+  it("answers 400, never 500, for a wrong media type, malformed JSON, a missing body, and an oversized body", async () => {
+    const headers = { ...bearer(main.key), "idempotency-key": "h6" };
+    const plain = await api.app.request(path(), { method: "POST", headers: { ...headers, "content-type": "text/plain" }, body: "x" });
+    const broken = await api.app.request(path(), { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{not json" });
+    const empty = await api.app.request(path(), { method: "POST", headers: { ...headers, "content-type": "application/json" } });
+    const huge = await api.app.request(path(), jsonInit("POST", { ...body(), external_ref: "x".repeat(70_000) }, headers));
+    for (const r of [plain, broken, empty, huge]) {
+      expect(r.status).toBe(400);
+      expect(r.headers.get("content-type")).toBe("application/problem+json");
+      expect(await r.json()).toMatchObject({ code: "validation" });
+    }
   });
 });

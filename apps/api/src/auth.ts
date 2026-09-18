@@ -9,7 +9,7 @@ import { withClient } from "./db.js";
 export type Capability = "hold" | "confirm" | "cancel" | "read";
 
 const KEY_RE = /^dsk_[A-Za-z0-9_-]{43}$/;
-const BEARER_RE = /^Bearer (\S+)$/;
+const BEARER_RE = /^Bearer (\S+)$/i;
 
 export function hashKey(presented: string): Buffer {
   return createHash("sha256").update(presented).digest();

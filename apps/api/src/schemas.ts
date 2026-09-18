@@ -31,9 +31,9 @@ export function toReceipt(r: Receipt): z.infer<typeof ReceiptSchema> {
 export const IdParam = z.object({ id: z.guid().openapi({ param: { name: "id", in: "path" } }) });
 
 export const HoldBodySchema = z.object({
-  party_size: z.number().int().min(1),
+  party_size: z.number().int().min(1).max(10_000),
   starts_at: z.iso.datetime({ offset: true }),
-  duration_minutes: z.number().int().min(1),
+  duration_minutes: z.number().int().min(1).max(100_000),
   assignment: z.object({ kind: z.enum(["unit", "combo"]), id: z.guid() }),
   external_ref: z.string().min(1).max(200).optional(),
 }).openapi("HoldRequest");
@@ -48,7 +48,7 @@ export const ReservationSchema = z.object({
 }).openapi("Reservation");
 
 export const ReceiptResponseSchema = z.object({ receipt: ReceiptSchema }).openapi("ReceiptResponse");
-export const CancelBodySchema = z.object({ reason: z.string().min(1).max(500), expected_version: z.number().int().min(1).optional() }).openapi("CancelRequest");
-export const ConfirmBodySchema = z.object({ confirm_token: z.string().min(1).max(200).optional(), expected_version: z.number().int().min(1).optional() }).openapi("ConfirmRequest");
-export const MintBodySchema = z.object({ expected_version: z.number().int().min(1).optional() }).openapi("ConfirmTokenRequest");
+export const CancelBodySchema = z.object({ reason: z.string().min(1).max(500), expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("CancelRequest");
+export const ConfirmBodySchema = z.object({ confirm_token: z.string().min(1).max(200).optional(), expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("ConfirmRequest");
+export const MintBodySchema = z.object({ expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("ConfirmTokenRequest");
 export const MintResponseSchema = z.object({ confirm_token: z.string(), version: z.number().int() }).openapi("ConfirmTokenResponse");
