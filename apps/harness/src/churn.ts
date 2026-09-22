@@ -41,8 +41,11 @@ export type ChurnSample = {
   heapBytes: number; exclusionIndexBytes: number; totalBytes: number;
   heapDeadTuplePercent: number; heapFreePercent: number; indexFreePercent: number;
   nLiveTup: number; nDeadTup: number; autovacuumCount: number; autoanalyzeCount: number; lastAutovacuum: string | null;
-  walBytes: number;
-  /** Holds that were granted, and holds refused as conflicts, kept apart: a refusal is cheaper, so a shift in their mix would move a shared percentile on its own. */
+  /** Cluster-wide WAL position in bytes; only the difference between two samples is this run's WAL. */
+  walPosition: number;
+  /** How long the sample's own statistics query took. */
+  sampleMs: number;
+  /** Holds that were granted, and holds refused as conflicts, kept apart: a refusal is cheaper, so a shift in their mix would move a shared percentile on its own. Each distribution covers only the holds answered since the previous sample. */
   holdOkLatencyMs: Dist; holdConflictLatencyMs: Dist;
 };
 /** invalid: the workload itself failed, so the storage numbers describe a broken run and are not judged. */
@@ -55,8 +58,12 @@ export type ChurnReport = {
   /**
    * After the last sample and outside the verdict: dead holds left over are expired in the same batch size,
    * so the database is left tidy. `pendingDeadAtEnd` is what the measured run left behind; it is a result.
+   * A cleanup that does not finish inside its budget is reported as `cleared: false`, not thrown: the report
+   * is returned either way.
    */
-  cleanup: { pendingDeadAtEnd: number; batches: number; expired: number; ms: number };
+  cleanup: { pendingDeadAtEnd: number; batches: number; expired: number; ms: number; cleared: boolean };
+  /** Set when the sampling loop itself failed; the verdict reads invalid rather than trusting a broken sample. */
+  sampleError: string | null;
   /** owner-aged: holds left to expire were moved to the edge of expiry by the owner role; natural-ttl: they waited out the venue's TTL. */
   expiry: { mode: "natural-ttl" | "owner-aged"; ttlSeconds: number; ageMs: number | null; aged: number; ageErrors: number };
   samples: ChurnSample[]; verdict: ChurnVerdict; rules: string[];
@@ -73,7 +80,7 @@ const SAMPLE_SQL = `
     h.dead_tuple_percent as heap_dead_pct, h.free_percent as heap_free_pct, i.free_percent as index_free_pct,
     s.n_live_tup::float8 as n_live, s.n_dead_tup::float8 as n_dead, s.autovacuum_count::int as autovacuum_count,
     s.autoanalyze_count::int as autoanalyze_count, s.last_autovacuum,
-    pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::float8 as wal_bytes
+    pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::float8 as wal_position
   from pg_stat_user_tables s,
        public.pgstattuple('dastar.reservation_unit') h,
        public.pgstattuple('dastar.reservation_unit_no_overlap') i
@@ -82,8 +89,9 @@ const SAMPLE_SQL = `
 /** This harness's reading of the design's provisional pass condition (section 15.1); the thresholds are its own and provisional. */
 export const CHURN_RULES: readonly string[] = [
   "windows: 'before' is progress 0.15 to 0.40, ahead of the sweeper-off phase (0.40 to 0.60); 'after' is progress 0.75 to 1.00",
-  "invalid: any operation answered outside hold ok or hold_conflict, cancel ok, confirm ok; any sweeper error; a sweeper that never ran; any failed aging statement; or no hold succeeded",
+  "invalid: any operation answered outside hold ok or hold_conflict, cancel ok, confirm ok; any sweeper error; a sweeper that never ran; any failed aging statement; a sampler failure; or no hold succeeded",
   "inconclusive: fewer than five samples in either window; fewer than three autovacuum runs on reservation_unit; a sample with too few granted holds to state p95",
+  "inconclusive: neither of the design's bounds was reached (1800 s or 100 000 operations)",
   "inconclusive: mean active unit rows after is outside 0.75 to 1.25 times the mean before, so the windows are not comparable",
   "inconclusive: dead holds did not pile up while the sweeper was off (peak under 10, or under three times the mean before)",
   "fail: dead holds were not cleared afterwards (mean after above 10 and above twice the mean before)",
@@ -108,13 +116,17 @@ export function fittedRise(ys: readonly number[]): number {
   return (num / den) * (n - 1);
 }
 
-export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Readonly<Record<string, number>>; sweepErrors: number; sweepTicks: number; ageErrors: number }): ChurnVerdict {
+/** The design's bounded churn run: 1800 s or 100 000 operations, whichever comes first (design 15.1). */
+export const DESIGN_CHURN = { seconds: 1_800, ops: 100_000 } as const;
+
+export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Readonly<Record<string, number>>; sweepErrors: number; sweepTicks: number; ageErrors: number; sampleError: string | null; elapsedS: number; ops: number }): ChurnVerdict {
   const { samples, byCode } = run;
   const broken: string[] = [];
   for (const [code, n] of Object.entries(byCode)) if (!code.startsWith("sweep:") && !EXPECTED_CODES.has(code)) broken.push(`${n} operation(s) answered ${code}`);
   if (run.sweepErrors > 0) broken.push(`${run.sweepErrors} sweeper error(s)`);
   if (run.sweepTicks === 0) broken.push("the sweeper never ran");
   if (run.ageErrors > 0) broken.push(`${run.ageErrors} aging statement(s) failed`);
+  if (run.sampleError !== null) broken.push(`the sampler failed: ${run.sampleError}`);
   if ((byCode["hold:ok"] ?? 0) === 0) broken.push("no hold succeeded");
   if (broken.length > 0) return { verdict: "invalid", reasons: broken };
 
@@ -125,6 +137,7 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
   if (before.length < 5 || after.length < 5) open.push(`too few samples: ${before.length} before, ${after.length} after`);
   const vacuums = samples.length === 0 ? 0 : samples[samples.length - 1]!.autovacuumCount - samples[0]!.autovacuumCount;
   if (vacuums < 3) open.push(`only ${vacuums} autovacuum runs on reservation_unit during the run`);
+  if (run.elapsedS < DESIGN_CHURN.seconds && run.ops < DESIGN_CHURN.ops) open.push(`ran for ${run.elapsedS.toFixed(0)} s and ${run.ops} operations; the design's bounded run is ${DESIGN_CHURN.seconds} s or ${DESIGN_CHURN.ops} operations, whichever comes first`);
   if ([...before, ...after].some((x) => x.holdOkLatencyMs.p95 === null)) open.push("a sample has too few granted holds to state p95");
   if (open.length > 0) return { verdict: "inconclusive", reasons: open };
 
@@ -235,7 +248,9 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
   }
 
   async function sample(): Promise<void> {
+    const sampleStarted = performance.now();
     const x = (await deps.owner.query(SAMPLE_SQL)).rows[0];
+    const sampleMs = performance.now() - sampleStarted;
     const ok = granted;
     const conflict = refused;
     granted = [];
@@ -247,10 +262,11 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
       heapDeadTuplePercent: x.heap_dead_pct, heapFreePercent: x.heap_free_pct, indexFreePercent: x.index_free_pct,
       nLiveTup: x.n_live, nDeadTup: x.n_dead, autovacuumCount: x.autovacuum_count, autoanalyzeCount: x.autoanalyze_count,
       lastAutovacuum: x.last_autovacuum === null ? null : new Date(x.last_autovacuum as string).toISOString(),
-      walBytes: x.wal_bytes, holdOkLatencyMs: dist(exact(ok)), holdConflictLatencyMs: dist(exact(conflict)),
+      walPosition: x.wal_position, sampleMs, holdOkLatencyMs: dist(exact(ok)), holdConflictLatencyMs: dist(exact(conflict)),
     });
   }
   const sampler: { wake: (() => void) | null } = { wake: null };
+  let sampleError: string | null = null;
   const sampleLoop = (async (): Promise<void> => {
     await sample();
     while (!done) {
@@ -260,7 +276,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
       });
       if (!done) await sample();
     }
-  })();
+  })().catch((e) => { sampleError = (e as Error).message; });
 
   try {
     await Promise.all(Array.from({ length: opts.workers }, (_, w) => workerLoop(w)));
@@ -286,18 +302,24 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
   const limit = (opts.sweep ?? DESIGN_SWEEP).limit;
   let cleanupBatches = 0;
   let cleanupExpired = 0;
-  await waitFor(async () => {
-    cleanupExpired += (await sweeper.expireDue({ limit })).expired.length;
-    cleanupBatches += 1;
-    return ((await deps.owner.query(dueSql, horizon)).rows[0].n as number) === 0;
-  }, 60_000, "dead holds cleared after the run");
-  const cleanup = { pendingDeadAtEnd, batches: cleanupBatches, expired: cleanupExpired, ms: performance.now() - cleanupStarted };
+  let cleared = true;
+  try {
+    await waitFor(async () => {
+      cleanupExpired += (await sweeper.expireDue({ limit })).expired.length;
+      cleanupBatches += 1;
+      return ((await deps.owner.query(dueSql, horizon)).rows[0].n as number) === 0;
+    }, (opts.ageMs ?? ttlSeconds * 1_000) + 60_000, "dead holds cleared after the run");
+  } catch {
+    // a cleanup that overruns its budget is reported, not thrown: the run's samples and verdict are still evidence
+    cleared = false;
+  }
+  const cleanup = { pendingDeadAtEnd, batches: cleanupBatches, expired: cleanupExpired, ms: performance.now() - cleanupStarted, cleared };
   await app.close();
   await sweeper.close();
   return {
     command: "churn", runId, seed: opts.seed, environment: await environment(deps.owner, deps.appPool.options.max ?? 10), options: opts,
-    ops, byCode, elapsedS, sweep: sweeping.stats, cleanup,
+    ops, byCode, elapsedS, sweep: sweeping.stats, cleanup, sampleError,
     expiry: { mode: opts.ageMs === undefined ? "natural-ttl" : "owner-aged", ttlSeconds, ageMs: opts.ageMs ?? null, aged, ageErrors },
-    samples, verdict: judgeChurn({ samples, byCode, sweepErrors: sweeping.stats.errors, sweepTicks: sweeping.stats.ticks, ageErrors }), rules: [...CHURN_RULES],
+    samples, verdict: judgeChurn({ samples, byCode, sweepErrors: sweeping.stats.errors, sweepTicks: sweeping.stats.ticks, ageErrors, sampleError, elapsedS, ops }), rules: [...CHURN_RULES],
   };
 }

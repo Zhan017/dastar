@@ -52,6 +52,7 @@ const { positionals, values } = parseArgs({
     "baseline-seconds": { type: "string", default: "20" },
     "gap-seconds": { type: "string", default: "15" },
     preload: { type: "string", default: "50000" },
+    "lock-timeout": { type: "string" },
   },
 });
 
@@ -65,11 +66,19 @@ function need(name: "owner-url" | "app-url" | "admin-url" | "worker-url"): strin
   return v;
 }
 
-const n = Number(values.n);
+function num(name: string, raw: string | undefined): number {
+  const v = Number(raw);
+  if (!Number.isFinite(v)) { console.error(`--${name} must be a number`); process.exit(2); }
+  return v;
+}
+
+const n = num("n", values.n);
 const command = positionals[0];
 
 if (command === "race") {
   const owner = new Client({ connectionString: need("owner-url") });
+  // pg emits connection failures on the client; without a listener they become uncaught exceptions
+  owner.on("error", () => undefined);
   await owner.connect();
   const seed = await seedBench(owner, { units: 4, combos: 1 });
   const pool = new Pool({ connectionString: need("app-url"), max: 16 });
@@ -101,8 +110,9 @@ if (command === "race") {
   console.log(`migrate: applied ${r.applied.length} file(s)${r.applied.length ? ": " + r.applied.join(", ") : ""}`);
 } else if (command === "seed") {
   const owner = new Client({ connectionString: need("owner-url") });
+  owner.on("error", () => undefined);
   await owner.connect();
-  const seeded = await seedBench(owner, { units: Number(values.units), combos: Number(values.combos) });
+  const seeded = await seedBench(owner, { units: num("units", values.units), combos: num("combos", values.combos) });
   await owner.end();
   console.log(JSON.stringify(seeded, null, 2));
 } else if (command === "load") {
@@ -113,12 +123,13 @@ if (command === "race") {
     console.error("a target-hardware run over HTTP needs --api-url: the API must run in its own process, not inside the load generator");
     process.exit(2);
   }
-  const poolMax = Number(values["pool-max"]);
+  const poolMax = num("pool-max", values["pool-max"]);
   const { owner, appPool, workerPool, end } = await connections(poolMax);
-  const steps: Step[] = values.steps.split(",").map((x) => ({ ratePerSec: Number(x), seconds: Number(values["step-seconds"]) }));
+  const stepSeconds = num("step-seconds", values["step-seconds"]);
+  const steps: Step[] = values.steps.split(",").map((x) => ({ ratePerSec: num("steps", x), seconds: stepSeconds }));
   if (values.sustain) {
-    const [rate, seconds] = values.sustain.split("x").map(Number);
-    steps.push({ ratePerSec: rate!, seconds: seconds! });
+    const [rate, seconds] = values.sustain.split("x");
+    steps.push({ ratePerSec: num("sustain", rate), seconds: num("sustain", seconds) });
   }
   const seed = await seedBench(owner, { holdTtlSeconds: 60 });
   let api: Awaited<ReturnType<typeof listen>> | null = null;
@@ -126,12 +137,12 @@ if (command === "race") {
   if (values.target === "http") {
     // an API started here shares this process with the load generator: fine for a look, not for a claim
     if (!values["api-url"]) api = await listen({ DATABASE_URL: need("app-url"), HOST: "127.0.0.1", PORT: 0, POOL_MAX: poolMax, POOL_ACQUIRE_MS: 5_000, READ_TIMEOUT_MS: 2_000, REQUEST_DEADLINE_MS: 12_000 }, { log: () => undefined });
-    target = httpTarget({ url: values["api-url"] ?? api!.url, keys: await createLoadKeys(appPool, Number(values.keys)) });
+    target = httpTarget({ url: values["api-url"] ?? api!.url, keys: await createLoadKeys(appPool, num("keys", values.keys)) });
   } else {
     await warmPool(appPool);
     target = engineTarget(appPool);
   }
-  const r = await runLoad({ target, workerPool, owner, seed }, { steps, blend: parseBlend(values.blend), seed: Number(values.seed), label, poolMax, sweep: sweepFromFlags() });
+  const r = await runLoad({ target, workerPool, owner, seed }, { steps, blend: parseBlend(values.blend), seed: num("seed", values.seed), label, poolMax, sweep: sweepFromFlags() });
   await target.close();
   if (api) await api.close();
   await end();
@@ -141,11 +152,12 @@ if (command === "race") {
   const sound = r.overlaps === 0 && r.deadlockDelta === 0 && r.fitViolations === 0 && r.validity.valid;
   process.exit(!sound ? 1 : r.targets ? exitFor(r.targets.verdict) : 0);
 } else if (command === "mixed") {
-  const { owner, appPool, workerPool, end } = await connections(Number(values["pool-max"]));
+  const { owner, appPool, workerPool, end } = await connections(num("pool-max", values["pool-max"]));
   const ager = new Client({ connectionString: need("owner-url") });
+  ager.on("error", () => undefined);
   await ager.connect();
   const seed = await seedBench(owner, { units: 8, mesh: true, holdTtlSeconds: 60 });
-  const r = await runMixed({ appPool, workerPool, owner, ager, seed }, { seconds: Number(values.seconds ?? "120"), workers: Number(values.workers ?? "32"), seed: Number(values.seed), sweep: sweepFromFlags() });
+  const r = await runMixed({ appPool, workerPool, owner, ager, seed }, { seconds: num("seconds", values.seconds ?? "120"), workers: num("workers", values.workers ?? "32"), seed: num("seed", values.seed), sweep: sweepFromFlags() });
   await ager.end();
   await end();
   for (const [op, o] of Object.entries(r.ops)) console.log(`${op.padEnd(14)} n=${String(o.count).padEnd(7)} p50=${fmt(o.latencyMs.p50)} p99=${fmt(o.latencyMs.p99)} ${JSON.stringify(o.byCode)}`);
@@ -159,7 +171,7 @@ if (command === "race") {
   const external = values["api-url"] !== undefined;
   if (external && !values["api-key"]) { console.error("--api-url needs --api-key, a key with the hold capability"); process.exit(2); }
   const r = await runExhaust({
-    ownerUrl: need("owner-url"), appUrl: need("app-url"), poolMax: Number(values["pool-max"]), acquireMs: Number(values["acquire-ms"]),
+    ownerUrl: need("owner-url"), appUrl: need("app-url"), poolMax: num("pool-max", values["pool-max"]), acquireMs: num("acquire-ms", values["acquire-ms"]),
     ...(external ? { external: { url: values["api-url"]!, key: values["api-key"]! } } : {}),
   });
   for (const v of r.variants) {
@@ -169,26 +181,27 @@ if (command === "race") {
   console.log(`report: ${await writeReport("exhaust", r)}`);
   process.exit(r.pass ? 0 : 1);
 } else if (command === "churn") {
-  const { owner, appPool, workerPool, end } = await connections(Number(values["pool-max"]));
+  const { owner, appPool, workerPool, end } = await connections(num("pool-max", values["pool-max"]));
   const seed = await seedBench(owner, { holdTtlSeconds: 60 });
   const r = await runChurn({ appPool, workerPool, owner, seed }, {
-    maxSeconds: Number(values.seconds ?? "1800"), maxOps: Number(values.ops), workers: Number(values.workers ?? "8"), seed: Number(values.seed),
-    sampleEveryMs: Number(values["sample-seconds"]) * 1_000, sweep: sweepFromFlags(),
+    maxSeconds: num("seconds", values.seconds ?? "1800"), maxOps: num("ops", values.ops), workers: num("workers", values.workers ?? "8"), seed: num("seed", values.seed),
+    sampleEveryMs: num("sample-seconds", values["sample-seconds"]) * 1_000, sweep: sweepFromFlags(),
   });
   await end();
   for (const s of r.samples) {
-    console.log(`${s.atS.toFixed(0).padStart(5)}s sweeper=${s.sweeper.padEnd(3)} rows=${s.retainedUnitRows} active=${s.activeUnitRows} dead-pending=${s.pendingDead} heap=${(s.heapBytes / 1e6).toFixed(1)}MB excl-index=${(s.exclusionIndexBytes / 1e6).toFixed(2)}MB dead%=${s.heapDeadTuplePercent.toFixed(1)} autovacuums=${s.autovacuumCount} granted-hold p95=${fmt(s.holdOkLatencyMs.p95)} ms (${s.holdOkLatencyMs.count} granted, ${s.holdConflictLatencyMs.count} refused)`);
+    console.log(`${s.atS.toFixed(0).padStart(5)}s sweeper=${s.sweeper.padEnd(3)} rows=${s.retainedUnitRows} active=${s.activeUnitRows} dead-pending=${s.pendingDead} heap=${(s.heapBytes / 1e6).toFixed(1)}MB excl-index=${(s.exclusionIndexBytes / 1e6).toFixed(2)}MB dead%=${s.heapDeadTuplePercent.toFixed(1)} autovacuums=${s.autovacuumCount} granted-hold p95=${fmt(s.holdOkLatencyMs.p95)} ms (${s.holdOkLatencyMs.count} granted, ${s.holdConflictLatencyMs.count} refused) sample=${s.sampleMs.toFixed(0)}ms`);
   }
   console.log(`churn: ${r.ops} operations in ${r.elapsedS.toFixed(0)}s, answers ${JSON.stringify(r.byCode)}; expiry ${r.expiry.mode}, TTL ${r.expiry.ttlSeconds}s; ${sweepLine(r.sweep)}`);
   console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
-  console.log(`after the last sample, outside the verdict: ${r.cleanup.pendingDeadAtEnd} dead holds were left; cleanup expired ${r.cleanup.expired} in ${r.cleanup.batches} batches`);
+  console.log(`after the last sample, outside the verdict: ${r.cleanup.pendingDeadAtEnd} dead holds were left; cleanup expired ${r.cleanup.expired} in ${r.cleanup.batches} batches${r.cleanup.cleared ? "" : "; cleanup did not finish inside its budget"}`);
   console.log(`report: ${await writeReport("churn", r)}`);
   process.exit(exitFor(r.verdict.verdict));
 } else if (command === "migrate-under-load") {
   const r = await runMigrateUnderLoad({
     adminUrl: need("admin-url"), appUrl: need("app-url"), workerUrl: need("worker-url"), migrationsDir: MIGRATIONS,
-    ratePerSec: Number(values.rate), baselineSeconds: Number(values["baseline-seconds"]), gapSeconds: Number(values["gap-seconds"]),
-    preloadRows: Number(values.preload), seed: Number(values.seed), keep: values.keep, sweep: sweepFromFlags(),
+    ratePerSec: num("rate", values.rate), baselineSeconds: num("baseline-seconds", values["baseline-seconds"]), gapSeconds: num("gap-seconds", values["gap-seconds"]),
+    preloadRows: num("preload", values.preload), seed: num("seed", values.seed), keep: values.keep, sweep: sweepFromFlags(),
+    ...(values["lock-timeout"] !== undefined ? { lockTimeout: values["lock-timeout"] } : {}),
   });
   console.log(`baseline at ${r.ratePerSec}/s over ${r.preloadRows} preloaded rows: ${r.baseline.requests} requests, e2e p50=${fmt(r.baseline.e2eMs.p50)} p95=${fmt(r.baseline.e2eMs.p95)} p99=${fmt(r.baseline.e2eMs.p99)} ms`);
   for (const m of r.migrations) {
@@ -214,7 +227,7 @@ if (command === "race") {
     "  mixed --owner-url <url> --app-url <url> --worker-url <url> [--seconds 120] [--workers 32] [--seed 1]",
     "  exhaust --owner-url <url> --app-url <url> [--api-url <url> --api-key <key>] [--pool-max 16] [--acquire-ms 5000]",
     "  churn --owner-url <url> --app-url <url> --worker-url <url> [--seconds 1800] [--ops 100000] [--workers 8] [--sample-seconds 60]",
-    "  migrate-under-load --admin-url <url> --app-url <url> --worker-url <url> [--rate 20] [--baseline-seconds 20] [--gap-seconds 15] [--preload 50000] [--keep]",
+    "  migrate-under-load --admin-url <url> --app-url <url> --worker-url <url> [--rate 20] [--baseline-seconds 20] [--gap-seconds 15] [--preload 50000] [--lock-timeout 3s] [--keep]",
     "  exit codes: 0 a positive verdict, or a valid run that has none; 1 a negative verdict or an invalid run; 2 usage; 3 inconclusive",
     "  load, mixed, churn and migrate-under-load run the design's sweeper (every 5000 ms, 20 rows, repeated while rows remain); [--sweep-every-ms N] [--sweep-limit N] change it, and the report records what was used",
   ].join("\n"));
@@ -223,6 +236,7 @@ if (command === "race") {
 
 async function connections(poolMax: number): Promise<{ owner: Client; appPool: Pool; workerPool: Pool; end: () => Promise<void> }> {
   const owner = new Client({ connectionString: need("owner-url") });
+  owner.on("error", () => undefined);
   await owner.connect();
   // idle connections are kept for the whole run, so reconnects are not measured as engine latency
   const appPool = new Pool({ connectionString: need("app-url"), max: poolMax, idleTimeoutMillis: 0 });
@@ -233,7 +247,11 @@ async function connections(poolMax: number): Promise<{ owner: Client; appPool: P
 }
 
 function sweepFromFlags(): SweepConfig {
-  return { everyMs: Number(values["sweep-every-ms"] ?? DESIGN_SWEEP.everyMs), limit: Number(values["sweep-limit"] ?? DESIGN_SWEEP.limit), drain: true };
+  return {
+    everyMs: values["sweep-every-ms"] !== undefined ? num("sweep-every-ms", values["sweep-every-ms"]) : DESIGN_SWEEP.everyMs,
+    limit: values["sweep-limit"] !== undefined ? num("sweep-limit", values["sweep-limit"]) : DESIGN_SWEEP.limit,
+    drain: true,
+  };
 }
 
 function sweepLine(s: { config: SweepConfig; ticks: number; batches: number; expired: number; errors: number }): string {
@@ -241,7 +259,8 @@ function sweepLine(s: { config: SweepConfig; ticks: number; batches: number; exp
 }
 
 function printLoad(r: LoadReport, apiInProcess: boolean): void {
-  console.log(`load [${r.label}] target=${r.target}${apiInProcess ? " (API inside this process)" : ""} seed=${r.seed} pool=${r.environment.poolMax} ${r.environment.cpus} cpus`);
+  const poolNote = !apiInProcess && r.target === "http" ? " (from --pool-max, not observed)" : "";
+  console.log(`load [${r.label}] target=${r.target}${apiInProcess ? " (API inside this process)" : ""} seed=${r.seed} pool=${r.environment.poolMax}${poolNote} ${r.environment.cpus} cpus`);
   console.log("step  rate  offered  achieved/s  backlog  err%    e2e p50/p95/p99 ms       pool-wait p99  unit-lock p99 distinct-dates  transaction p99");
   for (const s of r.steps) {
     console.log([
@@ -254,7 +273,7 @@ function printLoad(r: LoadReport, apiInProcess: boolean): void {
   console.log(`drained ${r.drainMs.toFixed(0)} ms after the last arrival (holds alone ${r.holdDrainMs.toFixed(0)} ms); most holds waiting at one instant: ${r.peakOutstanding}`);
   console.log("n/a: too few samples to state that percentile; a..b or >=a: bounds, because some requests ended inside the phase");
   if (r.transport.timeouts + r.transport.errors > 0) console.log(`no complete answer: ${r.transport.timeouts} timed out at the harness, ${r.transport.errors} failed to connect; the database shows ${r.transport.holdsCommitted} of those holds committed and ${r.transport.holdsNotCommitted} not`);
-  console.log(r.validity.valid ? "run valid: follow-ups, sweeper, invariants, and transport all clean" : `RUN INVALID, nothing below is evidence: ${r.validity.reasons.join("; ")}`);
+  console.log(r.validity.valid ? "run valid: follow-ups, sweeper, invariants and transport clean over the run; hold refusals judged on the last step" : `RUN INVALID, nothing below is evidence: ${r.validity.reasons.join("; ")}`);
   console.log(`deadlocks=${r.deadlockDelta} overlaps=${r.overlaps} fit violations=${r.fitViolations} retries=${r.retries}; ${sweepLine(r.sweep)}`);
   if (r.targets) {
     for (const t of r.targets.checks) console.log(`  ${t.status.padEnd(12)} ${t.name} [${t.scope}]: ${t.atLeast === null ? "n/a" : fmt({ atLeast: t.atLeast, atMost: t.atMost }, 3)} (limit ${t.limit})${t.note ? ` - ${t.note}` : ""}`);

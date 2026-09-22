@@ -1,4 +1,6 @@
 FROM node:22-slim
+# one corepack cache for the root build step and the node runtime user
+ENV COREPACK_HOME=/usr/local/share/corepack
 RUN corepack enable
 WORKDIR /app
 COPY . .

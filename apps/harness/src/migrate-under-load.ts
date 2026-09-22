@@ -95,7 +95,7 @@ export function judgeUnderLoad(run: { baseline: WindowStats; migrations: readonl
 
   const liveSafe = run.migrations.filter((m) => m.kind === "live-safe");
   const failures: string[] = [];
-  if (run.migrations.length < run.fixtures) failures.push(`only ${run.migrations.length} of ${run.fixtures} fixtures ran`);
+  if (liveSafe.length < run.fixtures) failures.push(`only ${liveSafe.length} of ${run.fixtures} live-safe fixtures ran`);
   for (const m of liveSafe) {
     if (m.error !== null) failures.push(`${m.file} did not apply: ${m.error}`);
     if (m.affected.errors > 0) failures.push(`${m.file}: ${m.affected.errors} of ${m.affected.requests} request(s) in flight failed ${JSON.stringify(m.affected.errorsByCode)}`);
@@ -172,6 +172,7 @@ export async function runMigrateUnderLoad(opts: MigrateUnderLoadOptions): Promis
   const ownerUrl = await createThrowawayDatabase(opts.adminUrl, database, opts.migrationsDir);
   const dir = await mkdtemp(join(tmpdir(), "dastar-mul-"));
   const owner = new Client({ connectionString: ownerUrl });
+  owner.on("error", () => undefined);
   const appPool = new Pool({ connectionString: withDatabase(opts.appUrl, database), max: 16, idleTimeoutMillis: 0 });
   const workerPool = new Pool({ connectionString: withDatabase(opts.workerUrl, database), max: 2 });
   appPool.on("error", () => undefined);
@@ -186,9 +187,10 @@ export async function runMigrateUnderLoad(opts: MigrateUnderLoadOptions): Promis
     const target = engineTarget(appPool);
     const session = openSession({ target, workerPool, seed }, { runId: `mul${Date.now().toString(36)}`, seed: opts.seed, blend: TARGET_BLEND, ...(opts.sweep !== undefined ? { sweep: opts.sweep } : {}) });
     let stop = false;
+    let loopError: unknown = null;
     const arrivals = planArrivals([{ ratePerSec: opts.ratePerSec, seconds: 3_600 }], rng(opts.seed + 1));
     const epoch = performance.now();
-    const loop = runOpenLoop(arrivals, session.hold, { stopped: () => stop, epoch });
+    const loop = runOpenLoop(arrivals, session.hold, { stopped: () => stop, epoch }).catch((e) => { loopError = e; });
     const sleep = (s: number): Promise<void> => new Promise((res) => setTimeout(res, s * 1_000));
     const timeline: Omit<MigrationWindow, "affected" | "recovery">[] = [];
     try {
@@ -214,6 +216,7 @@ export async function runMigrateUnderLoad(opts: MigrateUnderLoadOptions): Promis
       await session.close();
       await target.close();
     }
+    if (loopError !== null) throw loopError;
     const rs = session.records;
     const counted = new Set<HoldRecord>();
     const migrations = timeline.map((m, k): MigrationWindow => {
@@ -233,7 +236,7 @@ export async function runMigrateUnderLoad(opts: MigrateUnderLoadOptions): Promis
       baseline, wholeRun: windowStats(rs), errorsOutsideWindows, migrations,
       thinEvidence: migrations.filter((m) => m.kind === "live-safe" && m.affected.requests < MIN_AFFECTED).map((m) => m.file),
       fixturesApplied: migrations.length === FIXTURES.length && migrations.every((m) => m.error === null),
-      underLoad: judgeUnderLoad({ baseline, migrations, fixtures: FIXTURES.length, sweepErrors: session.sweep.errors, sweepTicks: session.sweep.ticks, errorsOutsideWindows }),
+      underLoad: judgeUnderLoad({ baseline, migrations, fixtures: FIXTURES.filter((f) => f.kind === "live-safe").length, sweepErrors: session.sweep.errors, sweepTicks: session.sweep.ticks, errorsOutsideWindows }),
     };
   } finally {
     await appPool.end().catch(() => undefined);

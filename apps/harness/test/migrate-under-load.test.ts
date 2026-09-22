@@ -35,10 +35,15 @@ describe("what a migration run is allowed to conclude", () => {
   const ok = (n: number) => windowStats(Array.from({ length: n }, (_, i) => rec({ seq: i })));
   const broken = (n: number, bad: number) => windowStats([...Array.from({ length: n - bad }, (_, i) => rec({ seq: i })), ...Array.from({ length: bad }, () => rec({ cls: "timeout", code: "timeout" }))]);
   const migration = (over: Partial<MigrationWindow>): MigrationWindow => ({ file: "9001_x.sql", kind: "live-safe", attempts: 1, startedAtMs: 0, durationMs: 40, error: null, affected: ok(8), recovery: ok(200), ...over });
-  const run = { baseline: ok(200), migrations: [migration({}), migration({ file: "9006_y.sql", kind: "blocking", affected: broken(8, 3) })], fixtures: 2, sweepErrors: 0, sweepTicks: 12, errorsOutsideWindows: 0 };
+  const run = { baseline: ok(200), migrations: [migration({}), migration({ file: "9006_y.sql", kind: "blocking", affected: broken(8, 3) })], fixtures: 1, sweepErrors: 0, sweepTicks: 12, errorsOutsideWindows: 0 };
 
   it("passes when every live-safe migration met traffic and nothing failed; a blocking one is never judged", () => {
     expect(judgeUnderLoad(run)).toEqual({ verdict: "pass", reasons: [] });
+  });
+  it("a blocking migration that does not apply is recorded, not judged: five clean live-safe migrations still pass", () => {
+    const liveSafe5 = Array.from({ length: 5 }, (_, i) => migration({ file: `900${i + 1}_x.sql` }));
+    const blocking = migration({ file: "9006_y.sql", kind: "blocking", error: "lock timeout" });
+    expect(judgeUnderLoad({ ...run, migrations: [...liveSafe5, blocking], fixtures: 5 })).toEqual({ verdict: "pass", reasons: [] });
   });
   it("a migration that met nobody proves nothing: inconclusive, not pass", () => {
     const v = judgeUnderLoad({ ...run, migrations: [migration({ affected: ok(0) })], fixtures: 1 });
@@ -47,13 +52,13 @@ describe("what a migration run is allowed to conclude", () => {
   it("fails on a request lost during a live-safe migration or after it, on one that did not apply, and on fixtures that never ran", () => {
     expect(judgeUnderLoad({ ...run, migrations: [migration({ affected: broken(8, 1) })], fixtures: 1 })).toMatchObject({ verdict: "fail", reasons: [expect.stringMatching(/1 of 8 request\(s\) in flight failed \{"timeout":1\}/)] });
     expect(judgeUnderLoad({ ...run, migrations: [migration({ recovery: broken(200, 2) })], fixtures: 1 }).reasons).toEqual([expect.stringMatching(/2 of 200 request\(s\) after it failed/)]);
-    expect(judgeUnderLoad({ ...run, migrations: [migration({ error: "lock timeout" })], fixtures: 7 }).reasons).toEqual(["only 1 of 7 fixtures ran", expect.stringMatching(/did not apply: lock timeout/)]);
+    expect(judgeUnderLoad({ ...run, migrations: [migration({ error: "lock timeout" })], fixtures: 5 }).reasons).toEqual(["only 1 of 5 live-safe fixtures ran", expect.stringMatching(/did not apply: lock timeout/)]);
   });
   it("is invalid when the baseline is too small or already failing, the sweeper failed, or requests failed outside every window", () => {
     expect(judgeUnderLoad({ ...run, sweepTicks: 0 })).toEqual({ verdict: "invalid", reasons: ["the sweeper never ran"] });
     // nothing at all: no baseline and no migration is an invalid run, not a pass
-    expect(judgeUnderLoad({ ...run, baseline: ok(0), migrations: [], fixtures: 7 }).verdict).toBe("invalid");
-    expect(judgeUnderLoad({ ...run, migrations: [], fixtures: 7 })).toEqual({ verdict: "fail", reasons: ["only 0 of 7 fixtures ran"] });
+    expect(judgeUnderLoad({ ...run, baseline: ok(0), migrations: [], fixtures: 5 }).verdict).toBe("invalid");
+    expect(judgeUnderLoad({ ...run, migrations: [], fixtures: 5 })).toEqual({ verdict: "fail", reasons: ["only 0 of 5 live-safe fixtures ran"] });
     expect(judgeUnderLoad({ ...run, baseline: ok(12) })).toMatchObject({ verdict: "invalid", reasons: [expect.stringMatching(/the baseline holds 12 requests; 60 are needed/)] });
     expect(judgeUnderLoad({ ...run, baseline: broken(200, 4) }).reasons).toEqual([expect.stringMatching(/4 request\(s\) failed before any migration began/)]);
     expect(judgeUnderLoad({ ...run, sweepErrors: 1, errorsOutsideWindows: 3 })).toMatchObject({ verdict: "invalid", reasons: ["1 sweeper error(s)", expect.stringMatching(/3 request\(s\) failed outside every migration's windows/)] });

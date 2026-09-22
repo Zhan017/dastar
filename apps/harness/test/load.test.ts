@@ -34,6 +34,7 @@ describe("load run", () => {
     expect(r.targets).toBeUndefined();
     expect(r.validity).toEqual({ valid: true, reasons: [] });
     expect(r.transport).toEqual({ timeouts: 0, errors: 0, holdsCommitted: 0, holdsNotCommitted: 0 });
+    expect(r.workload).toEqual({ blend: TARGET_BLEND, followUpRatio: 0.2, units: seed.units.length, combos: seed.combos.length, holdTtlSeconds: 60, maxInFlight: 2_000, sweep: FAST_SWEEP });
     expect(r.peakOutstanding).toBeGreaterThanOrEqual(1);
     expect(r.peakOutstanding).toBeGreaterThanOrEqual(Math.max(...r.timeline.map((b) => b.outstanding)));
     expect(r.drainMs).toBeGreaterThanOrEqual(r.holdDrainMs);

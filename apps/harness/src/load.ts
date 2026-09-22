@@ -77,7 +77,8 @@ export function openSession(deps: LoadDeps, opts: SessionOptions): LoadSession {
   const inFlight = new Set<Promise<void>>();
   const track = (p: Promise<void>): void => {
     inFlight.add(p);
-    void p.finally(() => { inFlight.delete(p); });
+    // a target never throws by contract; this keeps a derived promise from becoming an unhandled rejection if one ever does
+    void p.then(undefined, () => undefined).finally(() => { inFlight.delete(p); });
   };
 
   const hold = (a: Arrival, lateMs: number): void => {
@@ -130,8 +131,10 @@ export function openSession(deps: LoadDeps, opts: SessionOptions): LoadSession {
 
 /** Opens every connection the pool allows before anything is measured, so connection setup is not counted as pool wait. */
 export async function warmPool(pool: Pool): Promise<void> {
-  const clients = await Promise.all(Array.from({ length: pool.options.max ?? 10 }, () => pool.connect()));
-  for (const c of clients) c.release();
+  const results = await Promise.allSettled(Array.from({ length: pool.options.max ?? 10 }, () => pool.connect()));
+  for (const r of results) if (r.status === "fulfilled") r.value.release();
+  const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (rejected !== undefined) throw rejected.reason;
 }
 
 export type MixSummary = {
@@ -141,6 +144,9 @@ export type MixSummary = {
 
 const samples = <T>(rs: readonly T[], ms: (x: T) => number | null, censored: (x: T) => boolean = () => false): Sample[] =>
   rs.flatMap((x) => { const v = ms(x); return v === null ? [] : [{ ms: v, censored: censored(x) }]; });
+
+/** The largest value, or 0 for an empty list. A reduce, not a spread into `Math.max`: a long run's record count can exceed the argument limit a function call allows. */
+const maxOf = (xs: readonly number[]): number => xs.reduce((m, x) => (x > m ? x : m), 0);
 
 export function summarizeMix(rs: readonly HoldRecord[]): MixSummary {
   const byClass = Object.fromEntries(CLASSES.map((c) => [c, 0])) as Record<OutcomeClass, number>;
@@ -201,7 +207,7 @@ export type TimelineBucket = { second: number; arrived: number; answered: number
 
 /** One row per second from the first arrival to the last answer: what arrived, what was answered, what failed, and what was still waiting. */
 export function timeline(holds: readonly HoldRecord[]): TimelineBucket[] {
-  const end = Math.max(0, ...holds.map((x) => x.doneMs ?? x.atMs));
+  const end = maxOf(holds.map((x) => x.doneMs ?? x.atMs));
   const n = Math.floor(end / 1_000) + 1;
   const out: TimelineBucket[] = Array.from({ length: n }, (_, second) => ({ second, arrived: 0, answered: 0, errors: 0, outstanding: 0 }));
   // a request is outstanding at the end of every second from the one it arrived in up to, not including, the one it was answered in
@@ -373,11 +379,14 @@ export type LoadOptions = Omit<SessionOptions, "runId"> & {
   followUpRatio?: number;
   /** "provisional" for any machine outside the target hardware class. */
   label: "provisional" | "target-hardware";
-  /** Pool size of the system under test, for the report. */
+  /** Pool size as the harness was told (`--pool-max`): the pool under test at the engine handle, the API's pool for an API started in this process, and only a claim for an external API. */
   poolMax: number;
 };
 export type LoadReport = {
-  command: "load"; label: LoadOptions["label"]; target: LoadTarget["kind"]; runId: string; seed: number; blend: Blend; environment: Environment;
+  command: "load"; label: LoadOptions["label"]; target: LoadTarget["kind"]; runId: string; seed: number; blend: Blend;
+  /** What was offered, so a report can be read on its own; `targets.workload` says how it differs from the design's. */
+  workload: OfferedWorkload & { holdTtlSeconds: number; maxInFlight: number };
+  environment: Environment;
   steps: StepSummary[]; timeline: TimelineBucket[];
   /** From the end of the arrival plan to the last answer of any request, and to the last answer of a hold. */
   drainMs: number; holdDrainMs: number;
@@ -402,6 +411,11 @@ export async function runLoad(deps: LoadDeps & { owner: ClientBase }, opts: Load
   const holds = planArrivals(opts.steps, rng(opts.seed + 1));
   const ratio = opts.followUpRatio ?? 0.2;
   const follow = planArrivals(opts.steps.map((s) => ({ ratePerSec: s.ratePerSec * ratio, seconds: s.seconds })), rng(opts.seed + 2));
+  const holdTtlSeconds = (await deps.owner.query("select hold_ttl_seconds as ttl from dastar.venue where id = $1", [deps.seed.venue])).rows[0].ttl as number;
+  const workload: LoadReport["workload"] = {
+    blend: opts.blend, followUpRatio: ratio, sweep: opts.sweep ?? DESIGN_SWEEP,
+    units: deps.seed.units.length, combos: deps.seed.combos.length, holdTtlSeconds, maxInFlight: opts.maxInFlight ?? 2_000,
+  };
   const epoch = performance.now();
   await Promise.all([runOpenLoop(holds, session.hold, { epoch }), runOpenLoop(follow, session.followUp, { epoch })]);
   await session.drain();
@@ -422,14 +436,14 @@ export async function runLoad(deps: LoadDeps & { owner: ClientBase }, opts: Load
     const stored = new Set(rows.rows.map((x) => x.key as string));
     for (const x of unanswered) x.committed = stored.has(`${runId}-h${x.seq}`);
   }
-  const lastHold = Math.max(0, ...session.records.map((x) => x.doneMs ?? 0));
-  const lastAnswer = Math.max(lastHold, ...session.followUps.map((x) => x.doneMs ?? 0));
+  const lastHold = maxOf(session.records.map((x) => x.doneMs ?? 0));
+  const lastAnswer = maxOf([lastHold, ...session.followUps.map((x) => x.doneMs ?? 0)]);
   const overlaps = await overlapPairs(deps.owner);
   const fit = await fitViolations(deps.owner);
   const validity = runValidity({ kind: deps.target.kind, records: session.records, followUps: session.followUps, sweep: session.sweep, overlaps, fitViolations: fit, lastStep: steps[steps.length - 1] });
   const all = [...session.records.map((x) => x.code), ...session.followUps.map((x) => x.code)];
   const report: LoadReport = {
-    command: "load", label: opts.label, target: deps.target.kind, runId, seed: opts.seed, blend: opts.blend,
+    command: "load", label: opts.label, target: deps.target.kind, runId, seed: opts.seed, blend: opts.blend, workload,
     environment: await environment(deps.owner, opts.poolMax),
     steps, timeline: buckets, drainMs: Math.max(0, lastAnswer - fromMs), holdDrainMs: Math.max(0, lastHold - fromMs), peakOutstanding: peakOutstanding(session.records),
     validity,
@@ -442,8 +456,7 @@ export async function runLoad(deps: LoadDeps & { owner: ClientBase }, opts: Load
     records: session.records, followUps: session.followUps,
   };
   if (opts.label === "target-hardware") {
-    report.targets = evaluateTargets(deps.target.kind, steps[steps.length - 1]!, deadlockDelta, validity,
-      { blend: opts.blend, followUpRatio: ratio, sweep: opts.sweep ?? DESIGN_SWEEP, units: deps.seed.units.length, combos: deps.seed.combos.length });
+    report.targets = evaluateTargets(deps.target.kind, steps[steps.length - 1]!, deadlockDelta, validity, workload);
   }
   return report;
 }

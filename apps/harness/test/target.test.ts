@@ -9,6 +9,7 @@ import { cloneDatabase, dropDatabase, type Conn } from "../../../packages/db/tes
 import { seedBench, type BenchSeed } from "../src/seed.js";
 import { createLoadKeys, engineTarget, httpTarget } from "../src/target.js";
 import { waitFor, backends } from "../src/observe.js";
+import { classify } from "../src/load.js";
 
 describe("load targets", () => {
   let conn: Conn; let owner: Client; let seed: BenchSeed; let n = 0;
@@ -124,6 +125,20 @@ describe("load targets", () => {
       for (const socket of open) socket.destroy();
       halfway.closeAllConnections();
       await Promise.all([new Promise<void>((r) => silent.close(() => r())), new Promise<void>((r) => halfway.close(() => r()))]);
+    }
+  });
+
+  it("http: an intermediary's non-JSON error body is a plain error code, not a transport failure", async () => {
+    const bad = createHttpServer((_req, res) => { res.writeHead(502, { "content-type": "text/html" }); res.end("<html>bad gateway</html>"); });
+    await new Promise<void>((r) => bad.listen(0, "127.0.0.1", () => r()));
+    try {
+      const t = httpTarget({ url: `http://127.0.0.1:${(bad.address() as AddressInfo).port}`, keys: ["dsk_unused"] });
+      const a = await t.hold(input(0));
+      expect(a).toMatchObject({ code: "http_502", reservationId: null });
+      expect(classify(a.code)).toBe("other");
+    } finally {
+      bad.closeAllConnections();
+      await new Promise<void>((r) => bad.close(() => r()));
     }
   });
 });

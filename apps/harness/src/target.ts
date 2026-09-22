@@ -114,16 +114,23 @@ export function httpTarget(api: { url: string; keys: readonly string[]; deadline
   type Body = { code?: string; receipt?: { reservation_id?: string } };
   const post = async (path: string, traceId: string, body: unknown, extra: Record<string, string> = {}): Promise<{ status: number; body: Body } | "transport_timeout" | "transport_error"> => {
     const signal = AbortSignal.timeout(deadlineMs);
+    let res: Response;
     try {
-      const res = await fetch(`${api.url}${path}`, {
+      // the same signal aborts a body that never ends
+      res = await fetch(`${api.url}${path}`, {
         method: "POST", signal,
         headers: { authorization: `Bearer ${api.keys[n++ % api.keys.length]!}`, "content-type": "application/json", "x-trace-id": traceId, ...extra },
         body: JSON.stringify(body),
       });
-      // the same signal aborts a body that never ends
-      return { status: res.status, body: (await res.json()) as Body };
     } catch {
       return signal.aborted ? "transport_timeout" : "transport_error";
+    }
+    // a body that is not JSON is a plain result from a server that answered; a body that never ends is the deadline's business and stays a transport timeout
+    try {
+      return { status: res.status, body: (await res.json()) as Body };
+    } catch {
+      if (signal.aborted) return "transport_timeout";
+      return { status: res.status, body: {} };
     }
   };
   const codeFrom = (r: Awaited<ReturnType<typeof post>>, okStatus: number): string => (typeof r === "string" ? r : r.status === okStatus ? "ok" : r.body.code ?? `http_${r.status}`);

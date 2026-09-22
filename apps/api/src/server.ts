@@ -47,6 +47,8 @@ export async function listen(config: Config, opts: { log?: Deps["log"] } = {}): 
     bound = await new Promise<Bound>((resolve, reject) => {
       const s = serve({ fetch: built.app.fetch, port: config.PORT, hostname: config.HOST }, (info) => {
         s.off("error", reject);
+        // once bound, a later server-level error (EMFILE, a socket error) is logged rather than left with no listener
+        s.on("error", (e) => { console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", msg: "server error", error: e.message })); });
         resolve({ server: s, host: info.address, port: info.port });
       });
       s.once("error", reject);

@@ -158,7 +158,8 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
     if (op === "capacity_edit") {
       const c = await deps.appPool.connect();
       // pg-pool detaches its own listener while a client is checked out
-      const onError = (): void => undefined;
+      let fatal: Error | null = null;
+      const onError = (e: Error): void => { fatal = e; };
       c.on("error", onError);
       try {
         await c.query("begin");
@@ -171,7 +172,7 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
         throw e;
       } finally {
         c.removeListener("error", onError);
-        c.release();
+        c.release(fatal ?? undefined);
       }
     }
     const reservationId = op === "cancel" ? take(r) : peek(r);

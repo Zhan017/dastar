@@ -9,7 +9,7 @@ const latency = (p95: number | null, count = 100): ChurnSample["holdOkLatencyMs"
 const sample = (over: Partial<ChurnSample>): ChurnSample => ({
   atS: 0, progress: 0, ops: 0, sweeper: "on", retainedUnitRows: 1_000, activeUnitRows: 100, pendingDead: 2,
   heapBytes: 100_000, exclusionIndexBytes: 50_000, totalBytes: 200_000, heapDeadTuplePercent: 2, heapFreePercent: 5, indexFreePercent: 5,
-  nLiveTup: 1_000, nDeadTup: 10, autovacuumCount: 0, autoanalyzeCount: 0, lastAutovacuum: null, walBytes: 0,
+  nLiveTup: 1_000, nDeadTup: 10, autovacuumCount: 0, autoanalyzeCount: 0, lastAutovacuum: null, walPosition: 0, sampleMs: 1,
   holdOkLatencyMs: latency(8), holdConflictLatencyMs: latency(5), ...over,
 });
 /** Five samples before, two with the sweeper off and dead holds piled up, five after. */
@@ -19,7 +19,7 @@ const series = (after: (k: number) => Partial<ChurnSample>, opts: { vacuums?: nu
   ...[0.45, 0.55].map((p) => sample({ progress: p, sweeper: "off", pendingDead: opts.peak ?? 300, autovacuumCount: 4 })),
   ...[0.78, 0.84, 0.9, 0.95, 1.0].map((p, k) => sample({ progress: p, autovacuumCount: opts.vacuums ?? 8, ...after(k) })),
 ];
-const good = { byCode: { "hold:ok": 900, "hold:hold_conflict": 300, "cancel:ok": 400, "confirm:ok": 90 }, sweepErrors: 0, sweepTicks: 40, ageErrors: 0 };
+const good = { byCode: { "hold:ok": 900, "hold:hold_conflict": 300, "cancel:ok": 400, "confirm:ok": 90 }, sweepErrors: 0, sweepTicks: 40, ageErrors: 0, sampleError: null, elapsedS: 1_800, ops: 120_000 };
 
 describe("churn verdict", () => {
   it("fits the change across a window", () => {
@@ -38,6 +38,7 @@ describe("churn verdict", () => {
     expect(judgeChurn({ samples, ...good, sweepErrors: 2 })).toEqual({ verdict: "invalid", reasons: ["2 sweeper error(s)"] });
     expect(judgeChurn({ samples, ...good, sweepTicks: 0 })).toEqual({ verdict: "invalid", reasons: ["the sweeper never ran"] });
     expect(judgeChurn({ samples, ...good, ageErrors: 3 })).toEqual({ verdict: "invalid", reasons: ["3 aging statement(s) failed"] });
+    expect(judgeChurn({ samples, ...good, sampleError: "relation does not exist" })).toEqual({ verdict: "invalid", reasons: ["the sampler failed: relation does not exist"] });
     expect(judgeChurn({ samples, ...good, byCode: { "hold:hold_conflict": 10 } })).toMatchObject({ verdict: "invalid", reasons: ["no hold succeeded"] });
     // nothing at all: no samples, no answers
     expect(judgeChurn({ samples: [], ...good, byCode: {} })).toMatchObject({ verdict: "invalid", reasons: ["no hold succeeded"] });
@@ -48,6 +49,8 @@ describe("churn verdict", () => {
     expect(judgeChurn({ samples: series(() => ({}), { vacuums: 1 }), ...good })).toEqual({ verdict: "inconclusive", reasons: [expect.stringMatching(/only 1 autovacuum runs/)] });
     expect(judgeChurn({ samples: series(() => ({ activeUnitRows: 180 })), ...good })).toEqual({ verdict: "inconclusive", reasons: [expect.stringMatching(/active unit rows went from 100 to 180/)] });
     expect(judgeChurn({ samples: series(() => ({}), { peak: 4 }), ...good })).toEqual({ verdict: "inconclusive", reasons: [expect.stringMatching(/did not pile up/)] });
+    // a run that never reached the design's bounded run is inconclusive, whatever its windows look like
+    expect(judgeChurn({ samples: series(() => ({})), ...good, elapsedS: 180, ops: 3_000 })).toEqual({ verdict: "inconclusive", reasons: [expect.stringMatching(/neither|bounded run|design's bounded/)] });
     // a window of almost nothing but refusals cannot state the p95 of granted holds, however many refusals it timed
     expect(judgeChurn({ samples: series(() => ({ holdOkLatencyMs: latency(null, 9), holdConflictLatencyMs: latency(3, 5_000) })), ...good }).reasons).toEqual([expect.stringMatching(/too few granted holds/)]);
   });
@@ -90,7 +93,7 @@ describe("churn run", () => {
     const r = await runChurn({ appPool, workerPool, owner, agerPool, seed }, { maxSeconds: 8, maxOps: 1_000_000, workers: 6, seed: 31, sampleEveryMs: 500, sweep, ageMs: 200 });
     expect(r.samples.length).toBeGreaterThanOrEqual(10);
     for (const s of r.samples) {
-      for (const k of ["retainedUnitRows", "activeUnitRows", "pendingDead", "heapBytes", "exclusionIndexBytes", "totalBytes", "heapDeadTuplePercent", "heapFreePercent", "indexFreePercent", "nLiveTup", "nDeadTup", "autovacuumCount", "walBytes"] as const) {
+      for (const k of ["retainedUnitRows", "activeUnitRows", "pendingDead", "heapBytes", "exclusionIndexBytes", "totalBytes", "heapDeadTuplePercent", "heapFreePercent", "indexFreePercent", "nLiveTup", "nDeadTup", "autovacuumCount", "walPosition", "sampleMs"] as const) {
         expect(typeof s[k], k).toBe("number");
         expect(Number.isFinite(s[k]), k).toBe(true);
       }
@@ -105,9 +108,10 @@ describe("churn run", () => {
     expect(r.cleanup.batches).toBeGreaterThanOrEqual(1);
     expect(r.cleanup.pendingDeadAtEnd).toBeGreaterThanOrEqual(0);
     expect(r.cleanup.expired).toBeGreaterThanOrEqual(r.cleanup.pendingDeadAtEnd > 0 ? 1 : 0);
+    expect(r.cleanup.cleared).toBe(true);
     const left = await owner.query("select count(*)::int as n from dastar.reservation where venue_id = $1 and status = 'held' and hold_expires_at <= now()", [seed.venue]);
     expect(left.rows[0].n).toBe(0);
-    expect(r.samples[r.samples.length - 1]!.walBytes).toBeGreaterThan(r.samples[0]!.walBytes);
+    expect(r.samples[r.samples.length - 1]!.walPosition).toBeGreaterThan(r.samples[0]!.walPosition);
     expect(r.samples[r.samples.length - 1]!.retainedUnitRows).toBeGreaterThan(r.samples[0]!.retainedUnitRows);
     expect(Object.keys(r.byCode).sort()).toEqual(["cancel:ok", "confirm:ok", "hold:hold_conflict", "hold:ok"]);
     expect(r.sweep).toMatchObject({ config: sweep, errors: 0 });

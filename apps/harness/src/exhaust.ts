@@ -43,17 +43,26 @@ export type Planned = { key: string; unit: string; startsAt: string };
 export async function postHold(api: Api, venue: string, p: Planned): Promise<Answer> {
   const t0 = performance.now();
   const signal = AbortSignal.timeout(api.deadlineMs);
+  let res: Response;
   try {
-    const res = await fetch(`${api.url}/v1/venues/${venue}/holds`, {
+    res = await fetch(`${api.url}/v1/venues/${venue}/holds`, {
       method: "POST", signal,
       headers: { authorization: `Bearer ${api.key}`, "content-type": "application/json", "idempotency-key": p.key },
       body: JSON.stringify({ party_size: 2, starts_at: p.startsAt, duration_minutes: 90, assignment: { kind: "unit", id: p.unit } }),
     });
-    const body = (await res.json()) as { code?: string; replayed?: boolean };
-    return { key: p.key, status: res.status, code: body.code ?? null, replayed: body.replayed ?? null, retryAfter: res.headers.get("retry-after"), ms: performance.now() - t0 };
   } catch {
     return { key: p.key, status: 0, code: signal.aborted ? "transport_timeout" : "transport_error", replayed: null, retryAfter: null, ms: performance.now() - t0 };
   }
+  // a body that is not JSON is a plain result from a server that answered; a body that never ends is the deadline's business and stays a transport timeout
+  let body: { code?: string; replayed?: boolean } | null;
+  try {
+    body = (await res.json()) as { code?: string; replayed?: boolean };
+  } catch {
+    if (signal.aborted) return { key: p.key, status: 0, code: "transport_timeout", replayed: null, retryAfter: null, ms: performance.now() - t0 };
+    body = null;
+  }
+  const code = body !== null ? body.code ?? null : `http_${res.status}`;
+  return { key: p.key, status: res.status, code, replayed: body?.replayed ?? null, retryAfter: res.headers.get("retry-after"), ms: performance.now() - t0 };
 }
 
 /** Both variants ran, each made checks, and every check passed. An empty list passes nothing. */
@@ -84,6 +93,7 @@ async function runVariant(
   ];
 
   const blocker = new Client({ connectionString: appUrl, application_name: "dastar-exhaust-blocker" });
+  blocker.on("error", () => undefined);
   await blocker.connect();
   await blocker.query("begin");
   await blocker.query("select pg_advisory_xact_lock(dastar.unit_lock_key($1::uuid))", [u1]);
@@ -171,8 +181,10 @@ export async function runExhaust(opts: ExhaustOptions): Promise<ExhaustReport> {
   const poolMax = opts.poolMax ?? 16;
   const acquireMs = opts.acquireMs ?? 5_000;
   const owner = new Client({ connectionString: opts.ownerUrl });
+  owner.on("error", () => undefined);
   await owner.connect();
   const probe = new Client({ connectionString: opts.appUrl });
+  probe.on("error", () => undefined);
   await probe.connect();
   const setting = async (name: string): Promise<number> => Number((await probe.query("select setting from pg_settings where name = $1", [name])).rows[0].setting);
   const statementTimeoutMs = await setting("statement_timeout");
@@ -182,9 +194,9 @@ export async function runExhaust(opts: ExhaustOptions): Promise<ExhaustReport> {
     await owner.end();
     throw new Error(`exhaust: the acquire timeout (${acquireMs}ms) must be at least 1.5 s under the application role's statement timeout (${statementTimeoutMs}ms)`);
   }
-  if (idleInTransactionMs !== 0 && idleInTransactionMs < statementTimeoutMs + 5_000) {
+  if (idleInTransactionMs !== 0 && idleInTransactionMs < acquireMs + statementTimeoutMs + 5_000) {
     await owner.end();
-    throw new Error(`exhaust: the blocker sits idle in a transaction past the statement timeout, so idle_in_transaction_session_timeout (${idleInTransactionMs}ms) must exceed it by 5 s`);
+    throw new Error(`exhaust: the blocker sits idle in a transaction through the barrier, the acquire timeout and the statement timeout, so idle_in_transaction_session_timeout (${idleInTransactionMs}ms) must exceed their sum by 5 s`);
   }
   let started: Awaited<ReturnType<typeof listen>> | null = null;
   let keyPool: Pool | null = null;
