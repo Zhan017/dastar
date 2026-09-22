@@ -272,7 +272,7 @@ function printLoad(r: LoadReport, apiInProcess: boolean): void {
   }
   console.log(`drained ${r.drainMs.toFixed(0)} ms after the last arrival (holds alone ${r.holdDrainMs.toFixed(0)} ms); most holds waiting at one instant: ${r.peakOutstanding}`);
   console.log("n/a: too few samples to state that percentile; a..b or >=a: bounds, because some requests ended inside the phase");
-  if (r.transport.timeouts + r.transport.errors > 0) console.log(`no complete answer: ${r.transport.timeouts} timed out at the harness, ${r.transport.errors} failed to connect; the database shows ${r.transport.holdsCommitted} of those holds committed and ${r.transport.holdsNotCommitted} not`);
+  if (r.transport.timeouts + r.transport.errors > 0) console.log(`no complete answer: ${r.transport.timeouts} timed out at the harness, ${r.transport.errors} failed to connect; for the holds among them the database holds ${r.transport.holds.granted} granted, ${r.transport.holds.refused} refused, ${r.transport.holds.unobserved} with no outcome observed yet`);
   console.log(r.validity.valid ? "run valid: follow-ups, sweeper, invariants and transport clean over the run; hold refusals judged on the last step" : `RUN INVALID, nothing below is evidence: ${r.validity.reasons.join("; ")}`);
   console.log(`deadlocks=${r.deadlockDelta} overlaps=${r.overlaps} fit violations=${r.fitViolations} retries=${r.retries}; ${sweepLine(r.sweep)}`);
   if (r.targets) {

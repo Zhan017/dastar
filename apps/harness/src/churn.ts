@@ -47,6 +47,8 @@ export type ChurnSample = {
   sampleMs: number;
   /** Holds that were granted, and holds refused as conflicts, kept apart: a refusal is cheaper, so a shift in their mix would move a shared percentile on its own. Each distribution covers only the holds answered since the previous sample. */
   holdOkLatencyMs: Dist; holdConflictLatencyMs: Dist;
+  /** The interval this sample closes was cut short (the terminal sample after the workers stopped); its storage numbers count, its latency does not, because a short interval has too few holds to compare with a full one. */
+  partial: boolean;
 };
 /** invalid: the workload itself failed, so the storage numbers describe a broken run and are not judged. */
 export type ChurnVerdict = { verdict: "pass" | "fail" | "inconclusive" | "invalid"; reasons: string[] };
@@ -99,6 +101,7 @@ export const CHURN_RULES: readonly string[] = [
   "fail: heap dead-tuple percent: mean after above the mean before plus 5 points, or a fitted rise across the after window above 5 points",
   "fail: heap bytes per retained unit row: mean after above 1.25 times the mean before, or a fitted rise across the after window above 10 percent",
   "fail: p95 of granted holds: mean after above 1.5 times the mean before plus 1 ms, or a fitted rise across the after window above 25 percent plus 1 ms",
+  "latency is judged on full-interval samples only; the terminal sample after the workers stop is partial and reported, not judged",
 ];
 
 const EXPECTED_CODES: ReadonlySet<string> = new Set(["hold:ok", "hold:hold_conflict", "cancel:ok", "confirm:ok"]);
@@ -133,12 +136,18 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
   const before = samples.filter((x) => x.progress >= 0.15 && x.progress < 0.4);
   const off = samples.filter((x) => x.sweeper === "off");
   const after = samples.filter((x) => x.progress >= 0.75);
+  // the terminal sample's interval was cut short: its storage numbers count below, but it has too few holds to compare a latency percentile against a full interval
+  const full = (xs: readonly ChurnSample[]): ChurnSample[] => xs.filter((x) => !x.partial);
+  const beforeLatency = full(before);
+  const afterLatency = full(after);
   const open: string[] = [];
   if (before.length < 5 || after.length < 5) open.push(`too few samples: ${before.length} before, ${after.length} after`);
   const vacuums = samples.length === 0 ? 0 : samples[samples.length - 1]!.autovacuumCount - samples[0]!.autovacuumCount;
   if (vacuums < 3) open.push(`only ${vacuums} autovacuum runs on reservation_unit during the run`);
   if (run.elapsedS < DESIGN_CHURN.seconds && run.ops < DESIGN_CHURN.ops) open.push(`ran for ${run.elapsedS.toFixed(0)} s and ${run.ops} operations; the design's bounded run is ${DESIGN_CHURN.seconds} s or ${DESIGN_CHURN.ops} operations, whichever comes first`);
-  if ([...before, ...after].some((x) => x.holdOkLatencyMs.p95 === null)) open.push("a sample has too few granted holds to state p95");
+  if (beforeLatency.length === 0) open.push("no full-interval sample in the before window to judge latency from");
+  if (afterLatency.length === 0) open.push("no full-interval sample in the after window to judge latency from");
+  if ([...beforeLatency, ...afterLatency].some((x) => x.holdOkLatencyMs.p95 === null)) open.push("a sample has too few granted holds to state p95");
   if (open.length > 0) return { verdict: "inconclusive", reasons: open };
 
   const activeBefore = mean(before.map((x) => x.activeUnitRows));
@@ -152,18 +161,16 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
   const reasons: string[] = [];
   const deadAfter = mean(after.map((x) => x.pendingDead));
   if (deadAfter > 10 && deadAfter > deadBefore * 2) reasons.push(`dead holds were not cleared: mean ${deadAfter.toFixed(1)} after against ${deadBefore.toFixed(1)} before`);
-  const judge = (what: string, pick: (x: ChurnSample) => number, ratio: { times: number; plus: number; by: "max" | "mean" }, rise: { share: number; plus: number }): void => {
-    const b = before.map(pick);
-    const a = after.map(pick);
+  const judge = (what: string, b: number[], a: number[], ratio: { times: number; plus: number; by: "max" | "mean" }, rise: { share: number; plus: number }): void => {
     const level = (xs: number[]): number => (ratio.by === "max" ? Math.max(...xs) : mean(xs));
     if (level(a) > level(b) * ratio.times + ratio.plus) reasons.push(`${what} went from ${level(b).toFixed(1)} to ${level(a).toFixed(1)}`);
     const r = fittedRise(a);
     if (r > mean(a) * rise.share + rise.plus) reasons.push(`${what} was still rising at the end: ${r.toFixed(1)} across the last window, mean ${mean(a).toFixed(1)}`);
   };
-  judge("exclusion index bytes", (x) => x.exclusionIndexBytes, { times: 1.25, plus: 0, by: "max" }, { share: 0.1, plus: 0 });
-  judge("heap dead-tuple percent", (x) => x.heapDeadTuplePercent, { times: 1, plus: 5, by: "mean" }, { share: 0, plus: 5 });
-  judge("heap bytes per retained row", (x) => x.heapBytes / Math.max(1, x.retainedUnitRows), { times: 1.25, plus: 0, by: "mean" }, { share: 0.1, plus: 0 });
-  judge("granted-hold p95 ms", (x) => x.holdOkLatencyMs.p95!.atLeast, { times: 1.5, plus: 1, by: "mean" }, { share: 0.25, plus: 1 });
+  judge("exclusion index bytes", before.map((x) => x.exclusionIndexBytes), after.map((x) => x.exclusionIndexBytes), { times: 1.25, plus: 0, by: "max" }, { share: 0.1, plus: 0 });
+  judge("heap dead-tuple percent", before.map((x) => x.heapDeadTuplePercent), after.map((x) => x.heapDeadTuplePercent), { times: 1, plus: 5, by: "mean" }, { share: 0, plus: 5 });
+  judge("heap bytes per retained row", before.map((x) => x.heapBytes / Math.max(1, x.retainedUnitRows)), after.map((x) => x.heapBytes / Math.max(1, x.retainedUnitRows)), { times: 1.25, plus: 0, by: "mean" }, { share: 0.1, plus: 0 });
+  judge("granted-hold p95 ms", beforeLatency.map((x) => x.holdOkLatencyMs.p95!.atLeast), afterLatency.map((x) => x.holdOkLatencyMs.p95!.atLeast), { times: 1.5, plus: 1, by: "mean" }, { share: 0.25, plus: 1 });
   return { verdict: reasons.length === 0 ? "pass" : "fail", reasons };
 }
 
@@ -247,7 +254,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
     }
   }
 
-  async function sample(): Promise<void> {
+  async function sample(partial = false): Promise<void> {
     const sampleStarted = performance.now();
     const x = (await deps.owner.query(SAMPLE_SQL)).rows[0];
     const sampleMs = performance.now() - sampleStarted;
@@ -262,7 +269,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
       heapDeadTuplePercent: x.heap_dead_pct, heapFreePercent: x.heap_free_pct, indexFreePercent: x.index_free_pct,
       nLiveTup: x.n_live, nDeadTup: x.n_dead, autovacuumCount: x.autovacuum_count, autoanalyzeCount: x.autoanalyze_count,
       lastAutovacuum: x.last_autovacuum === null ? null : new Date(x.last_autovacuum as string).toISOString(),
-      walPosition: x.wal_position, sampleMs, holdOkLatencyMs: dist(exact(ok)), holdConflictLatencyMs: dist(exact(conflict)),
+      walPosition: x.wal_position, sampleMs, holdOkLatencyMs: dist(exact(ok)), holdConflictLatencyMs: dist(exact(conflict)), partial,
     });
   }
   const sampler: { wake: (() => void) | null } = { wake: null };
@@ -284,7 +291,12 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
     done = true;
     sampler.wake?.();
     await sampleLoop;
-    await sample();
+    try {
+      await sample(true);
+    } catch (e) {
+      // the terminal sample is outside the loop's handler; a failure here makes the run invalid the same way
+      sampleError = sampleError ?? (e as Error).message;
+    }
   } finally {
     // on any way out, so a failure cannot leave the sampler or the sweeper running
     done = true;

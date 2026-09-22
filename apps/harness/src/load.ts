@@ -9,7 +9,7 @@ import { dist, exact, type Dist, type Quantile, type Sample } from "./stats.js";
 import { deadlocksStable, fitViolations } from "./observe.js";
 import { overlapPairs } from "./race.js";
 import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "./sweeper.js";
-import type { LoadTarget, Phases } from "./target.js";
+import type { HoldAnswer, LoadTarget, Phases } from "./target.js";
 
 /**
  * conflict is a legitimate answer; timeout, unavailable, other, shed, and transport count as errors.
@@ -36,8 +36,12 @@ export type HoldRecord = {
   atMs: number; startedMs: number; doneMs: number | null;
   /** From the planned arrival to the answer, so dispatcher lag and queueing count. Censored when the harness got no complete answer (it gave up waiting, or the connection failed): an answer would have taken at least this long. */
   e2eMs: number | null; e2eCensored: boolean;
-  /** Only for a request the harness got no complete answer to: whether the database holds its committed outcome. */
-  committed: boolean | null;
+  /**
+   * Only for a request the harness got no complete answer to: what the idempotency row held when the run
+   * looked — a granted hold, a stored refusal, or no outcome yet. `unobserved` is not `failed`: an
+   * outstanding request can still commit after this look.
+   */
+  stored: "granted" | "refused" | "unobserved" | null;
 } & Phases;
 export type FollowUpRecord = { kind: "confirm" | "cancel"; step: number; atMs: number; startedMs: number; doneMs: number | null; code: string; e2eMs: number | null };
 
@@ -58,6 +62,8 @@ export type LoadSession = {
   readonly records: HoldRecord[];
   readonly followUps: FollowUpRecord[];
   readonly sweep: SweepStats;
+  /** Requests where the target itself threw instead of answering. A target never throws by contract, so any count here makes the run invalid. */
+  readonly targetThrows: () => number;
   /** Resolves when every started request has an answer. */
   drain: () => Promise<void>;
   /** Stops the sweeper. The target belongs to the caller. */
@@ -75,6 +81,7 @@ export function openSession(deps: LoadDeps, opts: SessionOptions): LoadSession {
   const followUps: FollowUpRecord[] = [];
   const recent: string[] = [];
   const inFlight = new Set<Promise<void>>();
+  let targetThrows = 0;
   const track = (p: Promise<void>): void => {
     inFlight.add(p);
     // a target never throws by contract; this keeps a derived promise from becoming an unhandled rejection if one ever does
@@ -86,12 +93,19 @@ export function openSession(deps: LoadDeps, opts: SessionOptions): LoadSession {
     const input = nextHold(mix, a.seq);
     const startedMs = a.atMs + lateMs;
     if (inFlight.size >= maxInFlight) {
-      records.push({ seq: a.seq, step: a.step, mix, cls: "shed", code: "shed", atMs: a.atMs, startedMs, doneMs: null, e2eMs: null, e2eCensored: false, committed: null, ...NO_PHASES });
+      records.push({ seq: a.seq, step: a.step, mix, cls: "shed", code: "shed", atMs: a.atMs, startedMs, doneMs: null, e2eMs: null, e2eCensored: false, stored: null, ...NO_PHASES });
       return;
     }
     const fired = performance.now();
     track((async (): Promise<void> => {
-      const answer = await deps.target.hold(input);
+      let answer: HoldAnswer;
+      try {
+        answer = await deps.target.hold(input);
+      } catch {
+        // a target never throws by contract; if one does, the request is still recorded, and the run is invalid
+        answer = { code: "target_threw", reservationId: null, phases: null };
+        targetThrows += 1;
+      }
       const took = performance.now() - fired;
       if (answer.reservationId !== null) {
         recent.push(answer.reservationId);
@@ -99,7 +113,7 @@ export function openSession(deps: LoadDeps, opts: SessionOptions): LoadSession {
       }
       records.push({
         seq: a.seq, step: a.step, mix, cls: classify(answer.code), code: answer.code,
-        atMs: a.atMs, startedMs, doneMs: startedMs + took, e2eMs: lateMs + took, e2eCensored: classify(answer.code) === "transport", committed: null,
+        atMs: a.atMs, startedMs, doneMs: startedMs + took, e2eMs: lateMs + took, e2eCensored: classify(answer.code) === "transport", stored: null,
         ...(answer.phases ?? NO_PHASES),
       });
     })());
@@ -116,14 +130,21 @@ export function openSession(deps: LoadDeps, opts: SessionOptions): LoadSession {
     const fired = performance.now();
     const traceId = `${opts.runId}-f${a.seq}`;
     track((async (): Promise<void> => {
-      const code = await (kind === "confirm" ? deps.target.confirm(reservationId, deps.seed.venue, traceId) : deps.target.cancel(reservationId, deps.seed.venue, traceId));
+      let code: string;
+      try {
+        code = await (kind === "confirm" ? deps.target.confirm(reservationId, deps.seed.venue, traceId) : deps.target.cancel(reservationId, deps.seed.venue, traceId));
+      } catch {
+        // a target never throws by contract; if one does, the request is still recorded, and the run is invalid
+        code = "target_threw";
+        targetThrows += 1;
+      }
       const took = performance.now() - fired;
       followUps.push({ kind, step: a.step, atMs: a.atMs, startedMs, doneMs: startedMs + took, code, e2eMs: lateMs + took });
     })());
   };
 
   return {
-    hold, followUp, records, followUps, sweep: sweeper.stats,
+    hold, followUp, records, followUps, sweep: sweeper.stats, targetThrows: () => targetThrows,
     drain: async () => { while (inFlight.size > 0) await Promise.allSettled([...inFlight]); },
     close: async () => { await sweeper.stop(); await worker.close(); },
   };
@@ -254,12 +275,17 @@ export type RunValidity = { valid: boolean; reasons: string[] };
 export function runValidity(run: {
   kind: LoadTarget["kind"]; records: readonly HoldRecord[]; followUps: readonly FollowUpRecord[]; sweep: SweepStats;
   overlaps: number; fitViolations: number; lastStep: StepSummary | undefined;
+  /** What the arrival plan asked for. Fewer records than planned means some requests were never even attempted or never wrote one down; the run cannot be trusted to describe the workload it was given. */
+  planned: { holds: number; followUps: number }; targetThrows: number;
 }): RunValidity {
   const reasons: string[] = [];
   if (run.sweep.errors > 0) reasons.push(`${run.sweep.errors} sweeper error(s)`);
   if (run.sweep.ticks === 0) reasons.push("the sweeper never ran");
   if (run.overlaps > 0) reasons.push(`${run.overlaps} overlapping pair(s) of active unit rows`);
   if (run.fitViolations > 0) reasons.push(`${run.fitViolations} live reservation(s) outside their capacity`);
+  if (run.records.length !== run.planned.holds) reasons.push(`${run.records.length} of ${run.planned.holds} planned holds have a record`);
+  if (run.followUps.length !== run.planned.followUps) reasons.push(`${run.followUps.length} of ${run.planned.followUps} planned follow-ups have a record`);
+  if (run.targetThrows > 0) reasons.push(`${run.targetThrows} request(s) made the target throw`);
   const executed = run.followUps.filter((x) => x.code !== "skipped");
   const failedFollowUps = executed.filter((x) => x.code !== "ok");
   if (executed.length > 0 && failedFollowUps.length / executed.length > 0.001) {
@@ -272,8 +298,11 @@ export function runValidity(run: {
   }
   const unanswered = run.records.filter((x) => x.cls === "transport").length + run.followUps.filter((x) => classify(x.code) === "transport").length;
   if (unanswered > 0) {
-    const committed = run.records.filter((x) => x.cls === "transport" && x.committed === true).length;
-    reasons.push(`${unanswered} request(s) got no complete answer from the API; the database shows ${committed} of the holds among them committed anyway`);
+    const lost = run.records.filter((x) => x.cls === "transport");
+    const granted = lost.filter((x) => x.stored === "granted").length;
+    const refused = lost.filter((x) => x.stored === "refused").length;
+    const unobserved = lost.filter((x) => x.stored === "unobserved").length;
+    reasons.push(`${unanswered} request(s) got no complete answer from the API; for the holds among them the database holds ${granted} granted, ${refused} refused, ${unobserved} with no outcome observed yet`);
   }
   // refusals for load (timeout, unavailable, shed) are results; an answer of any other kind means the workload itself is broken
   const strange = run.records.filter((x) => x.cls === "other");
@@ -394,8 +423,8 @@ export type LoadReport = {
   peakOutstanding: number;
   /** Judged before any target: did the workload itself run as asked? */
   validity: RunValidity;
-  /** Requests the harness got no complete answer to, and what the database says became of the holds among them. */
-  transport: { timeouts: number; errors: number; holdsCommitted: number; holdsNotCommitted: number };
+  /** Requests the harness got no complete answer to, and what the idempotency row held for the holds among them when the run looked. */
+  transport: { timeouts: number; errors: number; holds: { granted: number; refused: number; unobserved: number } };
   retries: number; sweep: SweepStats;
   deadlockDelta: number; overlaps: number; fitViolations: number; elapsedMs: number;
   /** Present only for label "target-hardware": the last step against the design targets. */
@@ -432,15 +461,24 @@ export async function runLoad(deps: LoadDeps & { owner: ClientBase }, opts: Load
   // a client that got no answer does not know what the database did; the idempotency row does
   const unanswered = session.records.filter((x) => x.cls === "transport");
   if (unanswered.length > 0) {
-    const rows = await deps.owner.query("select key from dastar.idempotency where venue_id = $1 and key = any($2::text[]) and response is not null", [deps.seed.venue, unanswered.map((x) => `${runId}-h${x.seq}`)]);
-    const stored = new Set(rows.rows.map((x) => x.key as string));
-    for (const x of unanswered) x.committed = stored.has(`${runId}-h${x.seq}`);
+    const rows = await deps.owner.query(
+      "select key, (response->>'ok')::boolean as ok from dastar.idempotency where venue_id = $1 and key = any($2::text[]) and response is not null",
+      [deps.seed.venue, unanswered.map((x) => `${runId}-h${x.seq}`)],
+    );
+    const outcomes = new Map(rows.rows.map((x) => [x.key as string, x.ok as boolean | null]));
+    for (const x of unanswered) {
+      const ok = outcomes.get(`${runId}-h${x.seq}`);
+      x.stored = ok === true ? "granted" : ok === false ? "refused" : "unobserved";
+    }
   }
   const lastHold = maxOf(session.records.map((x) => x.doneMs ?? 0));
   const lastAnswer = maxOf([lastHold, ...session.followUps.map((x) => x.doneMs ?? 0)]);
   const overlaps = await overlapPairs(deps.owner);
   const fit = await fitViolations(deps.owner);
-  const validity = runValidity({ kind: deps.target.kind, records: session.records, followUps: session.followUps, sweep: session.sweep, overlaps, fitViolations: fit, lastStep: steps[steps.length - 1] });
+  const validity = runValidity({
+    kind: deps.target.kind, records: session.records, followUps: session.followUps, sweep: session.sweep, overlaps, fitViolations: fit, lastStep: steps[steps.length - 1],
+    planned: { holds: holds.length, followUps: follow.length }, targetThrows: session.targetThrows(),
+  });
   const all = [...session.records.map((x) => x.code), ...session.followUps.map((x) => x.code)];
   const report: LoadReport = {
     command: "load", label: opts.label, target: deps.target.kind, runId, seed: opts.seed, blend: opts.blend, workload,
@@ -449,7 +487,11 @@ export async function runLoad(deps: LoadDeps & { owner: ClientBase }, opts: Load
     validity,
     transport: {
       timeouts: all.filter((c) => c === "transport_timeout").length, errors: all.filter((c) => c === "transport_error").length,
-      holdsCommitted: unanswered.filter((x) => x.committed === true).length, holdsNotCommitted: unanswered.filter((x) => x.committed === false).length,
+      holds: {
+        granted: unanswered.filter((x) => x.stored === "granted").length,
+        refused: unanswered.filter((x) => x.stored === "refused").length,
+        unobserved: unanswered.filter((x) => x.stored === "unobserved").length,
+      },
     },
     retries: session.records.reduce((n, x) => n + x.retries, 0), sweep: session.sweep,
     deadlockDelta, overlaps, fitViolations: fit, elapsedMs,

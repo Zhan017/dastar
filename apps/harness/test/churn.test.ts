@@ -10,7 +10,7 @@ const sample = (over: Partial<ChurnSample>): ChurnSample => ({
   atS: 0, progress: 0, ops: 0, sweeper: "on", retainedUnitRows: 1_000, activeUnitRows: 100, pendingDead: 2,
   heapBytes: 100_000, exclusionIndexBytes: 50_000, totalBytes: 200_000, heapDeadTuplePercent: 2, heapFreePercent: 5, indexFreePercent: 5,
   nLiveTup: 1_000, nDeadTup: 10, autovacuumCount: 0, autoanalyzeCount: 0, lastAutovacuum: null, walPosition: 0, sampleMs: 1,
-  holdOkLatencyMs: latency(8), holdConflictLatencyMs: latency(5), ...over,
+  holdOkLatencyMs: latency(8), holdConflictLatencyMs: latency(5), partial: false, ...over,
 });
 /** Five samples before, two with the sweeper off and dead holds piled up, five after. */
 const series = (after: (k: number) => Partial<ChurnSample>, opts: { vacuums?: number; peak?: number } = {}): ChurnSample[] => [
@@ -70,6 +70,22 @@ describe("churn verdict", () => {
     const v = judgeChurn({ samples: series((k) => ({ exclusionIndexBytes: 50_000 + k * 2_500 })), ...good });
     expect(v).toEqual({ verdict: "fail", reasons: [expect.stringMatching(/exclusion index bytes was still rising at the end/)] });
   });
+
+  it("the terminal sample is partial: its storage numbers are judged, its latency is not", () => {
+    // the last after sample (progress 1.0) has too few holds to state a latency percentile, but is otherwise good
+    const terminalPartial = (k: number): Partial<ChurnSample> => (k === 4 ? { partial: true, holdOkLatencyMs: latency(null, 3) } : {});
+    expect(judgeChurn({ samples: series(terminalPartial), ...good })).toEqual({ verdict: "pass", reasons: [] });
+
+    // every after sample partial leaves no full-interval sample to judge latency from
+    const everyAfterPartial = (): Partial<ChurnSample> => ({ partial: true });
+    const noLatencyWindow = judgeChurn({ samples: series(everyAfterPartial), ...good });
+    expect(noLatencyWindow).toEqual({ verdict: "inconclusive", reasons: [expect.stringMatching(/no full-interval sample in the after window/)] });
+
+    // storage still counts a partial sample: a spike in the terminal sample alone still fails the rule
+    const terminalSpike = (k: number): Partial<ChurnSample> => (k === 4 ? { partial: true, exclusionIndexBytes: 90_000 } : {});
+    const reasons = judgeChurn({ samples: series(terminalSpike), ...good }).reasons;
+    expect(reasons).toContainEqual(expect.stringMatching(/exclusion index bytes went from/));
+  });
 });
 
 describe("churn run", () => {
@@ -104,6 +120,9 @@ describe("churn run", () => {
     // the measured run ends with its last sample: nothing but the configured sweeper expired holds before it
     expect(r.samples[r.samples.length - 1]!.atS).toBeLessThanOrEqual(r.elapsedS);
     expect(r.samples[r.samples.length - 1]!.progress).toBe(1);
+    // the terminal sample's interval was cut short; every other sample closed a full interval
+    expect(r.samples.slice(0, -1).every((s) => s.partial === false)).toBe(true);
+    expect(r.samples[r.samples.length - 1]!.partial).toBe(true);
     expect(r.sweep.maxBatchesInTick).toBeGreaterThanOrEqual(1);
     expect(r.cleanup.batches).toBeGreaterThanOrEqual(1);
     expect(r.cleanup.pendingDeadAtEnd).toBeGreaterThanOrEqual(0);

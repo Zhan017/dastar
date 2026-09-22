@@ -26,7 +26,9 @@ export type HoldAnswer = { code: string; reservationId: string | null; phases: P
  * What a load run sends requests to. A target never throws: a failure is an answer with a code. Two codes
  * come from the harness, not from the system under test: `transport_timeout`, when no complete answer
  * arrived within the harness's own deadline, and `transport_error`, when the connection failed. Neither
- * says what the database did; the run resolves that from the idempotency table afterwards.
+ * says what the database did; the run resolves that from the idempotency table afterwards. A third,
+ * `malformed_response`, means the server answered with a status that claims success and a body that does
+ * not carry it; it is an answer no healthy run produces, so it invalidates the run through the `other` rule.
  */
 export type LoadTarget = {
   readonly kind: "engine" | "http";
@@ -111,8 +113,18 @@ export function httpTarget(api: { url: string; keys: readonly string[]; deadline
   if (api.keys.length === 0) throw new Error("http target: at least one key");
   const deadlineMs = api.deadlineMs ?? HTTP_DEADLINE_MS;
   let n = 0;
-  type Body = { code?: string; receipt?: { reservation_id?: string } };
-  const post = async (path: string, traceId: string, body: unknown, extra: Record<string, string> = {}): Promise<{ status: number; body: Body } | "transport_timeout" | "transport_error"> => {
+  /** A parsed JSON object. `null` when the server answered but the body was not one: empty, HTML, a JSON literal, an array. */
+  type Body = Record<string, unknown>;
+  type Posted = { status: number; body: Body | null } | "transport_timeout" | "transport_error";
+  const parseObject = (text: string): Body | null => {
+    try {
+      const v: unknown = JSON.parse(text);
+      return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Body) : null;
+    } catch {
+      return null;
+    }
+  };
+  const post = async (path: string, traceId: string, body: unknown, extra: Record<string, string> = {}): Promise<Posted> => {
     const signal = AbortSignal.timeout(deadlineMs);
     let res: Response;
     try {
@@ -125,22 +137,32 @@ export function httpTarget(api: { url: string; keys: readonly string[]; deadline
     } catch {
       return signal.aborted ? "transport_timeout" : "transport_error";
     }
-    // a body that is not JSON is a plain result from a server that answered; a body that never ends is the deadline's business and stays a transport timeout
+    // reading the whole body is part of getting an answer: a connection that breaks or a deadline that fires here is a transport failure
+    let text: string;
     try {
-      return { status: res.status, body: (await res.json()) as Body };
+      text = await res.text();
     } catch {
-      if (signal.aborted) return "transport_timeout";
-      return { status: res.status, body: {} };
+      return signal.aborted ? "transport_timeout" : "transport_error";
     }
+    return { status: res.status, body: parseObject(text) };
   };
-  const codeFrom = (r: Awaited<ReturnType<typeof post>>, okStatus: number): string => (typeof r === "string" ? r : r.status === okStatus ? "ok" : r.body.code ?? `http_${r.status}`);
+  /** A success needs the status and a JSON object; a refusal's code comes from the body when it has one. */
+  const codeFrom = (r: Posted, okStatus: number): string =>
+    typeof r === "string" ? r
+      : r.status === okStatus ? (r.body !== null ? "ok" : "malformed_response")
+      : typeof r.body?.code === "string" ? r.body.code : `http_${r.status}`;
   return {
     kind: "http",
     hold: async (input) => {
       const r = await post(`/v1/venues/${input.venueId}/holds`, input.traceId, {
         party_size: input.partySize, starts_at: input.startsAt, duration_minutes: input.durationMinutes, assignment: input.assignment,
       }, { "idempotency-key": input.idempotencyKey });
-      return { code: codeFrom(r, 201), reservationId: typeof r !== "string" && r.status === 201 ? r.body.receipt?.reservation_id ?? null : null, phases: null };
+      if (typeof r === "string" || r.status !== 201) return { code: codeFrom(r, 201), reservationId: null, phases: null };
+      // a 201 claims a receipt; a body that does not carry one, whatever the reason, is no answer a healthy run produces
+      const receipt = r.body?.receipt;
+      const reservationId = receipt !== null && typeof receipt === "object" && !Array.isArray(receipt) && typeof (receipt as Record<string, unknown>).reservation_id === "string"
+        ? ((receipt as Record<string, unknown>).reservation_id as string) : null;
+      return reservationId !== null ? { code: "ok", reservationId, phases: null } : { code: "malformed_response", reservationId: null, phases: null };
     },
     confirm: async (reservationId, _venueId, traceId) => codeFrom(await post(`/v1/reservations/${reservationId}/confirm`, traceId, {}), 200),
     cancel: async (reservationId, _venueId, traceId) => codeFrom(await post(`/v1/reservations/${reservationId}/cancel`, traceId, { reason: "load run" }), 200),

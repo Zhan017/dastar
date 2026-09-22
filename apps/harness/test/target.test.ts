@@ -128,6 +128,42 @@ describe("load targets", () => {
     }
   });
 
+  it("http: a 201 whose body is not the JSON object the route returns is a malformed response, not an ok hold", async () => {
+    const nullBody = createHttpServer((_req, res) => { res.writeHead(201, { "content-type": "application/json" }); res.end("null"); });
+    await new Promise<void>((r) => nullBody.listen(0, "127.0.0.1", () => r()));
+    try {
+      const t = httpTarget({ url: `http://127.0.0.1:${(nullBody.address() as AddressInfo).port}`, keys: ["dsk_unused"] });
+      expect(await t.hold(input(0))).toEqual({ code: "malformed_response", reservationId: null, phases: null });
+    } finally {
+      nullBody.closeAllConnections();
+      await new Promise<void>((r) => nullBody.close(() => r()));
+    }
+  });
+
+  it("http: a connection that breaks mid-body, well inside the deadline, is a transport error, not a timeout or a malformed response", async () => {
+    // headers and half a body are delivered in order, then the stream ends inside the body (a clean FIN, not a reset): a control fetch first proves the headers arrive and only the body read fails
+    const open = new Set<Socket>();
+    const brokenBody = createHttpServer((req, res) => {
+      open.add(req.socket);
+      // a declared length the body never reaches; the half body is flushed before the connection is closed cleanly (FIN, not a reset), so the client parses the headers, reads the half body, and meets the end of the stream inside the body
+      res.writeHead(200, { "content-type": "application/json", "content-length": "64" });
+      res.write('{"receipt":', () => { req.socket.end(); });
+    });
+    await new Promise<void>((r) => brokenBody.listen(0, "127.0.0.1", () => r()));
+    try {
+      const url = `http://127.0.0.1:${(brokenBody.address() as AddressInfo).port}`;
+      const control = await fetch(`${url}/v1/reservations/x/confirm`, { method: "POST" });
+      expect(control.status).toBe(200);
+      await expect(control.text()).rejects.toThrow();
+      const t = httpTarget({ url, keys: ["dsk_unused"] });
+      expect(await t.confirm("00000000-0000-0000-0000-000000000000", seed.venue, "x")).toBe("transport_error");
+    } finally {
+      for (const socket of open) socket.destroy();
+      brokenBody.closeAllConnections();
+      await new Promise<void>((r) => brokenBody.close(() => r()));
+    }
+  });
+
   it("http: an intermediary's non-JSON error body is a plain error code, not a transport failure", async () => {
     const bad = createHttpServer((_req, res) => { res.writeHead(502, { "content-type": "text/html" }); res.end("<html>bad gateway</html>"); });
     await new Promise<void>((r) => bad.listen(0, "127.0.0.1", () => r()));

@@ -7,7 +7,7 @@ import { dropNaiveDatabase, withDatabase } from "../src/naive.js";
 const MIGRATIONS = new URL("../../../packages/db/migrations", import.meta.url).pathname;
 
 const rec = (over: Partial<HoldRecord>): HoldRecord => ({
-  seq: 0, step: 0, mix: "overlapping", cls: "ok", code: "ok", atMs: 0, startedMs: 0, doneMs: 10, e2eMs: 10, e2eCensored: false, committed: null,
+  seq: 0, step: 0, mix: "overlapping", cls: "ok", code: "ok", atMs: 0, startedMs: 0, doneMs: 10, e2eMs: 10, e2eCensored: false, stored: null,
   poolWaitMs: 1, poolWaitCensored: false, unitLockMs: 2, unitLockCensored: false, transactionMs: 8, connectionHeldMs: 9, retries: 0, ...over,
 });
 

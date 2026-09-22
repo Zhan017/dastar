@@ -4,7 +4,7 @@ import { DESIGN_SWEEP, type SweepStats } from "../src/sweeper.js";
 import { TARGET_BLEND } from "../src/workload.js";
 
 const rec = (over: Partial<HoldRecord>): HoldRecord => ({
-  seq: 0, step: 0, mix: "overlapping", cls: "ok", code: "ok", atMs: 0, startedMs: 1, doneMs: 9, e2eMs: 9, e2eCensored: false, committed: null,
+  seq: 0, step: 0, mix: "overlapping", cls: "ok", code: "ok", atMs: 0, startedMs: 1, doneMs: 9, e2eMs: 9, e2eCensored: false, stored: null,
   poolWaitMs: 1, poolWaitCensored: false, unitLockMs: 2, unitLockCensored: false, transactionMs: 5, connectionHeldMs: 6, retries: 0, ...over,
 });
 const many = (n: number, over: Partial<HoldRecord>): HoldRecord[] => Array.from({ length: n }, (_, i) => rec({ seq: i, ...over }));
@@ -62,7 +62,10 @@ describe("load summaries", () => {
 });
 
 describe("run validity", () => {
-  const base = { kind: "http" as const, records: many(300, {}), followUps: Array.from({ length: 60 }, () => followUp({})), sweep: sweep(), overlaps: 0, fitViolations: 0, lastStep: step(many(300, {})) };
+  const base = {
+    kind: "http" as const, records: many(300, {}), followUps: Array.from({ length: 60 }, () => followUp({})), sweep: sweep(), overlaps: 0, fitViolations: 0, lastStep: step(many(300, {})),
+    planned: { holds: 300, followUps: 60 }, targetThrows: 0,
+  };
 
   it("a run is valid when its follow-ups succeeded, its sweeper ran clean, and every request was answered", () => {
     expect(runValidity(base)).toEqual({ valid: true, reasons: [] });
@@ -74,8 +77,10 @@ describe("run validity", () => {
     expect(runValidity({ ...base, sweep: sweep({ ticks: 0 }) }).reasons).toEqual(["the sweeper never ran"]);
     expect(runValidity({ ...base, overlaps: 1, fitViolations: 2 }).reasons).toHaveLength(2);
     expect(runValidity({ ...base, followUps: Array.from({ length: 60 }, (_, i) => followUp(i < 40 ? { code: "skipped", doneMs: null, e2eMs: null } : {})) }).reasons).toEqual([expect.stringMatching(/only 20 of 60 planned/)]);
-    const unanswered = [...many(298, {}), rec({ cls: "transport", code: "transport_timeout", e2eCensored: true, committed: true }), rec({ cls: "transport", code: "transport_error", committed: false })];
-    expect(runValidity({ ...base, records: unanswered }).reasons).toEqual([expect.stringMatching(/2 request\(s\) got no complete answer.*1 of the holds among them committed anyway/)]);
+    const unanswered = [...many(298, {}), rec({ cls: "transport", code: "transport_timeout", e2eCensored: true, stored: "granted" }), rec({ cls: "transport", code: "transport_error", stored: "unobserved" })];
+    expect(runValidity({ ...base, records: unanswered }).reasons).toEqual([expect.stringMatching(/2 request\(s\) got no complete answer from the API; for the holds among them the database holds 1 granted, 0 refused, 1 with no outcome observed yet/)]);
+    expect(runValidity({ ...base, planned: { holds: 301, followUps: 60 } }).reasons).toEqual(["300 of 301 planned holds have a record"]);
+    expect(runValidity({ ...base, targetThrows: 1 }).reasons).toEqual(["1 request(s) made the target throw"]);
   });
 
   it("at the engine handle refused holds invalidate the run, because no judged target there would notice them; over HTTP they are the error-rate target's business", () => {
@@ -93,7 +98,7 @@ describe("run validity", () => {
     expect(evaluateTargets("http", step(broken), 0, runValidity({ ...base, records: broken, lastStep: step(broken) }), TARGET).verdict).toBe("invalid");
     // one stray answer in two thousand is inside the tolerance the error-rate target itself allows
     const stray = [...many(1_999, {}), rec({ cls: "other", code: "internal" })];
-    expect(runValidity({ ...base, records: stray, lastStep: step(stray) }).valid).toBe(true);
+    expect(runValidity({ ...base, records: stray, lastStep: step(stray), planned: { holds: 2_000, followUps: 60 } }).valid).toBe(true);
   });
 });
 
@@ -101,7 +106,7 @@ describe("design targets", () => {
   it("300 successful holds with 60 failed confirmations is an invalid run, not a met target", () => {
     const rs = many(300, { mix: "distinct_dates" });
     const fs = Array.from({ length: 60 }, () => followUp({ code: "timeout" }));
-    const validity = runValidity({ kind: "http", records: rs, followUps: fs, sweep: sweep(), overlaps: 0, fitViolations: 0, lastStep: step(rs, fs) });
+    const validity = runValidity({ kind: "http", records: rs, followUps: fs, sweep: sweep(), overlaps: 0, fitViolations: 0, lastStep: step(rs, fs), planned: { holds: 300, followUps: 60 }, targetThrows: 0 });
     const v = evaluateTargets("http", step(rs, fs), 0, validity, TARGET);
     expect(v.verdict).toBe("invalid");
     // the hold metrics are still reported; they are just not accepted
@@ -162,7 +167,7 @@ describe("design targets", () => {
   it("an empty step, a step of nothing but refusals, and a step of nothing but lower bounds: none of them is met", () => {
     expect(evaluateTargets("http", step([]), 0, VALID, TARGET).verdict).toBe("inconclusive");
     expect(evaluateTargets("http", step(many(400, { cls: "shed", code: "shed", doneMs: null, e2eMs: null })), 0, VALID, TARGET).verdict).toBe("missed");
-    const lost = many(400, { cls: "transport", code: "transport_error", e2eMs: 1, e2eCensored: true, committed: false });
+    const lost = many(400, { cls: "transport", code: "transport_error", e2eMs: 1, e2eCensored: true, stored: "unobserved" });
     const v = evaluateTargets("http", step(lost), 0, VALID, TARGET);
     // a connection that failed after 1 ms says an answer would have taken at least 1 ms, not that it took 1 ms
     expect(v.checks.find((c) => c.name === "hold end-to-end p95 ms")).toMatchObject({ atLeast: 1, atMost: null, status: "inconclusive" });
@@ -175,7 +180,7 @@ describe("design targets", () => {
   });
 
   it("over HTTP a request the harness gave up on is a lower bound on end-to-end latency", () => {
-    const rs = [...many(395, { mix: "distinct_dates", e2eMs: 40 }), ...many(5, { mix: "distinct_dates", cls: "transport", code: "transport_timeout", e2eMs: 30_000, e2eCensored: true, committed: false })];
+    const rs = [...many(395, { mix: "distinct_dates", e2eMs: 40 }), ...many(5, { mix: "distinct_dates", cls: "transport", code: "transport_timeout", e2eMs: 30_000, e2eCensored: true, stored: "unobserved" })];
     expect(evaluateTargets("http", step(rs), 0, VALID, TARGET).checks.find((c) => c.name === "hold end-to-end p99 ms")).toMatchObject({ atLeast: 30_000, atMost: null, status: "missed" });
   });
 });

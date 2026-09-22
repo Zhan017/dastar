@@ -34,11 +34,23 @@ export type ExhaustReport = {
 export type Api = { url: string; key: string; /** For headers and body together; past it the answer is status 0 with a transport code. */ deadlineMs: number };
 export type Planned = { key: string; unit: string; startsAt: string };
 
+/** A parsed JSON object. `null` when the server answered but the body was not one: empty, HTML, a JSON literal, an array. */
+type Body = Record<string, unknown>;
+const parseObject = (text: string): Body | null => {
+  try {
+    const v: unknown = JSON.parse(text);
+    return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Body) : null;
+  } catch {
+    return null;
+  }
+};
+
 /**
  * One hold over HTTP. A response that does not arrive in full within the deadline is an answer with status 0
  * and code `transport_timeout` (or `transport_error`), so a stalled API fails checks with evidence instead
  * of hanging the run. Such an answer says nothing about what the database did; the checks read that from
- * the database.
+ * the database. A status that claims success with a body that does not carry it, or a 201 whose receipt has
+ * no reservation id, is `malformed_response`: an answer no healthy run produces.
  */
 export async function postHold(api: Api, venue: string, p: Planned): Promise<Answer> {
   const t0 = performance.now();
@@ -53,16 +65,25 @@ export async function postHold(api: Api, venue: string, p: Planned): Promise<Ans
   } catch {
     return { key: p.key, status: 0, code: signal.aborted ? "transport_timeout" : "transport_error", replayed: null, retryAfter: null, ms: performance.now() - t0 };
   }
-  // a body that is not JSON is a plain result from a server that answered; a body that never ends is the deadline's business and stays a transport timeout
-  let body: { code?: string; replayed?: boolean } | null;
+  // reading the whole body is part of getting an answer: a connection that breaks or a deadline that fires here is a transport failure
+  let text: string;
   try {
-    body = (await res.json()) as { code?: string; replayed?: boolean };
+    text = await res.text();
   } catch {
-    if (signal.aborted) return { key: p.key, status: 0, code: "transport_timeout", replayed: null, retryAfter: null, ms: performance.now() - t0 };
-    body = null;
+    return { key: p.key, status: 0, code: signal.aborted ? "transport_timeout" : "transport_error", replayed: null, retryAfter: null, ms: performance.now() - t0 };
   }
-  const code = body !== null ? body.code ?? null : `http_${res.status}`;
-  return { key: p.key, status: res.status, code, replayed: body?.replayed ?? null, retryAfter: res.headers.get("retry-after"), ms: performance.now() - t0 };
+  const retryAfter = res.headers.get("retry-after");
+  const body = parseObject(text);
+  if (body === null) return { key: p.key, status: res.status, code: "malformed_response", replayed: null, retryAfter, ms: performance.now() - t0 };
+  const receipt = body.receipt;
+  const hasReservationId = receipt !== null && typeof receipt === "object" && !Array.isArray(receipt) && typeof (receipt as Record<string, unknown>).reservation_id === "string";
+  if (res.status === 201 && !hasReservationId) {
+    return { key: p.key, status: res.status, code: "malformed_response", replayed: null, retryAfter, ms: performance.now() - t0 };
+  }
+  return {
+    key: p.key, status: res.status, code: typeof body.code === "string" ? body.code : null,
+    replayed: typeof body.replayed === "boolean" ? body.replayed : null, retryAfter, ms: performance.now() - t0,
+  };
 }
 
 /** Both variants ran, each made checks, and every check passed. An empty list passes nothing. */

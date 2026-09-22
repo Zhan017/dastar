@@ -50,7 +50,8 @@ export type MixedReport = {
   /**
    * Expiry in this run is synthetic: the owner role moved `aged` live holds to within 1.5 s of expiry, which
    * no application can do. It exercises the expiry paths; it says nothing about behavior under the natural
-   * 60-second TTL. The dead holds were cleared by the sweeper or by a competing hold.
+   * 60-second TTL. The dead holds were cleared by the sweeper or by a competing hold. `bySweeper` counts this
+   * venue only; `sweep.expired` is the sweeper's work across the whole database.
    */
   expiry: { mode: "owner-aged"; aged: number; ageErrors: number; expired: number; bySweeper: number; byCompetingHold: number };
   sweep: SweepStats;
@@ -69,12 +70,14 @@ export const MIN_EXERCISED = 10;
 export const MIXED_RULES: readonly string[] = [
   "invalid: a sweeper error, a sweeper that never ran, or a failed aging statement: the run's own machinery broke",
   "fail: any deadlock, overlapping pair, party outside its capacity, or answer outside the expected set",
-  `inconclusive: an operation with fewer than ${MIN_EXERCISED} ok answers, fewer than ${MIN_EXERCISED} holds aged, or fewer than ${MIN_EXERCISED} expired by the sweeper`,
+  `inconclusive: an operation with fewer than ${MIN_EXERCISED} ok answers, fewer than ${MIN_EXERCISED} holds aged, or fewer than ${MIN_EXERCISED} of this venue's holds expired by the sweeper`,
 ];
 
 export function judgeMixed(run: {
   okByOp: Readonly<Record<MixedOp, number>>; unexpected: number; deadlockDelta: number; overlaps: number; fitViolations: number;
-  sweep: Pick<SweepStats, "errors" | "ticks" | "expired">; aged: number; ageErrors: number;
+  sweep: Pick<SweepStats, "errors" | "ticks">; aged: number; ageErrors: number;
+  /** Holds of this run's own venue that the sweeper expired, apart from `sweep.expired`, which is database-wide. */
+  sweptHere: number;
 }): MixedVerdict {
   const broken: string[] = [];
   if (run.sweep.errors > 0) broken.push(`${run.sweep.errors} sweeper error(s)`);
@@ -90,7 +93,7 @@ export function judgeMixed(run: {
   const thin: string[] = [];
   for (const [op, n] of Object.entries(run.okByOp)) if (n < MIN_EXERCISED) thin.push(`${op} succeeded ${n} time(s)`);
   if (run.aged < MIN_EXERCISED) thin.push(`${run.aged} hold(s) aged`);
-  if (run.sweep.expired < MIN_EXERCISED) thin.push(`the sweeper expired ${run.sweep.expired} hold(s)`);
+  if (run.sweptHere < MIN_EXERCISED) thin.push(`the sweeper expired ${run.sweptHere} hold(s) of this venue`);
   return thin.length > 0 ? { verdict: "inconclusive", reasons: thin } : { verdict: "pass", reasons: [] };
 }
 
@@ -211,7 +214,9 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
     }
   }
 
-  const sweeping = startSweeper(sweeper, opts.sweep ?? DESIGN_SWEEP);
+  // ids this run's own sweeper expired, database-wide; filtered to this venue below, apart from sweep.expired
+  const swept: string[] = [];
+  const sweeping = startSweeper(sweeper, opts.sweep ?? DESIGN_SWEEP, undefined, (ids) => { swept.push(...ids); });
 
   // One row per statement: a connection that holds a single row lock and waits for nothing else cannot be
   // part of a lock cycle, so the run measures the engine's paths and not this helper.
@@ -256,14 +261,16 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
   const overlaps = await overlapPairs(deps.owner);
   const fit = await fitViolations(deps.owner);
   const expiredTotal = (await deps.owner.query("select count(*)::int as n from dastar.reservation where venue_id = $1 and status = 'expired'", [venueId])).rows[0].n as number;
+  const bySweeper = (await deps.owner.query("select count(*)::int as n from dastar.reservation where venue_id = $1 and id = any($2::uuid[])", [venueId, swept])).rows[0].n as number;
+  const byCompetingHold = expiredTotal - bySweeper;
   const okByOp = Object.fromEntries((Object.keys(ops) as MixedOp[]).map((o) => [o, ops[o].byCode.ok ?? 0])) as Record<MixedOp, number>;
-  const verdict = judgeMixed({ okByOp, unexpected: unexpectedCount, deadlockDelta, overlaps, fitViolations: fit, sweep: sweeping.stats, aged, ageErrors });
+  const verdict = judgeMixed({ okByOp, unexpected: unexpectedCount, deadlockDelta, overlaps, fitViolations: fit, sweep: sweeping.stats, aged, ageErrors, sweptHere: bySweeper });
   return {
     command: "mixed", runId, seed: opts.seed, seconds: opts.seconds, workers: opts.workers,
     environment: await environment(deps.owner, deps.appPool.options.max ?? 10),
     ops: Object.fromEntries((Object.keys(ops) as MixedOp[]).map((o) => [o, { count: ops[o].count, byCode: ops[o].byCode, latencyMs: dist(exact(ops[o].latencies)) }])) as MixedReport["ops"],
     retries, unexpected,
-    expiry: { mode: "owner-aged", aged, ageErrors, expired: expiredTotal, bySweeper: sweeping.stats.expired, byCompetingHold: expiredTotal - sweeping.stats.expired },
+    expiry: { mode: "owner-aged", aged, ageErrors, expired: expiredTotal, bySweeper, byCompetingHold },
     sweep: sweeping.stats, deadlockDelta, overlaps, fitViolations: fit,
     verdict, rules: [...MIXED_RULES], pass: verdict.verdict === "pass",
   };

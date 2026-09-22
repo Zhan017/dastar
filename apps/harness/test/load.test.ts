@@ -6,6 +6,8 @@ import { seedBench } from "../src/seed.js";
 import { runLoad, warmPool } from "../src/load.js";
 import { createLoadKeys, engineTarget, httpTarget, type LoadTarget } from "../src/target.js";
 import { TARGET_BLEND, MIXES } from "../src/workload.js";
+import { planArrivals } from "../src/schedule.js";
+import { rng } from "../src/rng.js";
 
 const FAST_SWEEP = { everyMs: 200, limit: 20, drain: true };
 
@@ -33,7 +35,7 @@ describe("load run", () => {
     expect(r).toMatchObject({ command: "load", target: "engine", label: "provisional", deadlockDelta: 0, overlaps: 0, fitViolations: 0 });
     expect(r.targets).toBeUndefined();
     expect(r.validity).toEqual({ valid: true, reasons: [] });
-    expect(r.transport).toEqual({ timeouts: 0, errors: 0, holdsCommitted: 0, holdsNotCommitted: 0 });
+    expect(r.transport).toEqual({ timeouts: 0, errors: 0, holds: { granted: 0, refused: 0, unobserved: 0 } });
     expect(r.workload).toEqual({ blend: TARGET_BLEND, followUpRatio: 0.2, units: seed.units.length, combos: seed.combos.length, holdTtlSeconds: 60, maxInFlight: 2_000, sweep: FAST_SWEEP });
     expect(r.peakOutstanding).toBeGreaterThanOrEqual(1);
     expect(r.peakOutstanding).toBeGreaterThanOrEqual(Math.max(...r.timeline.map((b) => b.outstanding)));
@@ -51,7 +53,7 @@ describe("load run", () => {
       expect(x.transactionMs!).toBeGreaterThan(0);
       expect(x.connectionHeldMs!).toBeGreaterThanOrEqual(x.transactionMs!);
       expect(x.poolWaitCensored || x.unitLockCensored || x.e2eCensored).toBe(false);
-      expect(x.committed).toBeNull();
+      expect(x.stored).toBeNull();
     }
     for (const s of r.steps) {
       expect(s.offered).toBeGreaterThan(20);
@@ -123,12 +125,45 @@ describe("load run", () => {
     await engine.close();
     const lost = r.records.filter((x) => x.code === "transport_timeout" || x.code === "transport_error");
     expect(lost.length).toBeGreaterThan(5);
-    // a timeout and a failed connection alike: a lower bound on latency, and no statement about the database
-    expect(lost.every((x) => x.cls === "transport" && x.e2eCensored && x.committed === true)).toBe(true);
+    // a timeout and a failed connection alike: a lower bound on latency; the engine actually carried these out, so each is granted or refused, never unobserved
+    expect(lost.every((x) => x.cls === "transport" && x.e2eCensored)).toBe(true);
+    expect(lost.every((x) => x.stored === "granted" || x.stored === "refused")).toBe(true);
     const errors = lost.filter((x) => x.code === "transport_error").length;
     expect(errors).toBeGreaterThan(0);
-    expect(r.transport).toEqual({ timeouts: lost.length - errors, errors, holdsCommitted: lost.length, holdsNotCommitted: 0 });
-    expect(r.validity.reasons).toEqual([expect.stringMatching(new RegExp(`${lost.length} request\\(s\\) got no complete answer.*${lost.length} of the holds among them committed anyway`))]);
+    expect(r.transport.timeouts).toBe(lost.length - errors);
+    expect(r.transport.errors).toBe(errors);
+    expect(r.transport.holds.unobserved).toBe(0);
+    expect(r.transport.holds.granted + r.transport.holds.refused).toBe(lost.length);
+    expect(r.transport.holds.granted).toBeGreaterThan(0);
+    expect(r.validity.reasons).toEqual([expect.stringMatching(new RegExp(`${lost.length} request\\(s\\) got no complete answer from the API; for the holds among them the database holds \\d+ granted, \\d+ refused, 0 with no outcome observed yet`))]);
     expect(r.steps[0]!.all.e2eMs.censored).toBe(lost.length);
+  });
+
+  it("a target that throws is still recorded, so every planned request has a record, and the run is invalid", async () => {
+    const seed = await seedBench(owner, { holdTtlSeconds: 60 });
+    const engine = engineTarget(appPool);
+    let holdCalls = 0;
+    let confirmCalls = 0;
+    const target: LoadTarget = {
+      ...engine,
+      hold: async (input) => { holdCalls += 1; if (holdCalls % 7 === 0) throw new Error("target down"); return engine.hold(input); },
+      confirm: async (reservationId, venueId, traceId) => { confirmCalls += 1; if (confirmCalls === 1) throw new Error("target down"); return engine.confirm(reservationId, venueId, traceId); },
+    };
+    const steps = [{ ratePerSec: 40, seconds: 2 }];
+    const r = await runLoad({ target, workerPool, owner, seed }, { steps, blend: TARGET_BLEND, seed: 15, label: "provisional", poolMax: 16, sweep: FAST_SWEEP });
+    await engine.close();
+    // the plan runLoad draws, regenerated here from the same seeds (seed + 1 for holds, seed + 2 for follow-ups at 0.2 of the rate): independent of the records
+    const plannedHolds = planArrivals(steps, rng(15 + 1)).length;
+    const plannedFollowUps = planArrivals(steps.map((s) => ({ ratePerSec: s.ratePerSec * 0.2, seconds: s.seconds })), rng(15 + 2)).length;
+    expect(r.records.length).toBe(plannedHolds);
+    expect(new Set(r.records.map((x) => x.seq)).size).toBe(plannedHolds);
+    expect(r.followUps.length).toBe(plannedFollowUps);
+    // nothing is shed at this rate, so every planned hold reached the target, and every seventh call threw
+    expect(holdCalls).toBe(plannedHolds);
+    expect(r.records.filter((x) => x.code === "target_threw").length).toBe(Math.floor(plannedHolds / 7));
+    expect(confirmCalls).toBeGreaterThanOrEqual(1);
+    expect(r.followUps.filter((x) => x.code === "target_threw").length).toBe(1);
+    expect(r.validity.reasons).toContainEqual(expect.stringMatching(/made the target throw/));
+    expect(r.validity.valid).toBe(false);
   });
 });
