@@ -1,0 +1,7 @@
+.git
+**/node_modules
+apps/harness/results
+coverage
+*.log
+.env
+.env.*

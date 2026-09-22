@@ -1,0 +1,10 @@
+FROM node:22-slim
+RUN corepack enable
+WORKDIR /app
+COPY . .
+RUN pnpm install --frozen-lockfile
+USER node
+# the API's default is loopback; a published port reaches the process only on the container's own address
+ENV HOST=0.0.0.0
+EXPOSE 8080
+CMD ["pnpm", "--filter", "@dastar/api", "start"]
