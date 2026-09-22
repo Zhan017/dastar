@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "exports": { "./server": "./src/server.ts", "./auth": "./src/auth.ts" },
   "scripts": {
     "start": "tsx src/server.ts",
     "keys:create": "tsx src/keys-cli.ts",

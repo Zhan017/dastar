@@ -6,17 +6,22 @@ import { overlapPairs } from "./race.js";
 
 export type NaiveResult = { n: number; committed: number; overlaps: number };
 
-function withDatabase(url: string, name: string): string {
+export function withDatabase(url: string, name: string): string {
   const u = new URL(url);
   u.pathname = `/${name}`;
   return u.toString();
 }
 
 /** Only databases this harness created are ever dropped; the name pattern is the guard. */
-export const NAIVE_DB_RE = /^dastar_naive_[0-9a-f]{8}$/;
+export const NAIVE_DB_RE = /^dastar_(naive|bench)_[0-9a-f]{8}$/;
 
 export function naiveDatabaseName(): string {
   return `dastar_naive_${randomBytes(4).toString("hex")}`;
+}
+
+/** A throwaway database for a run that changes the schema, such as migrations under load. */
+export function benchDatabaseName(): string {
+  return `dastar_bench_${randomBytes(4).toString("hex")}`;
 }
 
 /** Creates and migrates a throwaway database under a fresh generated name; refuses a name that already exists. */
@@ -32,7 +37,13 @@ export async function createThrowawayDatabase(adminUrl: string, name: string, mi
     await admin.end();
   }
   const url = withDatabase(adminUrl, name);
-  await migrate(url, migrationsDir);
+  try {
+    await migrate(url, migrationsDir);
+  } catch (e) {
+    // this call created the database a moment ago, so dropping it cannot touch anyone else's data
+    await dropNaiveDatabase(adminUrl, name).catch(() => undefined);
+    throw e;
+  }
   return url;
 }
 

@@ -1,0 +1,31 @@
+# Postgres 18 and the reference API for a benchmark day on the 4 vCPU, 8 GB class. See bench/README.md.
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: dastar_owner
+      POSTGRES_PASSWORD: ${DASTAR_OWNER_PASSWORD:?set DASTAR_OWNER_PASSWORD}
+      POSTGRES_DB: dastar
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=2GB", "-c", "effective_cache_size=6GB"]
+    ports: ["127.0.0.1:${DASTAR_PG_PORT:-5432}:5432"]
+    volumes: ["pgdata:/var/lib/postgresql"]
+    shm_size: 1g
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "dastar_owner", "-d", "dastar"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  api:
+    build: { context: .., dockerfile: bench/Dockerfile }
+    profiles: ["api"]
+    environment:
+      DATABASE_URL: postgres://dastar_app:${DASTAR_APP_PASSWORD:?set DASTAR_APP_PASSWORD}@postgres:5432/dastar
+      PORT: "8080"
+      POOL_MAX: "16"
+    ports: ["127.0.0.1:${DASTAR_API_PORT:-8080}:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+volumes:
+  pgdata:

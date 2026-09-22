@@ -50,6 +50,9 @@ importers:
 
   apps/harness:
     dependencies:
+      '@dastar/api':
+        specifier: workspace:*
+        version: link:../api
       '@dastar/db':
         specifier: workspace:*
         version: link:../../packages/db

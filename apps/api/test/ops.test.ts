@@ -10,7 +10,8 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packag
 import { seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { createApp } from "../src/app.js";
 import { createKey } from "../src/auth.js";
-import { buildServer, parseConfig } from "../src/server.js";
+import { buildServer, listen, parseConfig } from "../src/server.js";
+import type { LogEntry } from "../src/env.js";
 import { runKeysCli } from "../src/keys-cli.js";
 import { makeApi, bearer, jsonInit, MIGRATIONS } from "./helpers.js";
 
@@ -137,13 +138,27 @@ describe("operations", () => {
   it("the server entry builds from the environment, serves, and closes", async () => {
     expect(() => parseConfig({})).toThrow();
     const built = buildServer(parseConfig({ DATABASE_URL: conn.app, PORT: "0", POOL_MAX: "2" }));
-    const server = serve({ fetch: built.app.fetch, port: 0 });
+    const server = serve({ fetch: built.app.fetch, port: 0, hostname: "127.0.0.1" });
     await new Promise<void>((res) => server.once("listening", () => res()));
     const port = (server.address() as AddressInfo).port;
     expect(await (await fetch(`http://127.0.0.1:${port}/health/live`)).json()).toEqual({ status: "live" });
     expect((await fetch(`http://127.0.0.1:${port}/health/ready`)).status).toBe(200);
     await new Promise<void>((res, rej) => server.close((e) => (e ? rej(e) : res())));
     await built.close();
+  });
+
+  it("listen binds a free port, routes request logs to the given sink, and closes the socket and the pool", async () => {
+    const entries: LogEntry[] = [];
+    const running = await listen(parseConfig({ DATABASE_URL: conn.app, PORT: "0", POOL_MAX: "2" }), { log: (e) => { entries.push(e); } });
+    expect(running.port).toBeGreaterThan(0);
+    expect(running.host).toBe("127.0.0.1"); // no HOST given: loopback, never every interface
+    expect(running.url).toBe(`http://127.0.0.1:${running.port}`);
+    expect((await fetch(`${running.url}/health/ready`)).status).toBe(200);
+    expect(entries.map((e) => e.path)).toEqual(["/health/ready"]);
+    await running.close();
+    await expect(fetch(`${running.url}/health/live`)).rejects.toThrow();
+    // 192.0.2.1 is reserved for documentation and is no interface here: the promise rejects instead of hanging
+    await expect(listen(parseConfig({ DATABASE_URL: conn.app, HOST: "192.0.2.1", PORT: "0", POOL_MAX: "2" }))).rejects.toThrow(/EADDRNOTAVAIL/);
   });
 
   it("the key script creates a key that authenticates, and refuses unknown capabilities", async () => {

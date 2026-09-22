@@ -26,7 +26,11 @@ export type HoldOutcome =
   | { ok: false; error: { code: DastarErrorCode; message: string }; replayed: boolean };
 
 export type HoldHooks = {
+  /** Before BEGIN, once per attempt. With the command's return it brackets one whole transaction as the client sees it. */
+  beforeBegin?: () => Promise<void>;
   afterClaim?: () => Promise<void>;
+  /** After the assignment is resolved, before the first unit lock statement. With `afterUnitLocks` it brackets the lock statements alone. */
+  beforeUnitLocks?: () => Promise<void>;
   afterUnitLocks?: () => Promise<void>;
   afterOverlapLocks?: () => Promise<void>;
   beforeCommit?: () => Promise<void>;
@@ -77,6 +81,7 @@ export async function hold(client: ClientBase, input: HoldInput, hooks: HoldHook
 
 async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, hooks: HoldHooks): Promise<HoldOutcome> {
   const during = rangeLiteral(input.startsAt, input.durationMinutes);
+  await hooks.beforeBegin?.();
   await client.query("begin");
   try {
     // step 2: transaction-local context
@@ -110,6 +115,7 @@ async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, h
     }
     if (!resolved.active) throw new DastarError("assignment_inactive", "assignment is deactivated");
     const units = resolved.units;
+    await hooks.beforeUnitLocks?.();
     for (const u of units) await client.query(LOCK_UNIT_SQL, [u]);
     await hooks.afterUnitLocks?.();
 

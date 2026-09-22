@@ -61,7 +61,7 @@ DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create
 DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm api
 ```
 
-`seed` prints a venue id and its unit ids. `keys:create` prints a key once; only its hash is stored. From another terminal, with those values in `VENUE`, `UNIT`, and `KEY`:
+`seed` prints a venue id and its unit ids. `keys:create` prints a key once; only its hash is stored. The server listens on 127.0.0.1:8080; `HOST` and `PORT` change that. From another terminal, with those values in `VENUE`, `UNIT`, and `KEY`:
 
 ```bash
 curl -s -X POST localhost:8080/v1/venues/$VENUE/holds \
@@ -70,6 +70,34 @@ curl -s -X POST localhost:8080/v1/venues/$VENUE/holds \
 ```
 
 The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, and `/health/ready` reports whether the database is reachable and migrated.
+
+## Measure it
+
+Five more harness commands measure what the tests cannot: behavior under load, under pool exhaustion, over time, and during migrations. Each writes a JSON report under `apps/harness/results/` and reads its verdict from the database, not from client timeouts. With the database from the previous sections still running:
+
+```bash
+docker exec dastar-demo psql -U dastar_owner -d postgres -c "alter role dastar_worker password 'worker'"
+export OWNER=postgres://dastar_owner:owner@localhost:55432/postgres
+export APP=postgres://dastar_app:app@localhost:55432/postgres
+export WORKER=postgres://dastar_worker:worker@localhost:55432/postgres
+
+pnpm mixed --owner-url $OWNER --app-url $APP --worker-url $WORKER --seconds 60
+pnpm exhaust --owner-url $OWNER --app-url $APP
+pnpm load --owner-url $OWNER --app-url $APP --worker-url $WORKER --steps 10,25,50 --step-seconds 30
+pnpm load --owner-url $OWNER --app-url $APP --worker-url $WORKER --steps 10,25,50 --step-seconds 30 --target http
+pnpm churn --owner-url $OWNER --app-url $APP --worker-url $WORKER --seconds 300 --sample-seconds 30
+pnpm migrate-under-load --admin-url $OWNER --app-url $APP --worker-url $WORKER
+```
+
+- `mixed` runs every writer at once on a small contended floor: unit and combo holds, confirmations, cancellations, token mints, capacity edits, the sweeper, and holds pushed to the edge of expiry. It passes only when Postgres reports no deadlock, no overlap, no party outside its capacity, and no answer outside the expected set, and every one of those paths was actually taken: an operation that hardly ever succeeded, or a sweeper that expired almost nothing, makes the run `inconclusive`.
+- `exhaust` starts the reference API, fills its pool behind one blocked unit, and checks that further requests, including one for an unrelated unit, are refused with 503 at the acquire timeout. One variant releases the blocker and checks recovery; the other holds it past the statement timeout and checks that nothing is left behind. Both then retry every key.
+- `load` offers a fixed, seeded arrival plan in steps across four request shapes. Offered load is planned up front, so saturation shows up as a growing backlog, latency, and errors instead of a slower test. It reports what was answered while each step's clock ran, what was still waiting at its end, and how long the run took to drain, and the report keeps every request. With the engine target it also records the phases only the engine handle can see: pool wait, the unit-lock statements, and the transaction. With `--target http` the same plan goes through the reference API, which is where end-to-end latency is judged. A run whose confirmations, cancellations, or sweeper failed, whose requests went unanswered, or whose holds got answers no healthy run produces, or whose records do not add up to the plan, is reported as invalid and no verdict is taken from it.
+- `churn` cycles holds, cancellations, confirmations, and expiries, turns the sweeper off for a fifth of the run, and samples table and index size, dead tuples, WAL, autovacuum activity, and the latency of granted holds, apart from refused ones. It judges storage only if the workload itself ran clean, the occupancy in the windows it compares is alike, and the sweeper-off phase really piled up dead holds that were then cleared, and a run shorter than the design's bounded run reports `inconclusive`.
+- `migrate-under-load` creates a database of its own, applies a live-safe migration set one file at a time under steady traffic, then applies a plain index build and a table rewrite once each to record what blocking does. Each migration is judged by the requests that were in flight while it ran, whenever they arrived, and by the traffic that followed it. That the files applied and what the run shows about traffic are reported apart, and the second is `inconclusive` when too few requests met a migration.
+
+Every command exits 0 on a positive verdict, 1 on a negative verdict or an invalid run, 2 on a usage error, and 3 on `inconclusive`, which is not a pass. A percentile is printed only when enough samples lie beyond it; `n/a` means too few, never zero. A request that ended inside a phase is a lower bound on it, shown as `a..b` or `>=a`: it can break a limit and cannot meet one. `load`, `mixed`, `churn`, and `migrate-under-load` run the sweeper the design describes (every 5 seconds, 20 rows, repeated while rows remain) unless told otherwise, and every report records the sweeper it ran with. `mixed` shortens holds through the owner role to exercise expiry; its report labels that expiry as synthetic.
+
+Numbers from a laptop are provisional and are not compared with the design targets. [bench/README.md](bench/README.md) is the runbook for a run on the target hardware class.
 
 When you are done:
 
@@ -146,7 +174,7 @@ The [prototype report](docs/design/results-2026-09-10-prototype.md) records a pa
 
 The suites added since then cover the two findings that report left open. Commands own their connections, so a command can no longer commit or discard a host transaction. A capacity edit racing a confirmation near a hold's expiry is closed by lock order and a fit check on confirmation, with two-connection regression tests in both orders. They also cover a real two-connection deadlock that exercises the hold retry, confirmation racing holds, and the connection contract: timeouts, cancellation, and discarded connections.
 
-Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load remain unmeasured. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
+Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load have harness commands but no published run on the target hardware class, so no number is claimed for them yet. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
 
 This is an early implementation for evaluation, not yet validated under production load.
 

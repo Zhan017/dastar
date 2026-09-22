@@ -8,10 +8,16 @@
     "race": "tsx src/cli.ts race",
     "naive": "tsx src/cli.ts naive",
     "seed": "tsx src/cli.ts seed",
+    "load": "tsx src/cli.ts load",
+    "mixed": "tsx src/cli.ts mixed",
+    "exhaust": "tsx src/cli.ts exhaust",
+    "churn": "tsx src/cli.ts churn",
+    "migrate-under-load": "tsx src/cli.ts migrate-under-load",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dastar/api": "workspace:*",
     "@dastar/db": "workspace:*",
     "pg": "^8.13.1"
   },
