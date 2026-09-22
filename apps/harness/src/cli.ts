@@ -11,6 +11,7 @@ import { runLoad, warmPool, type LoadReport } from "./load.js";
 import { createLoadKeys, engineTarget, httpTarget } from "./target.js";
 import { DESIGN_SWEEP, type SweepConfig } from "./sweeper.js";
 import { parseBlend } from "./workload.js";
+import { runMixed } from "./mixed.js";
 import type { Step } from "./schedule.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../../../packages/db/migrations", import.meta.url));
@@ -36,6 +37,8 @@ const { positionals, values } = parseArgs({
     keys: { type: "string", default: "64" },
     "sweep-every-ms": { type: "string" },
     "sweep-limit": { type: "string" },
+    seconds: { type: "string" },
+    workers: { type: "string" },
     "api-url": { type: "string" },
     "pool-max": { type: "string", default: "16" },
   },
@@ -126,6 +129,21 @@ if (command === "race") {
   // an invalid run is not evidence of anything, whatever its latencies look like; a provisional run has no verdict to report
   const sound = r.overlaps === 0 && r.deadlockDelta === 0 && r.fitViolations === 0 && r.validity.valid;
   process.exit(!sound ? 1 : r.targets ? exitFor(r.targets.verdict) : 0);
+} else if (command === "mixed") {
+  const { owner, appPool, workerPool, end } = await connections(Number(values["pool-max"]));
+  const ager = new Client({ connectionString: need("owner-url") });
+  await ager.connect();
+  const seed = await seedBench(owner, { units: 8, mesh: true, holdTtlSeconds: 60 });
+  const r = await runMixed({ appPool, workerPool, owner, ager, seed }, { seconds: Number(values.seconds ?? "120"), workers: Number(values.workers ?? "32"), seed: Number(values.seed), sweep: sweepFromFlags() });
+  await ager.end();
+  await end();
+  for (const [op, o] of Object.entries(r.ops)) console.log(`${op.padEnd(14)} n=${String(o.count).padEnd(7)} p50=${fmt(o.latencyMs.p50)} p99=${fmt(o.latencyMs.p99)} ${JSON.stringify(o.byCode)}`);
+  console.log(`mixed ${r.seconds}s x${r.workers}: deadlocks=${r.deadlockDelta} overlaps=${r.overlaps} fit violations=${r.fitViolations} retries=${r.retries.count} ${JSON.stringify(r.retries.bySqlstate)} unexpected=${r.unexpected.length}`);
+  console.log(`expiry is synthetic (${r.expiry.mode}): aged=${r.expiry.aged} expired=${r.expiry.expired} (sweeper ${r.expiry.bySweeper}, competing hold ${r.expiry.byCompetingHold}); ${sweepLine(r.sweep)}`);
+  for (const u of r.unexpected.slice(0, 5)) console.log(`unexpected: ${u.op} ${u.code} ${u.message}`);
+  console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
+  console.log(`report: ${await writeReport("mixed", r)}`);
+  process.exit(exitFor(r.verdict.verdict));
 } else {
   console.error([
     "usage:",
@@ -134,6 +152,7 @@ if (command === "race") {
     "  race --owner-url <url> --app-url <url> [--n 500]",
     "  naive --admin-url <url> [--n 50] [--keep]",
     "  load --owner-url <url> --app-url <url> --worker-url <url> [--target engine|http] [--api-url <url>] [--keys 64] [--steps 10,25,50,100] [--step-seconds 60] [--sustain 50x600] [--blend target|overlapping|distinct_dates|disjoint_units|combos] [--seed 1] [--target-hardware]",
+    "  mixed --owner-url <url> --app-url <url> --worker-url <url> [--seconds 120] [--workers 32] [--seed 1]",
     "  exit codes: 0 a positive verdict, or a valid run that has none; 1 a negative verdict or an invalid run; 2 usage; 3 inconclusive",
     "  load, mixed, churn and migrate-under-load run the design's sweeper (every 5000 ms, 20 rows, repeated while rows remain); [--sweep-every-ms N] [--sweep-limit N] change it, and the report records what was used",
   ].join("\n"));

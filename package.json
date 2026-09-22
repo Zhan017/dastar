@@ -12,6 +12,7 @@
     "migrate": "pnpm --filter @dastar/harness migrate",
     "seed": "pnpm --filter @dastar/harness seed",
     "load": "pnpm --filter @dastar/harness load",
+    "mixed": "pnpm --filter @dastar/harness mixed",
     "keys:create": "pnpm --filter @dastar/api keys:create",
     "api": "pnpm --filter @dastar/api start"
   }
