@@ -8,6 +8,7 @@
     "race": "tsx src/cli.ts race",
     "naive": "tsx src/cli.ts naive",
     "seed": "tsx src/cli.ts seed",
+    "load": "tsx src/cli.ts load",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
