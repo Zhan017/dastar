@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dastar/api": "workspace:*",
     "@dastar/db": "workspace:*",
     "pg": "^8.13.1"
   },
