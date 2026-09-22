@@ -11,6 +11,7 @@
     "load": "tsx src/cli.ts load",
     "mixed": "tsx src/cli.ts mixed",
     "exhaust": "tsx src/cli.ts exhaust",
+    "churn": "tsx src/cli.ts churn",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

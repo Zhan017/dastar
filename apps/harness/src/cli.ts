@@ -13,6 +13,7 @@ import { DESIGN_SWEEP, type SweepConfig } from "./sweeper.js";
 import { parseBlend } from "./workload.js";
 import { runMixed } from "./mixed.js";
 import { runExhaust } from "./exhaust.js";
+import { runChurn } from "./churn.js";
 import type { Step } from "./schedule.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../../../packages/db/migrations", import.meta.url));
@@ -40,6 +41,8 @@ const { positionals, values } = parseArgs({
     "sweep-limit": { type: "string" },
     seconds: { type: "string" },
     workers: { type: "string" },
+    ops: { type: "string", default: "100000" },
+    "sample-seconds": { type: "string", default: "60" },
     "api-url": { type: "string" },
     "api-key": { type: "string" },
     "pool-max": { type: "string", default: "16" },
@@ -160,6 +163,22 @@ if (command === "race") {
   }
   console.log(`report: ${await writeReport("exhaust", r)}`);
   process.exit(r.pass ? 0 : 1);
+} else if (command === "churn") {
+  const { owner, appPool, workerPool, end } = await connections(Number(values["pool-max"]));
+  const seed = await seedBench(owner, { holdTtlSeconds: 60 });
+  const r = await runChurn({ appPool, workerPool, owner, seed }, {
+    maxSeconds: Number(values.seconds ?? "1800"), maxOps: Number(values.ops), workers: Number(values.workers ?? "8"), seed: Number(values.seed),
+    sampleEveryMs: Number(values["sample-seconds"]) * 1_000, sweep: sweepFromFlags(),
+  });
+  await end();
+  for (const s of r.samples) {
+    console.log(`${s.atS.toFixed(0).padStart(5)}s sweeper=${s.sweeper.padEnd(3)} rows=${s.retainedUnitRows} active=${s.activeUnitRows} dead-pending=${s.pendingDead} heap=${(s.heapBytes / 1e6).toFixed(1)}MB excl-index=${(s.exclusionIndexBytes / 1e6).toFixed(2)}MB dead%=${s.heapDeadTuplePercent.toFixed(1)} autovacuums=${s.autovacuumCount} granted-hold p95=${fmt(s.holdOkLatencyMs.p95)} ms (${s.holdOkLatencyMs.count} granted, ${s.holdConflictLatencyMs.count} refused)`);
+  }
+  console.log(`churn: ${r.ops} operations in ${r.elapsedS.toFixed(0)}s, answers ${JSON.stringify(r.byCode)}; expiry ${r.expiry.mode}, TTL ${r.expiry.ttlSeconds}s; ${sweepLine(r.sweep)}`);
+  console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
+  console.log(`after the last sample, outside the verdict: ${r.cleanup.pendingDeadAtEnd} dead holds were left; cleanup expired ${r.cleanup.expired} in ${r.cleanup.batches} batches`);
+  console.log(`report: ${await writeReport("churn", r)}`);
+  process.exit(exitFor(r.verdict.verdict));
 } else {
   console.error([
     "usage:",
@@ -170,6 +189,7 @@ if (command === "race") {
     "  load --owner-url <url> --app-url <url> --worker-url <url> [--target engine|http] [--api-url <url>] [--keys 64] [--steps 10,25,50,100] [--step-seconds 60] [--sustain 50x600] [--blend target|overlapping|distinct_dates|disjoint_units|combos] [--seed 1] [--target-hardware]",
     "  mixed --owner-url <url> --app-url <url> --worker-url <url> [--seconds 120] [--workers 32] [--seed 1]",
     "  exhaust --owner-url <url> --app-url <url> [--api-url <url> --api-key <key>] [--pool-max 16] [--acquire-ms 5000]",
+    "  churn --owner-url <url> --app-url <url> --worker-url <url> [--seconds 1800] [--ops 100000] [--workers 8] [--sample-seconds 60]",
     "  exit codes: 0 a positive verdict, or a valid run that has none; 1 a negative verdict or an invalid run; 2 usage; 3 inconclusive",
     "  load, mixed, churn and migrate-under-load run the design's sweeper (every 5000 ms, 20 rows, repeated while rows remain); [--sweep-every-ms N] [--sweep-limit N] change it, and the report records what was used",
   ].join("\n"));
