@@ -4,7 +4,7 @@ import { Pool, type Client, type PoolClient } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 import { connectAs, pause, outcome } from "./helpers/wait.js";
-import { createDastar } from "../src/handle.js";
+import { createDastar, type AcquireInfo } from "../src/handle.js";
 import type { HoldInput } from "../src/commands/hold.js";
 
 async function eventually(check: () => Promise<boolean> | boolean, ms = 10_000): Promise<void> {
@@ -191,6 +191,72 @@ describe("pool-owned handle", () => {
     await d.close();
     await pool.end();
     await new Promise<void>((res) => blackHole.close(() => res()));
+  });
+
+  it("onAcquire reports each call's wait for a connection, including a call that gave up", async () => {
+    const pool = makePool(1, "H9");
+    const seen: AcquireInfo[] = [];
+    const d = createDastar({ pool, acquireTimeoutMs: 200, onAcquire: (i) => { seen.push(i); throw new Error("an observer failure is ignored"); } });
+    const warm = await pool.connect();
+    warm.release();
+    const p = pause();
+    const first = input();
+    const pHold = d.hold(first, { afterUnitLocks: p.hook });
+    await p.reached;
+    const second = input();
+    await expect(d.hold(second)).rejects.toMatchObject({ code: "pool_timeout" });
+    p.release();
+    expect((await pHold).ok).toBe(true);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ command: "hold", traceId: first.traceId, acquired: true });
+    expect(seen[1]).toMatchObject({ command: "hold", traceId: second.traceId, acquired: false });
+    expect(seen[1]!.waitMs).toBeGreaterThanOrEqual(190);
+    await d.getReservation(NIL);
+    expect(seen[2]).toMatchObject({ command: "getReservation", traceId: null, acquired: true });
+    await d.close();
+    await pool.end();
+  });
+
+  it("a command that settles inside the grace period returns its result, and the connection is still discarded", async () => {
+    const pool = makePool(1, "H10");
+    const d = createDastar({ pool, deadlineMs: 300, cancelGraceMs: 5_000, cancellerConnectionString: conn.app });
+    const p = pause();
+    const pHold = outcome(d.hold(input({ assignment: { kind: "unit", id: seed.units[3]! } }), { beforeCommit: p.hook }));
+    await p.reached;
+    // the deadline has passed once the cancel request has been answered; a backend that is waiting for its
+    // client ignores a cancel, so the transaction is still open and can commit
+    await eventually(async () => (await owner.query(
+      "select 1 from pg_stat_activity where datname = current_database() and application_name = 'dastar-canceller' and state = 'idle' and query like '%pg_cancel_backend%'",
+    )).rowCount === 1);
+    p.release();
+    const out = await pHold;
+    expect(out).toMatchObject({ ok: true, value: { ok: true } });
+    await eventually(() => pool.totalCount === 0);
+    const id = (out as { value: { receipt: { reservationId: string } } }).value.receipt.reservationId;
+    expect((await d.getReservation(id))?.status).toBe("held");
+    await d.close();
+    await pool.end();
+  });
+
+  it("without a canceller connection the cancel request borrows a pooled client and returns it", async () => {
+    const pool = makePool(2, "H11");
+    const d = createDastar({ pool, deadlineMs: 500, cancelGraceMs: 3_000 });
+    const u = seed.units[4]!;
+    const blocker = await connectAs(conn.app, "H11blocker");
+    await blocker.query("begin");
+    await blocker.query("select pg_advisory_xact_lock(dastar.unit_lock_key($1::uuid))", [u]);
+    const t0 = Date.now();
+    await expect(d.hold(input({ assignment: { kind: "unit", id: u } }))).rejects.toMatchObject({ code: "timeout", retryable: true });
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    // the command's connection is discarded; the borrowed one goes back idle
+    await eventually(() => pool.totalCount === 1 && pool.idleCount === 1);
+    expect(await states("H11")).toEqual(["idle"]);
+    expect(await advisoryLocks("H11")).toBe(0);
+    await blocker.query("rollback");
+    await blocker.end();
+    expect((await d.hold(input({ assignment: { kind: "unit", id: u } }))).ok).toBe(true);
+    await d.close();
+    await pool.end();
   });
 });
 

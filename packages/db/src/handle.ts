@@ -27,7 +27,15 @@ export type DastarOptions = {
    * the grace period.
    */
   cancellerConnectionString?: string;
+  /**
+   * Observes how long each call waited for a pooled connection, including a call that gave up with
+   * `pool_timeout`. Meant for metrics; anything it throws is ignored.
+   */
+  onAcquire?: (info: AcquireInfo) => void;
 };
+
+export type DastarCommand = "hold" | "confirm" | "cancel" | "mintConfirmToken" | "getReservation" | "expireDue";
+export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 export interface Dastar {
   hold(input: HoldInput, hooks?: HoldHooks): Promise<HoldOutcome>;
@@ -161,8 +169,20 @@ export function createDastar(opts: DastarOptions): Dastar {
     finish(e instanceof Error ? e : new Error(String(e)));
   }
 
-  async function run<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await acquire(acquireTimeoutMs);
+  async function run<T>(command: DastarCommand, traceId: string | null, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const waitStarted = performance.now();
+    const observe = (acquired: boolean): void => {
+      if (!opts.onAcquire) return;
+      try { opts.onAcquire({ command, traceId, waitMs: performance.now() - waitStarted, acquired }); } catch { /* an observer never fails a command */ }
+    };
+    let client: PoolClient;
+    try {
+      client = await acquire(acquireTimeoutMs);
+    } catch (e) {
+      observe(false);
+      throw e;
+    }
+    observe(true);
     // pg-pool detaches its own 'error' listener while a client is checked out. A connection error that
     // arrives between statements (a terminated backend, a dropped socket) would otherwise be an unhandled
     // 'error' event and crash the process. Record it and discard the connection at release.
@@ -210,12 +230,12 @@ export function createDastar(opts: DastarOptions): Dastar {
   }
 
   return {
-    hold: (input, hooks) => run((c) => hold(c, input, hooks)),
-    confirm: (input, hooks) => run((c) => confirm(c, input, hooks)),
-    cancel: (input, hooks) => run((c) => cancel(c, input, hooks)),
-    mintConfirmToken: (input) => run((c) => mintConfirmToken(c, input)),
-    getReservation: (reservationId) => run((c) => getReservation(c, reservationId)),
-    expireDue: (o) => run((c) => expireDue(c, o)),
+    hold: (input, hooks) => run("hold", input.traceId, (c) => hold(c, input, hooks)),
+    confirm: (input, hooks) => run("confirm", input.traceId, (c) => confirm(c, input, hooks)),
+    cancel: (input, hooks) => run("cancel", input.traceId, (c) => cancel(c, input, hooks)),
+    mintConfirmToken: (input) => run("mintConfirmToken", input.traceId, (c) => mintConfirmToken(c, input)),
+    getReservation: (reservationId) => run("getReservation", null, (c) => getReservation(c, reservationId)),
+    expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
     close: async () => {
       const p = cancellerPromise;
       cancellerPromise = null;
