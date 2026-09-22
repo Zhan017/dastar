@@ -10,6 +10,7 @@
     "seed": "tsx src/cli.ts seed",
     "load": "tsx src/cli.ts load",
     "mixed": "tsx src/cli.ts mixed",
+    "exhaust": "tsx src/cli.ts exhaust",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

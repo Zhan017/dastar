@@ -13,6 +13,7 @@
     "seed": "pnpm --filter @dastar/harness seed",
     "load": "pnpm --filter @dastar/harness load",
     "mixed": "pnpm --filter @dastar/harness mixed",
+    "exhaust": "pnpm --filter @dastar/harness exhaust",
     "keys:create": "pnpm --filter @dastar/api keys:create",
     "api": "pnpm --filter @dastar/api start"
   }

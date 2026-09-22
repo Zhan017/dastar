@@ -12,6 +12,7 @@ import { createLoadKeys, engineTarget, httpTarget } from "./target.js";
 import { DESIGN_SWEEP, type SweepConfig } from "./sweeper.js";
 import { parseBlend } from "./workload.js";
 import { runMixed } from "./mixed.js";
+import { runExhaust } from "./exhaust.js";
 import type { Step } from "./schedule.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../../../packages/db/migrations", import.meta.url));
@@ -40,7 +41,9 @@ const { positionals, values } = parseArgs({
     seconds: { type: "string" },
     workers: { type: "string" },
     "api-url": { type: "string" },
+    "api-key": { type: "string" },
     "pool-max": { type: "string", default: "16" },
+    "acquire-ms": { type: "string", default: "5000" },
   },
 });
 
@@ -144,6 +147,19 @@ if (command === "race") {
   console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
   console.log(`report: ${await writeReport("mixed", r)}`);
   process.exit(exitFor(r.verdict.verdict));
+} else if (command === "exhaust") {
+  const external = values["api-url"] !== undefined;
+  if (external && !values["api-key"]) { console.error("--api-url needs --api-key, a key with the hold capability"); process.exit(2); }
+  const r = await runExhaust({
+    ownerUrl: need("owner-url"), appUrl: need("app-url"), poolMax: Number(values["pool-max"]), acquireMs: Number(values["acquire-ms"]),
+    ...(external ? { external: { url: values["api-url"]!, key: values["api-key"]! } } : {}),
+  });
+  for (const v of r.variants) {
+    console.log(`${v.variant}: barrier ${v.barrierMs.toFixed(0)}ms${v.drainMs === null ? "" : `, drained ${r.poolMax} queued holds in ${v.drainMs.toFixed(0)}ms`}`);
+    for (const c of v.checks) console.log(`  ${c.pass ? "ok  " : "FAIL"} ${c.name}${c.pass ? "" : ` :: ${c.detail}`}`);
+  }
+  console.log(`report: ${await writeReport("exhaust", r)}`);
+  process.exit(r.pass ? 0 : 1);
 } else {
   console.error([
     "usage:",
@@ -153,6 +169,7 @@ if (command === "race") {
     "  naive --admin-url <url> [--n 50] [--keep]",
     "  load --owner-url <url> --app-url <url> --worker-url <url> [--target engine|http] [--api-url <url>] [--keys 64] [--steps 10,25,50,100] [--step-seconds 60] [--sustain 50x600] [--blend target|overlapping|distinct_dates|disjoint_units|combos] [--seed 1] [--target-hardware]",
     "  mixed --owner-url <url> --app-url <url> --worker-url <url> [--seconds 120] [--workers 32] [--seed 1]",
+    "  exhaust --owner-url <url> --app-url <url> [--api-url <url> --api-key <key>] [--pool-max 16] [--acquire-ms 5000]",
     "  exit codes: 0 a positive verdict, or a valid run that has none; 1 a negative verdict or an invalid run; 2 usage; 3 inconclusive",
     "  load, mixed, churn and migrate-under-load run the design's sweeper (every 5000 ms, 20 rows, repeated while rows remain); [--sweep-every-ms N] [--sweep-limit N] change it, and the report records what was used",
   ].join("\n"));
