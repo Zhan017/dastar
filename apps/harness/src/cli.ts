@@ -14,6 +14,7 @@ import { parseBlend } from "./workload.js";
 import { runMixed } from "./mixed.js";
 import { runExhaust } from "./exhaust.js";
 import { runChurn } from "./churn.js";
+import { runMigrateUnderLoad } from "./migrate-under-load.js";
 import type { Step } from "./schedule.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../../../packages/db/migrations", import.meta.url));
@@ -47,6 +48,10 @@ const { positionals, values } = parseArgs({
     "api-key": { type: "string" },
     "pool-max": { type: "string", default: "16" },
     "acquire-ms": { type: "string", default: "5000" },
+    rate: { type: "string", default: "20" },
+    "baseline-seconds": { type: "string", default: "20" },
+    "gap-seconds": { type: "string", default: "15" },
+    preload: { type: "string", default: "50000" },
   },
 });
 
@@ -179,6 +184,25 @@ if (command === "race") {
   console.log(`after the last sample, outside the verdict: ${r.cleanup.pendingDeadAtEnd} dead holds were left; cleanup expired ${r.cleanup.expired} in ${r.cleanup.batches} batches`);
   console.log(`report: ${await writeReport("churn", r)}`);
   process.exit(exitFor(r.verdict.verdict));
+} else if (command === "migrate-under-load") {
+  const r = await runMigrateUnderLoad({
+    adminUrl: need("admin-url"), appUrl: need("app-url"), workerUrl: need("worker-url"), migrationsDir: MIGRATIONS,
+    ratePerSec: Number(values.rate), baselineSeconds: Number(values["baseline-seconds"]), gapSeconds: Number(values["gap-seconds"]),
+    preloadRows: Number(values.preload), seed: Number(values.seed), keep: values.keep, sweep: sweepFromFlags(),
+  });
+  console.log(`baseline at ${r.ratePerSec}/s over ${r.preloadRows} preloaded rows: ${r.baseline.requests} requests, e2e p50=${fmt(r.baseline.e2eMs.p50)} p95=${fmt(r.baseline.e2eMs.p95)} p99=${fmt(r.baseline.e2eMs.p99)} ms`);
+  for (const m of r.migrations) {
+    console.log(`${m.kind.padEnd(9)} ${m.file.padEnd(44)} ${m.durationMs.toFixed(0).padStart(6)}ms attempts=${m.attempts}${m.error ? ` ERROR ${m.error}` : ""}`);
+    console.log(`          in flight during it: ${m.affected.requests} requests, ${m.affected.errors} errors ${JSON.stringify(m.affected.errorsByCode)}, e2e max=${fmt(m.affected.e2eMs.max)} p95=${fmt(m.affected.e2eMs.p95)} ms`);
+    console.log(`          until the next one:  ${m.recovery.requests} requests, ${m.recovery.errors} errors ${JSON.stringify(m.recovery.errorsByCode)}, e2e p50=${fmt(m.recovery.e2eMs.p50)} p95=${fmt(m.recovery.e2eMs.p95)} p99=${fmt(m.recovery.e2eMs.p99)} ms`);
+  }
+  console.log(`whole run: ${r.wholeRun.requests} requests, ${r.wholeRun.errors} errors ${JSON.stringify(r.wholeRun.errorsByCode)}, ${r.errorsOutsideWindows} outside every window; ${sweepLine(r.sweep)}`);
+  console.log(`fixtures applied: ${r.fixturesApplied ? "yes" : "NO"}`);
+  console.log(`under load: ${r.underLoad.verdict}${r.underLoad.reasons.length ? `: ${r.underLoad.reasons.join("; ")}` : ""}`);
+  if (r.underLoad.verdict === "inconclusive") console.log("raise --rate or --preload to put more traffic in a migration's way");
+  if (values.keep) console.log(`kept database ${r.database}`);
+  console.log(`report: ${await writeReport("migrate-under-load", r)}`);
+  process.exit(r.fixturesApplied ? exitFor(r.underLoad.verdict) : 1);
 } else {
   console.error([
     "usage:",
@@ -190,6 +214,7 @@ if (command === "race") {
     "  mixed --owner-url <url> --app-url <url> --worker-url <url> [--seconds 120] [--workers 32] [--seed 1]",
     "  exhaust --owner-url <url> --app-url <url> [--api-url <url> --api-key <key>] [--pool-max 16] [--acquire-ms 5000]",
     "  churn --owner-url <url> --app-url <url> --worker-url <url> [--seconds 1800] [--ops 100000] [--workers 8] [--sample-seconds 60]",
+    "  migrate-under-load --admin-url <url> --app-url <url> --worker-url <url> [--rate 20] [--baseline-seconds 20] [--gap-seconds 15] [--preload 50000] [--keep]",
     "  exit codes: 0 a positive verdict, or a valid run that has none; 1 a negative verdict or an invalid run; 2 usage; 3 inconclusive",
     "  load, mixed, churn and migrate-under-load run the design's sweeper (every 5000 ms, 20 rows, repeated while rows remain); [--sweep-every-ms N] [--sweep-limit N] change it, and the report records what was used",
   ].join("\n"));

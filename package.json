@@ -15,6 +15,7 @@
     "mixed": "pnpm --filter @dastar/harness mixed",
     "exhaust": "pnpm --filter @dastar/harness exhaust",
     "churn": "pnpm --filter @dastar/harness churn",
+    "migrate-under-load": "pnpm --filter @dastar/harness migrate-under-load",
     "keys:create": "pnpm --filter @dastar/api keys:create",
     "api": "pnpm --filter @dastar/api start"
   }

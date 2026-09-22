@@ -4,7 +4,10 @@ import { createDastar } from "@dastar/db";
 import { cloneDatabase, dropDatabase, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedBench } from "../src/seed.js";
 import { runRace } from "../src/race.js";
-import { disableProtections, runNaive, NAIVE_DB_RE, createThrowawayDatabase, dropNaiveDatabase } from "../src/naive.js";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { disableProtections, runNaive, NAIVE_DB_RE, benchDatabaseName, createThrowawayDatabase, dropNaiveDatabase } from "../src/naive.js";
 
 describe("harness", () => {
   let race: Conn; let naive: Conn;
@@ -50,6 +53,20 @@ describe("harness", () => {
     await dropNaiveDatabase(adminUrl, taken);
     expect((await admin.query("select 1 from pg_database where datname = $1", [taken])).rowCount).toBe(0);
     expect(NAIVE_DB_RE.test(taken)).toBe(true);
+    await admin.end();
+  });
+
+  it("a throwaway database whose migration fails is dropped again; bench names pass the same guard", async () => {
+    const adminUrl = `${process.env.DASTAR_TEST_PG_BASE}/postgres`;
+    const name = benchDatabaseName();
+    expect(name).toMatch(/^dastar_bench_[0-9a-f]{8}$/);
+    expect(NAIVE_DB_RE.test(name)).toBe(true);
+    const broken = await mkdtemp(join(tmpdir(), "dastar-broken-"));
+    await writeFile(join(broken, "0001_broken.sql"), "-- transaction: yes\n-- impact: instant-exclusive\nselect 1 / 0;\n");
+    await expect(createThrowawayDatabase(adminUrl, name, broken)).rejects.toThrow(/division by zero/);
+    const admin = new Client({ connectionString: adminUrl });
+    await admin.connect();
+    expect((await admin.query("select 1 from pg_database where datname = $1", [name])).rowCount).toBe(0);
     await admin.end();
   });
 });
