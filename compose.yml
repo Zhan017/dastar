@@ -1,0 +1,77 @@
+# Local development and the quickstart: Postgres 18, migrations, the reference API, and the worker.
+#   docker compose run --rm demo   race 5000 holds for one table, then show what a plain application does
+#   docker compose up -d           run the API on 127.0.0.1:8080 and the sweeper
+# The passwords below are development defaults; set DASTAR_*_PASSWORD to change them. Ports bind to loopback only.
+x-app: &app
+  build: .
+  image: dastar:dev
+  working_dir: /app
+  environment: &env
+    OWNER_URL: postgres://dastar_owner:${DASTAR_OWNER_PASSWORD:-dev-owner}@postgres:5432/dastar
+    APP_URL: postgres://dastar_app:${DASTAR_APP_PASSWORD:-dev-app}@postgres:5432/dastar
+    WORKER_URL: postgres://dastar_worker:${DASTAR_WORKER_PASSWORD:-dev-worker}@postgres:5432/dastar
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: dastar_owner
+      POSTGRES_PASSWORD: ${DASTAR_OWNER_PASSWORD:-dev-owner}
+      POSTGRES_DB: dastar
+    # the naive counterexample holds fifty connections at once next to the race's pool
+    command: ["postgres", "-c", "max_connections=200"]
+    ports: ["127.0.0.1:${DASTAR_PG_PORT:-5432}:5432"]
+    volumes: ["pgdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "dastar_owner", "-d", "dastar"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # runs first as dastar_owner, then exits; everything else waits for it
+  migrate:
+    <<: *app
+    environment:
+      <<: *env
+      DASTAR_APP_PASSWORD: ${DASTAR_APP_PASSWORD:-dev-app}
+      DASTAR_WORKER_PASSWORD: ${DASTAR_WORKER_PASSWORD:-dev-worker}
+    command: ["sh", "-c", "pnpm -s migrate --owner-url \"$$OWNER_URL\" && pnpm -s roles --owner-url \"$$OWNER_URL\""]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://dastar_app:${DASTAR_APP_PASSWORD:-dev-app}@postgres:5432/dastar
+    working_dir: /app/apps/api
+    command: ["node", "--import", "tsx", "src/server.ts"]
+    ports: ["127.0.0.1:${DASTAR_API_PORT:-8080}:8080"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    <<: *app
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://dastar_worker:${DASTAR_WORKER_PASSWORD:-dev-worker}@postgres:5432/dastar
+    working_dir: /app/packages/worker
+    command: ["node", "--import", "tsx", "src/main.ts"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  # the sixty-second demo; exits 0 only when the race has one winner and the naive run double-books
+  demo:
+    <<: *app
+    profiles: ["demo"]
+    command:
+      - sh
+      - -c
+      - >-
+        pnpm -s race --owner-url "$$OWNER_URL" --app-url "$$APP_URL" --n ${RACE_N:-5000} &&
+        pnpm -s naive --admin-url "$$OWNER_URL" --n 50
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:

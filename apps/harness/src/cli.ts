@@ -9,7 +9,7 @@ import { fmt, writeReport } from "./stats.js";
 import { listen } from "@dastar/api/server";
 import { runLoad, warmPool, type LoadReport } from "./load.js";
 import { createLoadKeys, engineTarget, httpTarget } from "./target.js";
-import { DESIGN_SWEEP, type SweepConfig } from "./sweeper.js";
+import { DESIGN_SWEEP, type SweepConfig } from "@dastar/worker";
 import { parseBlend } from "./workload.js";
 import { runMixed } from "./mixed.js";
 import { runExhaust } from "./exhaust.js";
@@ -108,6 +108,21 @@ if (command === "race") {
 } else if (command === "migrate") {
   const r = await migrate(need("owner-url"), MIGRATIONS);
   console.log(`migrate: applied ${r.applied.length} file(s)${r.applied.length ? ": " + r.applied.join(", ") : ""}`);
+} else if (command === "roles") {
+  // passwords come from the environment, never from flags, so they stay out of the process list
+  const passwords = { dastar_app: process.env.DASTAR_APP_PASSWORD, dastar_worker: process.env.DASTAR_WORKER_PASSWORD };
+  const owner = new Client({ connectionString: need("owner-url") });
+  owner.on("error", () => undefined);
+  await owner.connect();
+  const set: string[] = [];
+  for (const [role, pw] of Object.entries(passwords)) {
+    if (!pw) continue;
+    await owner.query(`alter role ${role} password ${owner.escapeLiteral(pw)}`);
+    set.push(role);
+  }
+  await owner.end();
+  if (set.length === 0) { console.error("set DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD, or both"); process.exit(2); }
+  console.log(`roles: password set for ${set.join(", ")}`);
 } else if (command === "seed") {
   const owner = new Client({ connectionString: need("owner-url") });
   owner.on("error", () => undefined);
@@ -220,6 +235,7 @@ if (command === "race") {
   console.error([
     "usage:",
     "  migrate --owner-url <url>",
+    "  roles --owner-url <url>   (sets the passwords in DASTAR_APP_PASSWORD and DASTAR_WORKER_PASSWORD)",
     "  seed --owner-url <url> [--units 6] [--combos 2]",
     "  race --owner-url <url> --app-url <url> [--n 500]",
     "  naive --admin-url <url> [--n 50] [--keep]",

@@ -17,7 +17,7 @@ services:
       retries: 30
 
   api:
-    build: { context: .., dockerfile: bench/Dockerfile }
+    build: { context: .., dockerfile: Dockerfile }
     profiles: ["api"]
     environment:
       DATABASE_URL: postgres://dastar_app:${DASTAR_APP_PASSWORD:?set DASTAR_APP_PASSWORD}@postgres:5432/dastar

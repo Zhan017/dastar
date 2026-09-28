@@ -2,15 +2,30 @@
 
 **A reservation engine with double-booking protection enforced by Postgres.**
 
+Also a deterministic, self-hostable booking backend for developing and testing reservation agents.
+
 Tables that seat different party sizes. Tables that combine. Holds that expire. Guests racing for the same reservation. Dastar is a TypeScript and Postgres engine for these cases, with a database constraint at the center of its concurrency model.
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype.** The database core, a pool-owned TypeScript API, a reference HTTP API, a concurrency harness, and their tests are implemented and run in CI on Node.js 22 and 26. Availability search, agent tools, and a public demo are planned. The package is not yet published to npm.
+**Status: engine prototype.** The database core, a pool-owned TypeScript API, a reference HTTP API, a sweeper worker, a concurrency harness, and their tests are implemented and run in CI on Node.js 22 and 26. Availability search, agent tools, and a public demo are planned. The package is not yet published to npm.
 
-[Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
+[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
 [Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
+
+## Try it
+
+You need Docker with Compose.
+
+```bash
+git clone https://github.com/Zhan017/dastar.git && cd dastar
+docker compose run --rm demo
+```
+
+This builds one image, starts Postgres 18, applies the migrations, and sends 5000 holds for the same table and time slot at once. Exactly one wins; the other 4999 get `hold_conflict`, and a SQL check finds zero overlapping bookings. Then it turns the protections off on a throwaway database and lets 50 workers do what a plain check-then-insert application does: all 50 commit, and the same check counts 1225 overlapping pairs. The command exits 0 only when both come out that way. After the first build it takes under a minute; `RACE_N=500` makes it shorter.
+
+`docker compose up -d` runs the reference API on 127.0.0.1:8080 and the worker that expires stale holds, against the same database. The passwords in `compose.yml` are development defaults, and every port binds to loopback only. `docker compose --profile demo down -v` removes it all.
 
 ## Run the tests
 
@@ -23,7 +38,7 @@ pnpm install
 pnpm test
 ```
 
-`pnpm test` runs every package: the database suite and the harness suite. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
+`pnpm test` runs every package: the database, API, worker, and harness suites. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
 
 To run only the database package, or to type-check:
 
@@ -163,10 +178,11 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, and restricted roles |
 | Migrations | Ordered, checksummed files with lock timeouts; concurrent index builds with validated recovery |
 | Verification | Raw-SQL attacks, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
-| Harness | A race command and a naive counterexample, both runnable against any Postgres 18 |
+| Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; also importable into a host process |
+| Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
 | Reference API | Five v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
 
-Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and retention workers are still planned.
+Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and the retention job are still planned.
 
 ## Evidence and current limits
 
@@ -204,6 +220,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Concurrency interleavings](packages/db/test/interleavings.test.ts) and [capacity edits versus confirmation](packages/db/test/capacity-expiry.test.ts)
 - [Race and naive harness](apps/harness)
 - [Reference API](apps/api)
+- [Sweeper worker](packages/worker)
 - [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
 
