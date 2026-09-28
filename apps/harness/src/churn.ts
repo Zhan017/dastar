@@ -3,7 +3,7 @@ import { createDastar, type Dastar } from "@dastar/db";
 import type { BenchSeed } from "./seed.js";
 import { rng } from "./rng.js";
 import { dist, exact, type Dist } from "./stats.js";
-import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "./sweeper.js";
+import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "@dastar/worker";
 import { environment, type Environment } from "./load.js";
 import { waitFor } from "./observe.js";
 
@@ -203,7 +203,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
   let done = false;
   const progress = (): number => Math.max((performance.now() - started) / (opts.maxSeconds * 1_000), ops / opts.maxOps);
   const sweeperOff = (): boolean => { const p = progress(); return p >= 0.4 && p < 0.6; };
-  const sweeping = startSweeper(sweeper, opts.sweep ?? DESIGN_SWEEP, sweeperOff);
+  const sweeping = startSweeper(sweeper, opts.sweep ?? DESIGN_SWEEP, { paused: sweeperOff });
   const bump = (code: string): void => { byCode[code] = (byCode[code] ?? 0) + 1; ops += 1; };
   const attempt = async (name: string, fn: () => Promise<unknown>): Promise<boolean> => {
     try { await fn(); bump(`${name}:ok`); return true; } catch (e) { bump(`${name}:${(e as { code?: string }).code ?? "thrown"}`); return false; }

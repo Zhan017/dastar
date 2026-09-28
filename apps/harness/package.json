@@ -19,6 +19,7 @@
   "dependencies": {
     "@dastar/api": "workspace:*",
     "@dastar/db": "workspace:*",
+    "@dastar/worker": "workspace:*",
     "pg": "^8.13.1"
   },
   "devDependencies": {

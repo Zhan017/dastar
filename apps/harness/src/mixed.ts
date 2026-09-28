@@ -3,7 +3,7 @@ import { createDastar, DastarError, type Dastar } from "@dastar/db";
 import type { BenchSeed } from "./seed.js";
 import { rng, type Rng } from "./rng.js";
 import { dist, exact, type Dist } from "./stats.js";
-import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "./sweeper.js";
+import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "@dastar/worker";
 import { deadlocksStable, fitViolations } from "./observe.js";
 import { overlapPairs } from "./race.js";
 import { environment, type Environment } from "./load.js";
@@ -216,7 +216,7 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
 
   // ids this run's own sweeper expired, database-wide; filtered to this venue below, apart from sweep.expired
   const swept: string[] = [];
-  const sweeping = startSweeper(sweeper, opts.sweep ?? DESIGN_SWEEP, undefined, (ids) => { swept.push(...ids); });
+  const sweeping = startSweeper(sweeper, opts.sweep ?? DESIGN_SWEEP, { onExpired: (ids) => { swept.push(...ids); } });
 
   // One row per statement: a connection that holds a single row lock and waits for nothing else cannot be
   // part of a lock cycle, so the run measures the engine's paths and not this helper.

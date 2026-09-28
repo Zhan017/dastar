@@ -19,13 +19,21 @@ export type SweepStats = {
 };
 export type Sweeper = { stats: SweepStats; stop: () => Promise<void> };
 
+export type SweepHooks = {
+  /** Skips ticks without stopping the loop. */
+  paused?: () => boolean;
+  /** Fires after each batch with the ids it expired, for a caller that needs to know which rows were this sweeper's doing rather than only how many. */
+  onExpired?: (ids: readonly string[]) => void;
+  /** Fires with the error of a failed batch; the loop counts it and carries on at the next tick. */
+  onError?: (error: unknown) => void;
+};
+
 /**
- * Runs the sweeper on the worker handle. Every measurement command uses this one loop and reports its
- * configuration, so a result always says which sweeper it was measured with. `paused` skips ticks without
- * stopping the loop. `onExpired` fires after each batch with the ids it expired, for a caller that needs to
- * know which rows were this sweeper's doing rather than only how many.
+ * Runs the sweeper on the worker handle. The worker process and every measurement command use this one
+ * loop, and the harness reports its configuration, so a result always says which sweeper it was measured with.
  */
-export function startSweeper(worker: Pick<Dastar, "expireDue">, config: SweepConfig, paused: () => boolean = () => false, onExpired?: (ids: readonly string[]) => void): Sweeper {
+export function startSweeper(worker: Pick<Dastar, "expireDue">, config: SweepConfig, hooks: SweepHooks = {}): Sweeper {
+  const paused = hooks.paused ?? (() => false);
   const stats: SweepStats = { config, ticks: 0, batches: 0, expired: 0, errors: 0, maxBatchesInTick: 0 };
   let stopped = false;
   let wake: (() => void) | null = null;
@@ -40,11 +48,12 @@ export function startSweeper(worker: Pick<Dastar, "expireDue">, config: SweepCon
             batches += 1;
             stats.batches += 1;
             stats.expired += batch.expired.length;
-            onExpired?.(batch.expired);
+            hooks.onExpired?.(batch.expired);
             if (!config.drain || batch.expired.length < config.limit || stopped || paused()) break;
           }
-        } catch {
+        } catch (e) {
           stats.errors += 1;
+          hooks.onError?.(e);
         }
         stats.maxBatchesInTick = Math.max(stats.maxBatchesInTick, batches);
       }

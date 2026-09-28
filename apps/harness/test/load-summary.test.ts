@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { classify, evaluateTargets, peakOutstanding, runValidity, summarizeStep, timeline, type FollowUpRecord, type HoldRecord, type OfferedWorkload, type RunValidity } from "../src/load.js";
-import { DESIGN_SWEEP, type SweepStats } from "../src/sweeper.js";
+import { DESIGN_SWEEP, type SweepStats } from "@dastar/worker";
 import { TARGET_BLEND } from "../src/workload.js";
 
 const rec = (over: Partial<HoldRecord>): HoldRecord => ({
