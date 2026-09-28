@@ -23,9 +23,9 @@ git clone https://github.com/Zhan017/dastar.git && cd dastar
 docker compose run --rm demo
 ```
 
-This builds one image, starts Postgres 18, applies the migrations, and sends 5000 holds for the same table and time slot at once. Exactly one wins; the other 4999 get `hold_conflict`, and a SQL check finds zero overlapping bookings. Then it turns the protections off on a throwaway database and lets 50 workers do what a plain check-then-insert application does: all 50 commit, and the same check counts 1225 overlapping pairs. The command exits 0 only when both come out that way. After the first build it takes under a minute; `RACE_N=500` makes it shorter.
+This builds one image, starts Postgres 18, applies the migrations, and sends 5000 holds for the same table and time slot at once. Exactly one wins; the other 4999 get `hold_conflict`, and a SQL check finds zero overlapping bookings. Then it turns the protections off on a throwaway database and lets 50 workers do what a plain check-then-insert application does: all 50 commit, and the same check counts 1225 overlapping pairs. The command exits 0 only when both come out that way. The first run builds the image and pulls Postgres; after that, the demo took 40 to 60 seconds on a 4 vCPU machine. `RACE_N=500` makes it shorter. The summary is printed; the JSON report files are written inside the container and go with it.
 
-`docker compose up -d` runs the reference API on 127.0.0.1:8080 and the worker that expires stale holds, against the same database. The passwords in `compose.yml` are development defaults, and every port binds to loopback only. `docker compose --profile demo down -v` removes it all.
+`docker compose up -d` runs the reference API on 127.0.0.1:8080 and the worker that expires stale holds, against the same database, which is published on 127.0.0.1:55433. The passwords in `compose.yml` are development defaults, every port binds to loopback only, and only the migration and demo containers get the owner's credentials. `docker compose --profile demo down -v` removes it all.
 
 ## Run the tests
 

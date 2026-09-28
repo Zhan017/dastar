@@ -82,7 +82,9 @@ if (command === "race") {
   await owner.connect();
   const seed = await seedBench(owner, { units: 4, combos: 1 });
   const pool = new Pool({ connectionString: need("app-url"), max: 16 });
-  const d = createDastar({ pool, acquireTimeoutMs: 60_000, deadlineMs: 60_000 });
+  // every hold for the one unit runs in turn, so the last request waits for nearly all the others: its
+  // acquire budget grows with n (30 ms a hold, several times what one takes) instead of timing out a slow machine
+  const d = createDastar({ pool, acquireTimeoutMs: Math.max(60_000, n * 30), deadlineMs: 60_000 });
   const r = await runRace(d, owner, seed, n);
   await d.close(); await pool.end(); await owner.end();
   const path = await writeReport("race", r);
