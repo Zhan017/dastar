@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "migrate": "tsx src/cli.ts migrate",
+    "roles": "tsx src/cli.ts roles",
     "race": "tsx src/cli.ts race",
     "naive": "tsx src/cli.ts naive",
     "seed": "tsx src/cli.ts seed",
@@ -19,6 +20,7 @@
   "dependencies": {
     "@dastar/api": "workspace:*",
     "@dastar/db": "workspace:*",
+    "@dastar/worker": "workspace:*",
     "pg": "^8.13.1"
   },
   "devDependencies": {

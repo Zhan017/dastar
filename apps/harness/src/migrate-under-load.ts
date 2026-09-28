@@ -11,7 +11,7 @@ import { openSession, warmPool, type HoldRecord } from "./load.js";
 import { engineTarget } from "./target.js";
 import { TARGET_BLEND } from "./workload.js";
 import { dist, type Dist, type Sample } from "./stats.js";
-import type { SweepConfig, SweepStats } from "./sweeper.js";
+import type { SweepConfig, SweepStats } from "@dastar/worker";
 
 export type MigrateUnderLoadOptions = {
   /** Owner connection to a maintenance database; the run creates its own database next to it and drops it afterwards. */

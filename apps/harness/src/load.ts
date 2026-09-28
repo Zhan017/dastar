@@ -8,7 +8,7 @@ import { holdFactory, pickMix, MIXES, TARGET_BLEND, type Blend, type Mix } from 
 import { dist, exact, type Dist, type Quantile, type Sample } from "./stats.js";
 import { deadlocksStable, fitViolations } from "./observe.js";
 import { overlapPairs } from "./race.js";
-import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "./sweeper.js";
+import { startSweeper, DESIGN_SWEEP, type SweepConfig, type SweepStats } from "@dastar/worker";
 import type { HoldAnswer, LoadTarget, Phases } from "./target.js";
 
 /**

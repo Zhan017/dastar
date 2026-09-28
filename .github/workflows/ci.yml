@@ -23,3 +23,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+
+  quickstart:
+    # the README's first command, exactly as a stranger runs it
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose run --rm demo
+      - if: always()
+        run: docker compose --profile demo down -v

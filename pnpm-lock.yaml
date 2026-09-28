@@ -56,6 +56,9 @@ importers:
       '@dastar/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@dastar/worker':
+        specifier: workspace:*
+        version: link:../../packages/worker
       pg:
         specifier: ^8.13.1
         version: 8.23.0
@@ -94,6 +97,34 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.23.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)(yaml@2.9.0)
+
+  packages/worker:
+    dependencies:
+      '@dastar/db':
+        specifier: workspace:*
+        version: link:../db
+      pg:
+        specifier: ^8.13.1
+        version: 8.23.0
+    devDependencies:
+      '@testcontainers/postgresql':
+        specifier: ^10.16.0
+        version: 10.28.0
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.2
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.23.1
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.13
       typescript:
         specifier: ^5.7.2
         version: 5.9.3

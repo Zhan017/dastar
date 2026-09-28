@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on the first day of the month"] },
+  "packageRules": [
+    { "matchUpdateTypes": ["minor", "patch"], "matchCurrentVersion": "!/^0/", "groupName": "non-major dependencies" },
+    { "matchDatasources": ["docker"], "matchPackageNames": ["postgres"], "allowedVersions": "<19", "description": "the engine is verified on Postgres 18; a major moves only by hand" },
+    { "matchDatasources": ["docker"], "matchPackageNames": ["node"], "allowedVersions": "<23", "description": "the image tracks the oldest Node.js line CI verifies" }
+  ]
+}
