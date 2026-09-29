@@ -101,3 +101,25 @@ On the decision rule of section 6.5 this run points at the first branch, the bas
 3. **The churn workload clears its own dead holds.** A hold expires overlapping dead holds inline (10.1 step 5), and about 91 percent of `churn`'s holds compete for the same slots, so a dead hold is cleared by the next competing hold within seconds whether the sweeper runs or not: with the sweeper off for 360 s, dead holds peaked at 31 against a mean of 14.6 before. The sweeper-off phase therefore cannot show recovery. Proposed: give `churn` a share of holds on slots nothing else requests, so that some dead holds are reachable only by the sweeper.
 
 None of the three changes an engine result. Each needs a harness or runbook change before the target-hardware run, or that run will repeat these verdicts.
+
+## After the fixes
+
+Run on 2026-09-29 against the same database and machine, with the fixes to findings 1 to 3 applied (the harness changes that accompany this file).
+
+**Finding 1.** `load --blend overlapping --steps 10,25,50,100 --step-seconds 30` is now `valid`: follow-ups are judged against the granted holds they could act on. 0 deadlocks, 0 overlaps; e2e p99 48 and 23 ms at 50 and 100 per second. Its first step read p95 3.6 s and pool-wait p99 3.0 s: Postgres had just been restarted cold and the sweeper was expiring 4883 dead holds left in that database by the earlier runs; the later steps are back to the levels above.
+
+**Findings 2 and 3.** `churn --ops 2000000` on a fresh database ran the full 1800 s and reached a verdict: **fail**.
+
+| Window | Dead holds pending, per sample | Exclusion index | Active unit rows |
+|---|---|---|---|
+| before (0.15 to 0.40) | 230, 180, 6, 90, 0, 0, 12, 24, 5, 26 | 3.30 to 3.85 MB | 4640 to 5055 |
+| sweeper off (0.40 to 0.60) | 48, 3228, 5942, 8965, 12 071, 15 093 | 3.89 to 5.50 MB | 4813 to 19 673 |
+| recovery | 18 062, then 21 one minute later | 6.12 to 6.63 MB | 22 614, then 4340 |
+| after (0.75 to 1.00) | 67, 92, 146, 159, 186, 212, 263, 229 | 6.77 MB, flat | 4044 to 4753 |
+
+1 020 993 operations, 241 631 granted holds (175 254 on slots of their own), sweeper 96 997 expired in 4979 batches with 0 errors; granted-hold p95 between 24 and 32 ms throughout.
+
+The fix did what it was for: with the sweeper off, dead holds piled up to 15 093, and the sweeper cleared them within two minutes of resuming. The verdict's two reasons both need a decision before the target-hardware run rather than a threshold change:
+
+- **Dead holds "not cleared", mean 179.3 after against 22.4 before.** A fifth of the holds on slots of their own means about 48 holds a second die with nobody else to clear them, so between two sweeper ticks five seconds apart up to about 240 accumulate and are then taken. One sample a minute catches that sawtooth at a drifting phase: the before window already reads between 0 and 230, and the after window between 67 and 263. The rule compares window means with a floor of 10 rows, which at this rate measures sampling phase. A robust reading counts only dead holds older than a sweep interval or two, the ones the sweeper should already have taken. Separately, a smaller share on private slots (around 3 percent) would still pile up well over a thousand dead holds while the sweeper is off and would keep the workload near the original one: every private hold is granted, so the 20 percent share raised granted holds 4.6 times over the earlier run.
+- **Exclusion index "went from 3.85 to 6.77 MB".** Active unit rows rose from about 4800 to 22 600 while the sweeper was off, the index grew with them, and afterwards it stayed at exactly 6.77 MB for the last eleven minutes with no rise. A GiST index does not return pages without a rebuild, so a sweeper outage leaves the index at its peak, which then serves as the plateau. The rule that compares the largest size before and after reads that as failure; whether it should is a design question for H5.
