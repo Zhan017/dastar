@@ -19,7 +19,7 @@ Two runs of the same seeded plan are needed because no single place sees everyth
 
 The targets are defined for one workload: 50 holds per second for 600 seconds, the 40/30/20/10 blend, confirmations and cancellations at 20 percent of hold volume, the design's sweeper, 40 units and 10 combos. The report lists every way the judged step differs from it under `targets.workload`. A lighter or different run can end in `missed`; it cannot end in `met`.
 
-Before any target is judged the run itself is: `validity` fails when confirmations or cancellations failed, when fewer than half of the planned ones had a hold to act on, when the sweeper reported an error or never ran, when an invariant broke, when a request got no complete answer, when more than 0.1 percent of holds got an answer no healthy run produces (an authorization or validation refusal, a live-holds cap, an internal error), or, at the engine handle, when holds were refused for load. An invalid run's targets read `invalid` whatever its holds did. `load` exits 1 for an invalid run or a missed target, 3 for an inconclusive verdict, and 0 otherwise.
+Before any target is judged the run itself is: `validity` fails when confirmations or cancellations failed, when none of them ran or fewer than half of those that could have run did (a follow-up acts on a granted hold, so a shape where nearly every hold conflicts, such as `--blend overlapping` alone, can run only as many as it was granted), when the sweeper reported an error or never ran, when an invariant broke, when a request got no complete answer, when more than 0.1 percent of holds got an answer no healthy run produces (an authorization or validation refusal, a live-holds cap, an internal error), or, at the engine handle, when holds were refused for load. An invalid run's targets read `invalid` whatever its holds did. `load` exits 1 for an invalid run or a missed target, 3 for an inconclusive verdict, and 0 otherwise.
 
 What the engine target calls phases are client-side spans, not server wait times. The unit-lock phase is the lock statements for the assignment's units: one round trip each plus any advisory-lock wait. The transaction phase runs from just before BEGIN of the final attempt to the handle's answer. A request that ends inside the lock phase, for example at the statement timeout, is kept as a censored sample at the time it had spent there, so the slowest requests are not dropped from the distribution. A censored sample is a lower bound. A percentile that depends on one prints as `a..b`, or `>=a` when the upper side is unbounded; it can miss a limit, and it meets one only if the limit would hold even had those requests never finished. The report keeps the flag on every request.
 
@@ -85,10 +85,10 @@ pnpm migrate-under-load --admin-url $OWNER --app-url $APP --worker-url $WORKER -
 docker compose -f bench/compose.yaml exec -T postgres createdb -U dastar_owner dastar_churn
 export CHURN=${OWNER%/dastar}/dastar_churn
 pnpm migrate --owner-url $CHURN
-pnpm churn --owner-url $CHURN --app-url ${APP%/dastar}/dastar_churn --worker-url ${WORKER%/dastar}/dastar_churn
+pnpm churn --owner-url $CHURN --app-url ${APP%/dastar}/dastar_churn --worker-url ${WORKER%/dastar}/dastar_churn --ops 2000000
 ```
 
-It runs for 30 minutes or 100 000 operations, whichever comes first, under the venue's natural 60-second TTL.
+It runs for 30 minutes under the venue's natural 60-second TTL. The design's bound is 30 minutes or 100 000 operations, whichever comes first, and the judge accepts either; but most operations are cheap conflicts, and on a machine of this class 100 000 of them take about three minutes, which leaves too few samples and a sweeper-off phase shorter than the TTL, so the verdict can only be `inconclusive`. `--ops 2000000` lets the 30-minute bound govern. A fifth of the holds go to a slot of their own, a unit and day nothing else requests, because a hold expires the dead holds it overlaps: on the shared slots alone the next competing request clears a dead hold within seconds, and the sweeper-off phase would pile nothing up.
 
 ## Read the results
 
