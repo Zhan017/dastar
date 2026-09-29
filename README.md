@@ -190,7 +190,7 @@ The [prototype report](docs/design/results-2026-09-10-prototype.md) records a pa
 
 The suites added since then cover the two findings that report left open. Commands own their connections, so a command can no longer commit or discard a host transaction. A capacity edit racing a confirmation near a hold's expiry is closed by lock order and a fit check on confirmation, with two-connection regression tests in both orders. They also cover a real two-connection deadlock that exercises the hold retry, confirmation racing holds, and the connection contract: timeouts, cancellation, and discarded connections.
 
-Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load have harness commands but no published run on the target hardware class, so no number is claimed for them yet. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
+Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load have harness commands but no published run on the target hardware class, so no number is claimed for them yet. A [provisional run](docs/design/results-2026-09-28-provisional.md) on a shared 4 vCPU machine found no engine problem and three harness and runbook problems to fix before that run. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
 
 This is an early implementation for evaluation, not yet validated under production load.
 

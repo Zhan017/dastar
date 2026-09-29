@@ -68,6 +68,8 @@ export type ChurnReport = {
   sampleError: string | null;
   /** owner-aged: holds left to expire were moved to the edge of expiry by the owner role; natural-ttl: they waited out the venue's TTL. */
   expiry: { mode: "natural-ttl" | "owner-aged"; ttlSeconds: number; ageMs: number | null; aged: number; ageErrors: number };
+  /** Holds sent to a slot of their own (PRIVATE_SLOT_SHARE of all holds); their dead holds only the sweeper can clear. */
+  privateHolds: number;
   samples: ChurnSample[]; verdict: ChurnVerdict; rules: string[];
 };
 
@@ -121,6 +123,9 @@ export function fittedRise(ys: readonly number[]): number {
 
 /** The design's bounded churn run: 1800 s or 100 000 operations, whichever comes first (design 15.1). */
 export const DESIGN_CHURN = { seconds: 1_800, ops: 100_000 } as const;
+
+/** The share of holds sent to a slot of their own, whose dead holds only the sweeper can clear. */
+export const PRIVATE_SLOT_SHARE = 0.2;
 
 export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Readonly<Record<string, number>>; sweepErrors: number; sweepTicks: number; ageErrors: number; sampleError: string | null; elapsedS: number; ops: number }): ChurnVerdict {
   const { samples, byCode } = run;
@@ -178,7 +183,9 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
  * Bounded churn (system design, section 15.1): holds on a bounded slot space, of which some are cancelled
  * at once, some are confirmed and cancelled later, and the rest are left to expire; attempts against live
  * reservations fail as conflicts; the sweeper is off between 40 and 60 percent of the run so dead holds pile
- * up and are then cleared. Storage, dead tuples, WAL, autovacuum activity, and hold latency are sampled on
+ * up and are then cleared. A hold clears the dead holds that overlap it (10.1 step 5), and on the shared slot
+ * space the next competing request clears a dead hold within seconds, sweeper or not; so a share of holds goes
+ * to a slot of its own, a unit and day no other request uses, where only the sweeper can expire a dead one. Storage, dead tuples, WAL, autovacuum activity, and hold latency are sampled on
  * an interval through pgstattuple and the statistics views.
  */
 export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<ChurnReport> {
@@ -200,6 +207,9 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
   let refused: number[] = [];
   let aged = 0;
   let ageErrors = 0;
+  // each private hold takes the next (unit, day) pair, starting far past the shared range, so no two collide
+  const privateFirstDay = firstDay + 1_000 * 86_400_000;
+  let privateHolds = 0;
   let done = false;
   const progress = (): number => Math.max((performance.now() - started) / (opts.maxSeconds * 1_000), ops / opts.maxOps);
   const sweeperOff = (): boolean => { const p = progress(); return p >= 0.4 && p < 0.6; };
@@ -218,11 +228,20 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
       const t0 = performance.now();
       let reservationId: string | null = null;
       let answer = "error";
+      let startsAt: string;
+      let unit: string;
+      if (r.next() < PRIVATE_SLOT_SHARE) {
+        const k = privateHolds++;
+        unit = deps.seed.units[k % deps.seed.units.length]!;
+        startsAt = new Date(privateFirstDay + Math.floor(k / deps.seed.units.length) * 86_400_000).toISOString();
+      } else {
+        unit = r.pick(deps.seed.units);
+        startsAt = new Date(firstDay + r.int(14) * 86_400_000 + r.int(16) * 900_000).toISOString();
+      }
       try {
         const out = await app.hold({
-          venueId, actor, traceId, idempotencyKey: traceId, partySize: 2, durationMinutes: 90,
-          startsAt: new Date(firstDay + r.int(14) * 86_400_000 + r.int(16) * 900_000).toISOString(),
-          assignment: { kind: "unit", id: r.pick(deps.seed.units) },
+          venueId, actor, traceId, idempotencyKey: traceId, partySize: 2, durationMinutes: 90, startsAt,
+          assignment: { kind: "unit", id: unit },
         });
         answer = out.ok ? "ok" : out.error.code;
         bump(`hold:${answer}`);
@@ -332,6 +351,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
     command: "churn", runId, seed: opts.seed, environment: await environment(deps.owner, deps.appPool.options.max ?? 10), options: opts,
     ops, byCode, elapsedS, sweep: sweeping.stats, cleanup, sampleError,
     expiry: { mode: opts.ageMs === undefined ? "natural-ttl" : "owner-aged", ttlSeconds, ageMs: opts.ageMs ?? null, aged, ageErrors },
+    privateHolds,
     samples, verdict: judgeChurn({ samples, byCode, sweepErrors: sweeping.stats.errors, sweepTicks: sweeping.stats.ticks, ageErrors, sampleError, elapsedS, ops }), rules: [...CHURN_RULES],
   };
 }
