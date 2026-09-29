@@ -293,8 +293,15 @@ export function runValidity(run: {
     for (const x of failedFollowUps) byCode[`${x.kind}:${x.code}`] = (byCode[`${x.kind}:${x.code}`] ?? 0) + 1;
     reasons.push(`${failedFollowUps.length} of ${executed.length} confirmations and cancellations failed: ${JSON.stringify(byCode)}`);
   }
-  if (run.followUps.length > 0 && executed.length < run.followUps.length * 0.5) {
-    reasons.push(`only ${executed.length} of ${run.followUps.length} planned confirmations and cancellations had a hold to act on`);
+  // A follow-up acts on a granted hold and is skipped only when none is left, so at most one runs per grant: a
+  // shape where nearly every hold conflicts plans more follow-ups than it can ever run. Judged against what
+  // could have run, the check still catches follow-ups that fall behind the holds they were meant for.
+  const granted = run.records.filter((x) => x.code === "ok").length;
+  const runnable = Math.min(run.followUps.length, granted);
+  if (run.followUps.length > 0 && executed.length === 0) {
+    reasons.push(`none of ${run.followUps.length} planned confirmations and cancellations ran`);
+  } else if (executed.length < runnable * 0.5) {
+    reasons.push(`only ${executed.length} of ${run.followUps.length} planned confirmations and cancellations had a hold to act on, with ${granted} holds granted`);
   }
   const unanswered = run.records.filter((x) => x.cls === "transport").length + run.followUps.filter((x) => classify(x.code) === "transport").length;
   if (unanswered > 0) {
