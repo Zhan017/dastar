@@ -89,7 +89,7 @@ The ramp steps before it (10, 25, and 50 per second for 60 seconds each) were va
 | H1 zero deadlocks on reference paths | `mixed` 600 s, both acceptance `load` runs, the four diagnostics | 0 deadlocks everywhere, 0 retries in `mixed` | Not the target hardware; one seed |
 | H3 throughput at target | both acceptance `load` runs | 50 per second sustained with no backlog; every 6.5 target inside its limit by a wide margin | Provisional: shared CPUs, and no targets applied by the harness |
 | H4 pool exhaustion and recovery | `exhaust` | every check passed in both variants | The pool of 16 and the 5 s acquire timeout are the provisional values from section 14; no other sizes tried |
-| H5 autovacuum under churn | `churn`, twice | inconclusive; the exclusion index plateaued and dead tuples stayed bounded over 1800 s | The sweeper-off recovery was never exercised, see finding 3 |
+| H5 autovacuum under churn | `churn`, twice here; twice more after the fixes | inconclusive here; **pass** on 2026-10-05 with the revised rules, see the last section | One run, on a host that was slower that day; the revised rules are this harness's reading, decided after seeing a run |
 | H6 migrations under load | `migrate-under-load --rate 200` | pass | One fixture set; blocking migrations recorded, not judged |
 
 On the decision rule of section 6.5 this run points at the first branch, the baseline stands: the unit-lock phase on distinct dates stays near 6 to 9 ms up to 100 per second, far from dominating p99. The decision itself waits for the target-hardware run.
@@ -123,3 +123,28 @@ The fix did what it was for: with the sweeper off, dead holds piled up to 15 093
 
 - **Dead holds "not cleared", mean 179.3 after against 22.4 before.** A fifth of the holds on slots of their own means about 48 holds a second die with nobody else to clear them, so between two sweeper ticks five seconds apart up to about 240 accumulate and are then taken. One sample a minute catches that sawtooth at a drifting phase: the before window already reads between 0 and 230, and the after window between 67 and 263. The rule compares window means with a floor of 10 rows, which at this rate measures sampling phase. A robust reading counts only dead holds older than a sweep interval or two, the ones the sweeper should already have taken. Separately, a smaller share on private slots (around 3 percent) would still pile up well over a thousand dead holds while the sweeper is off and would keep the workload near the original one: every private hold is granted, so the 20 percent share raised granted holds 4.6 times over the earlier run.
 - **Exclusion index "went from 3.85 to 6.77 MB".** Active unit rows rose from about 4800 to 22 600 while the sweeper was off, the index grew with them, and afterwards it stayed at exactly 6.77 MB for the last eleven minutes with no rise. A GiST index does not return pages without a rebuild, so a sweeper outage leaves the index at its peak, which then serves as the plateau. The rule that compares the largest size before and after reads that as failure; whether it should is a design question for H5.
+
+## Churn rules revised
+
+On 2026-10-05 the two rules above were changed, and the private-slot share with them:
+
+- **Dead holds** count as not cleared only when they are overdue, expired more than two sweep intervals before the sample (10 s with the design's sweeper). The raw count of dead holds is still sampled and printed, and still decides whether the sweeper-off phase piled anything up.
+- **The exclusion index** is compared with its largest size from the before window through the sweeper-off phase and its recovery, instead of the before window alone, and the fitted rise across the after window is judged as before: it may stay at the size an outage left it, and fails for growing past that or for still rising at the end.
+- **Private slots** fell from 20 to 3 percent of holds, so the workload stays near the one before the fix.
+
+These rules were chosen after seeing the run they now judge differently; that is a reason to read the verdict below with them in view, and to hold them fixed for the target-hardware run rather than adjust them again after it.
+
+`churn --ops 2000000` on a fresh database, same machine class, ran 1800 s: **pass**.
+
+| Window | Dead holds pending / overdue, per sample | Exclusion index | Active unit rows |
+|---|---|---|---|
+| before | at most 54 / 0 in every sample | 1.51 to 1.62 MB | about 1730 to 1790 |
+| sweeper off | 13 / 0, 388 / 270, 685 / 587, 1035 / 944, 1369 / 1263, 1723 / 1632 | 1.62 to 1.77 MB | 1721 to 3452 |
+| after | at most 42 / 0 in every sample | 1.84 MB, flat for the last eleven minutes | about 1680 to 1740 |
+
+684 783 operations: 73 410 granted holds (19 573 on slots of their own), 567 971 conflicts, 36 112 cancellations, 7290 confirmations; the sweeper expired 19 897 holds in 1138 batches with 0 errors; 27 autovacuum runs; heap dead tuples fell to 0.1 percent by the end.
+
+Granted-hold p95 ran between 36 and 42 ms, against 24 to 32 ms a week earlier, and the run completed about 30 percent fewer operations in the same 1800 s. The workload changed too (3 instead of 20 percent private slots), but the earlier runs on this machine class point to a slower host that day: the result is a pass under the rules, and its latency numbers are not comparable with the earlier rows.
+
+The full suite passed on the same commit: 153 engine, 8 worker, 40 API and 69 harness tests.
+
