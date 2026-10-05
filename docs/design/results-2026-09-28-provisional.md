@@ -136,15 +136,15 @@ These rules were chosen after seeing the run they now judge differently; that is
 
 `churn --ops 2000000` on a fresh database, same machine class, ran 1800 s: **pass**.
 
-| Window | Dead holds pending / overdue, per sample | Exclusion index | Active unit rows |
+| Window | Dead holds pending / overdue | Exclusion index | Active unit rows |
 |---|---|---|---|
-| before | at most 54 / 0 in every sample | 1.51 to 1.62 MB | about 1730 to 1790 |
+| before | 17 to 56 / 0 in every sample | 1.54 to 1.63 MB | 1733 to 1800 |
 | sweeper off | 13 / 0, 388 / 270, 685 / 587, 1035 / 944, 1369 / 1263, 1723 / 1632 | 1.62 to 1.77 MB | 1721 to 3452 |
-| after | at most 42 / 0 in every sample | 1.84 MB, flat for the last eleven minutes | about 1680 to 1740 |
+| after | 12 to 62 / 0 in every sample | 1.84 MB, flat for the last eleven minutes | 1680 to 1802 |
 
 684 783 operations: 73 410 granted holds (19 573 on slots of their own), 567 971 conflicts, 36 112 cancellations, 7290 confirmations; the sweeper expired 19 897 holds in 1138 batches with 0 errors; 27 autovacuum runs; heap dead tuples fell to 0.1 percent by the end.
 
-Granted-hold p95 ran between 36 and 42 ms, against 24 to 32 ms a week earlier, and the run completed about 30 percent fewer operations in the same 1800 s. The workload changed too (3 instead of 20 percent private slots), but the earlier runs on this machine class point to a slower host that day: the result is a pass under the rules, and its latency numbers are not comparable with the earlier rows.
+Granted-hold p95 ran between 34 and 42 ms, against 24 to 32 ms a week earlier, and the run completed about 30 percent fewer operations in the same 1800 s. The workload changed too (3 instead of 20 percent private slots), but the earlier runs on this machine class point to a slower host that day: the result is a pass under the rules, and its latency numbers are not comparable with the earlier rows.
 
 The full suite passed on the same commit: 153 engine, 8 worker, 40 API and 69 harness tests.
 
