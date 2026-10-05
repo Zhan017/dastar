@@ -206,7 +206,7 @@ if (command === "race") {
   });
   await end();
   for (const s of r.samples) {
-    console.log(`${s.atS.toFixed(0).padStart(5)}s sweeper=${s.sweeper.padEnd(3)} rows=${s.retainedUnitRows} active=${s.activeUnitRows} dead-pending=${s.pendingDead} heap=${(s.heapBytes / 1e6).toFixed(1)}MB excl-index=${(s.exclusionIndexBytes / 1e6).toFixed(2)}MB dead%=${s.heapDeadTuplePercent.toFixed(1)} autovacuums=${s.autovacuumCount} granted-hold p95=${fmt(s.holdOkLatencyMs.p95)} ms (${s.holdOkLatencyMs.count} granted, ${s.holdConflictLatencyMs.count} refused) sample=${s.sampleMs.toFixed(0)}ms`);
+    console.log(`${s.atS.toFixed(0).padStart(5)}s sweeper=${s.sweeper.padEnd(3)} rows=${s.retainedUnitRows} active=${s.activeUnitRows} dead-pending=${s.pendingDead} overdue=${s.overdueDead} heap=${(s.heapBytes / 1e6).toFixed(1)}MB excl-index=${(s.exclusionIndexBytes / 1e6).toFixed(2)}MB dead%=${s.heapDeadTuplePercent.toFixed(1)} autovacuums=${s.autovacuumCount} granted-hold p95=${fmt(s.holdOkLatencyMs.p95)} ms (${s.holdOkLatencyMs.count} granted, ${s.holdConflictLatencyMs.count} refused) sample=${s.sampleMs.toFixed(0)}ms`);
   }
   console.log(`churn: ${r.ops} operations in ${r.elapsedS.toFixed(0)}s, answers ${JSON.stringify(r.byCode)}; expiry ${r.expiry.mode}, TTL ${r.expiry.ttlSeconds}s; ${r.privateHolds} holds on slots of their own; ${sweepLine(r.sweep)}`);
   console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
