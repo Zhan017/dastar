@@ -12,7 +12,7 @@ The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
 [Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
-[Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
+[Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Decisions](docs/adr/README.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
 ## Try it
 
@@ -209,7 +209,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
 
-The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria.
+The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the five decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
 
 ## Explore the code
 
