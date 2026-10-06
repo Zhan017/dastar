@@ -38,13 +38,15 @@ pnpm install
 pnpm test
 ```
 
-`pnpm test` runs every package: the database, API, worker, and harness suites. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
+`pnpm test` runs every package: the core, database, API, worker, and harness suites. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
 
-To run only the database package, or to type-check:
+To run only the database package, to type-check, to lint, or to check the package boundaries:
 
 ```bash
 pnpm test:db
 pnpm typecheck
+pnpm lint
+pnpm deps:check
 ```
 
 ## See the race
@@ -170,6 +172,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 
 | Area | Implemented |
 |---|---|
+| Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, and the workload bounds, each checked against the schema by the engine's tests |
 | Inventory | Venues, units with capacity ranges, and fixed unit combinations |
 | Reservations | Hold, confirm, cancel, batch expiry, token minting, and reads, behind one pool-owned API |
 | Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
@@ -213,6 +216,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 
 ## Explore the code
 
+- [Domain types and the state table](packages/core/src)
 - [Public API and connection contract](packages/db/src/handle.ts)
 - [Schema and migrations](packages/db/migrations)
 - [Reservation commands](packages/db/src/commands)
@@ -221,7 +225,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Race and naive harness](apps/harness)
 - [Reference API](apps/api)
 - [Sweeper worker](packages/worker)
-- [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md)
+- [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md), [Decisions](docs/adr/README.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
 
 Bug reports and reproducible counterexamples are welcome in [Issues](https://github.com/Zhan017/dastar/issues). Include the command, expected behavior, and observed result.

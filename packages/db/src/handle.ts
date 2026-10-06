@@ -73,6 +73,8 @@ export function createDastar(opts: DastarOptions): Dastar {
   function canceller(url: string): Promise<Client> {
     if (cancellerPromise) return cancellerPromise;
     let p: Promise<Client>;
+    // declared before it is assigned on purpose: the promise's own callbacks compare against it
+    // eslint-disable-next-line prefer-const
     p = (async () => {
       const c = new Client({ connectionString: url, application_name: "dastar-canceller", connectionTimeoutMillis: cancelGraceMs, statement_timeout: cancelGraceMs });
       await c.connect();
@@ -204,7 +206,7 @@ export function createDastar(opts: DastarOptions): Dastar {
       }
       return await fn(client);
     })().then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e }));
-    let result = await Promise.race([work, deadline]);
+    const result = await Promise.race([work, deadline]);
     clearTimeout(timer);
     if (result === "deadline") {
       // the cleanup budget starts now and covers both the cancel request and the wait for settlement;

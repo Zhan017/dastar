@@ -22,6 +22,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm deps:check
       - run: pnpm test
 
   quickstart:
@@ -33,3 +35,58 @@ jobs:
       - run: docker compose run --rm demo
       - if: always()
         run: docker compose --profile demo down -v
+
+  race:
+    # the design's CI race (section 14): 200 holds for one table at once, with the counts posted on the PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dastar_owner
+          POSTGRES_PASSWORD: owner
+          POSTGRES_DB: dastar
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dastar_owner -d dastar" --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      OWNER_URL: postgres://dastar_owner:owner@localhost:5432/dastar
+      APP_URL: postgres://dastar_app:app@localhost:5432/dastar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -s migrate --owner-url "$OWNER_URL"
+      - run: pnpm -s roles --owner-url "$OWNER_URL"
+        env:
+          DASTAR_APP_PASSWORD: app
+      - id: race
+        run: |
+          set -o pipefail
+          pnpm -s race --owner-url "$OWNER_URL" --app-url "$APP_URL" --n 200 | tee race.txt
+      - name: Post the race counts on the PR
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        env:
+          OUTCOME: ${{ steps.race.outcome }}
+        with:
+          script: |
+            const fs = require("fs");
+            const out = fs.existsSync("race.txt") ? fs.readFileSync("race.txt", "utf8").split("\n").filter((l) => /^(race|latency)/.test(l)).join("\n") : "(no output)";
+            const marker = "<!-- dastar-race -->";
+            const verdict = process.env.OUTCOME === "success" ? "one winner, zero overlaps" : `failed (${process.env.OUTCOME})`;
+            const body = `${marker}\n**Race, N=200:** ${verdict} on \`${context.payload.pull_request.head.sha.slice(0, 7)}\`\n\n\`\`\`\n${out}\n\`\`\``;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const mine = comments.find((c) => c.user?.type === "Bot" && c.body?.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
