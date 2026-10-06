@@ -36,7 +36,7 @@ services:
       <<: *owner-env
       DASTAR_APP_PASSWORD: ${DASTAR_APP_PASSWORD:-dev-app}
       DASTAR_WORKER_PASSWORD: ${DASTAR_WORKER_PASSWORD:-dev-worker}
-    command: ["sh", "-c", "pnpm -s migrate --owner-url \"$$OWNER_URL\" && pnpm -s roles --owner-url \"$$OWNER_URL\""]
+    command: ["sh", "-c", "pnpm -s migrate --owner-url \"$$OWNER_URL\" && pnpm -s roles --owner-url \"$$OWNER_URL\" && pnpm -s seed-demo --owner-url \"$$OWNER_URL\""]
     depends_on:
       postgres: { condition: service_healthy }
 

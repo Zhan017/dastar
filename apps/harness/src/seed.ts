@@ -1,4 +1,24 @@
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type { ClientBase } from "pg";
+
+const DEMO_SEED = fileURLToPath(new URL("../../../packages/db/seed/demo-venue.sql", import.meta.url));
+
+/** The ids `packages/db/seed/demo-venue.sql` gives the demo venue, so a walkthrough can name them. */
+export const DEMO = {
+  venue: "0199a000-0000-7000-8000-000000000001",
+  units: {
+    T1: "0199a000-0000-7000-8000-000000000101", T2: "0199a000-0000-7000-8000-000000000102",
+    T3: "0199a000-0000-7000-8000-000000000103", T4: "0199a000-0000-7000-8000-000000000104",
+    T5: "0199a000-0000-7000-8000-000000000105", T6: "0199a000-0000-7000-8000-000000000106",
+  },
+  combos: { "T1+T2": "0199a000-0000-7000-8000-000000000201", "T3+T4": "0199a000-0000-7000-8000-000000000202" },
+} as const;
+
+/** Applies the demo venue seed as the owner; applying it again changes nothing. */
+export async function seedDemo(owner: ClientBase): Promise<void> {
+  await owner.query(await readFile(DEMO_SEED, "utf8"));
+}
 
 export type BenchSeed = { venue: string; units: string[]; combos: string[] };
 export type SeedOptions = {

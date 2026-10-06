@@ -71,17 +71,17 @@ pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --
 A small HTTP server over the same engine: five routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
 
 ```bash
-pnpm seed --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
+pnpm seed:demo --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
 DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label demo --capabilities hold,confirm,cancel,read
 DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm api
 ```
 
-`seed` prints a venue id and its unit ids. `keys:create` prints a key once; only its hash is stored. The server listens on 127.0.0.1:8080; `HOST` and `PORT` change that. From another terminal, with those values in `VENUE`, `UNIT`, and `KEY`:
+`seed:demo` applies [`packages/db/seed/demo-venue.sql`](packages/db/seed/demo-venue.sql): one venue with six tables and two combinations under fixed ids, and applying it again changes nothing. The Compose stack from [Try it](#try-it) applies the same file after its migrations. `keys:create` prints a key once; only its hash is stored. The server listens on 127.0.0.1:8080; `HOST` and `PORT` change that. From another terminal, with the key in `KEY`, hold table T1 for two:
 
 ```bash
-curl -s -X POST localhost:8080/v1/venues/$VENUE/holds \
+curl -s -X POST localhost:8080/v1/venues/0199a000-0000-7000-8000-000000000001/holds \
   -H "authorization: Bearer $KEY" -H "idempotency-key: friday-1" -H "content-type: application/json" \
-  -d '{"party_size":2,"starts_at":"2030-06-07T19:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"'$UNIT'"}}'
+  -d '{"party_size":2,"starts_at":"2030-06-07T19:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"0199a000-0000-7000-8000-000000000101"}}'
 ```
 
 The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, and `/health/ready` reports whether the database is reachable and migrated.
