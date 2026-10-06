@@ -6,7 +6,12 @@ import type { ApiKey, Deps, Env } from "./env.js";
 import { ApiProblem } from "./problem.js";
 import { readLimits, withClient } from "./db.js";
 
-export type Capability = "hold" | "confirm" | "cancel" | "read";
+/**
+ * What a key may do. `admin` is reserved for the venue and inventory routes of M2 (admin CRUD, design
+ * section 16): a key can carry it today, and no route accepts it, so it grants nothing yet and implies none
+ * of the others.
+ */
+export type Capability = "hold" | "confirm" | "cancel" | "read" | "admin";
 
 const KEY_RE = /^dsk_[A-Za-z0-9_-]{43}$/;
 const BEARER_RE = /^Bearer (\S+)$/i;

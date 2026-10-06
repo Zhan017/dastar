@@ -4,7 +4,7 @@ import { z } from "@hono/zod-openapi";
 import { Pool } from "pg";
 import { createKey, type Capability } from "./auth.js";
 
-const CAPABILITIES: readonly Capability[] = ["hold", "confirm", "cancel", "read"];
+const CAPABILITIES: readonly Capability[] = ["hold", "confirm", "cancel", "read", "admin"];
 
 /** Creates one key and returns it. The presented key is shown once; the table keeps only its hash. */
 export async function runKeysCli(argv: string[], env: Record<string, string | undefined>): Promise<{ id: string; key: string }> {
