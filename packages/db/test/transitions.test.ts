@@ -4,9 +4,7 @@ import { cloneDatabase, dropDatabase, connect } from "./helpers/db.js";
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 
-const STATUSES = ["held", "confirmed", "seated", "completed", "cancelled", "expired"] as const;
-type S = (typeof STATUSES)[number];
-const ALLOWED = new Set(["held>confirmed", "held>cancelled", "held>expired", "confirmed>seated", "confirmed>cancelled", "seated>completed", "seated>cancelled"]);
+import { STATUSES, canTransition, type ReservationStatus as S } from "@dastar/core";
 
 describe("state machine", () => {
   let owner: Client; let app: Client; let seed: Seed;
@@ -67,7 +65,7 @@ describe("state machine", () => {
           const after = (await app.query("select version, status from dastar.reservation where id = $1", [id])).rows[0];
           expect(after.status).toBe(from);
           expect(after.version).toBe(before + 1);
-        } else if (ALLOWED.has(`${from}>${to}`)) {
+        } else if (canTransition(from, to)) {
           await attempt;
           const after = (await app.query("select version, status, confirm_token_hash from dastar.reservation where id = $1", [id])).rows[0];
           expect(after.status).toBe(to);

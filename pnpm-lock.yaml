@@ -82,8 +82,23 @@ importers:
         specifier: ^3.0.5
         version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)(yaml@2.9.0)
 
+  packages/core:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.2
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)(yaml@2.9.0)
+
   packages/db:
     dependencies:
+      '@dastar/core':
+        specifier: workspace:*
+        version: link:../core
       pg:
         specifier: ^8.13.1
         version: 8.23.0
