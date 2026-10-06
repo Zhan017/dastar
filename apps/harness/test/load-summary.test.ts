@@ -77,6 +77,13 @@ describe("run validity", () => {
     expect(runValidity({ ...base, sweep: sweep({ ticks: 0 }) }).reasons).toEqual(["the sweeper never ran"]);
     expect(runValidity({ ...base, overlaps: 1, fitViolations: 2 }).reasons).toHaveLength(2);
     expect(runValidity({ ...base, followUps: Array.from({ length: 60 }, (_, i) => followUp(i < 40 ? { code: "skipped", doneMs: null, e2eMs: null } : {})) }).reasons).toEqual([expect.stringMatching(/only 20 of 60 planned/)]);
+    // nearly every hold conflicts, as the overlapping shape alone does: a follow-up can only run on one of the few
+    // granted holds, so skipping the rest is the plan working, and follow-ups that ran on every grant are enough
+    const contended = [...many(10, {}), ...many(290, { cls: "conflict", code: "hold_conflict" })];
+    const skippedBut = (ran: number): FollowUpRecord[] => Array.from({ length: 60 }, (_, i) => followUp(i < 60 - ran ? { code: "skipped", doneMs: null, e2eMs: null } : {}));
+    expect(runValidity({ ...base, records: contended, lastStep: step(contended), followUps: skippedBut(10) })).toEqual(VALID);
+    expect(runValidity({ ...base, records: contended, lastStep: step(contended), followUps: skippedBut(4) }).reasons).toEqual([expect.stringMatching(/only 4 of 60 planned .* with 10 holds granted/)]);
+    expect(runValidity({ ...base, followUps: skippedBut(0) }).reasons).toEqual(["none of 60 planned confirmations and cancellations ran"]);
     const unanswered = [...many(298, {}), rec({ cls: "transport", code: "transport_timeout", e2eCensored: true, stored: "granted" }), rec({ cls: "transport", code: "transport_error", stored: "unobserved" })];
     expect(runValidity({ ...base, records: unanswered }).reasons).toEqual([expect.stringMatching(/2 request\(s\) got no complete answer from the API; for the holds among them the database holds 1 granted, 0 refused, 1 with no outcome observed yet/)]);
     expect(runValidity({ ...base, planned: { holds: 301, followUps: 60 } }).reasons).toEqual(["300 of 301 planned holds have a record"]);

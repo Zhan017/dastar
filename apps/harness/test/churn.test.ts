@@ -7,16 +7,16 @@ import { runChurn, judgeChurn, fittedRise, agerPoolConfig, type ChurnSample } fr
 const q = (ms: number) => ({ atLeast: ms, atMost: ms });
 const latency = (p95: number | null, count = 100): ChurnSample["holdOkLatencyMs"] => ({ count, censored: 0, p50: q(4), p95: p95 === null ? null : q(p95), p99: null, max: q(80) });
 const sample = (over: Partial<ChurnSample>): ChurnSample => ({
-  atS: 0, progress: 0, ops: 0, sweeper: "on", retainedUnitRows: 1_000, activeUnitRows: 100, pendingDead: 2,
+  atS: 0, progress: 0, ops: 0, sweeper: "on", retainedUnitRows: 1_000, activeUnitRows: 100, pendingDead: 2, overdueDead: 0,
   heapBytes: 100_000, exclusionIndexBytes: 50_000, totalBytes: 200_000, heapDeadTuplePercent: 2, heapFreePercent: 5, indexFreePercent: 5,
   nLiveTup: 1_000, nDeadTup: 10, autovacuumCount: 0, autoanalyzeCount: 0, lastAutovacuum: null, walPosition: 0, sampleMs: 1,
   holdOkLatencyMs: latency(8), holdConflictLatencyMs: latency(5), partial: false, ...over,
 });
 /** Five samples before, two with the sweeper off and dead holds piled up, five after. */
-const series = (after: (k: number) => Partial<ChurnSample>, opts: { vacuums?: number; peak?: number } = {}): ChurnSample[] => [
+const series = (after: (k: number) => Partial<ChurnSample>, opts: { vacuums?: number; peak?: number; offIndex?: number } = {}): ChurnSample[] => [
   sample({ progress: 0 }),
   ...[0.15, 0.2, 0.25, 0.3, 0.35].map((p, i) => sample({ progress: p, autovacuumCount: i })),
-  ...[0.45, 0.55].map((p) => sample({ progress: p, sweeper: "off", pendingDead: opts.peak ?? 300, autovacuumCount: 4 })),
+  ...[0.45, 0.55].map((p) => sample({ progress: p, sweeper: "off", pendingDead: opts.peak ?? 300, overdueDead: opts.peak ?? 300, autovacuumCount: 4, ...(opts.offIndex !== undefined ? { exclusionIndexBytes: opts.offIndex } : {}) })),
   ...[0.78, 0.84, 0.9, 0.95, 1.0].map((p, k) => sample({ progress: p, autovacuumCount: opts.vacuums ?? 8, ...after(k) })),
 ];
 const good = { byCode: { "hold:ok": 900, "hold:hold_conflict": 300, "cancel:ok": 400, "confirm:ok": 90 }, sweepErrors: 0, sweepTicks: 40, ageErrors: 0, sampleError: null, elapsedS: 1_800, ops: 120_000 };
@@ -63,7 +63,18 @@ describe("churn verdict", () => {
     expect(reasons({ holdOkLatencyMs: latency(40) })).toEqual([expect.stringMatching(/granted-hold p95 ms went from/)]);
     // refusals getting slower or faster is reported, not judged: a shift in the mix of answers must not move the verdict
     expect(reasons({ holdConflictLatencyMs: latency(400) })).toEqual([]);
-    expect(reasons({ pendingDead: 60 })).toEqual([expect.stringMatching(/dead holds were not cleared/)]);
+    expect(reasons({ overdueDead: 60 })).toEqual([expect.stringMatching(/dead holds were not cleared: mean 60.0 overdue after/)]);
+  });
+
+  it("reads dead holds the sweeper should already have taken, not the ones that died since its last tick", () => {
+    // holds die steadily and each tick takes them: a sample can land just before a tick and read hundreds pending, none overdue
+    expect(judgeChurn({ samples: series(() => ({ pendingDead: 240, overdueDead: 0 })), ...good })).toEqual({ verdict: "pass", reasons: [] });
+  });
+
+  it("lets the exclusion index stay at the size a sweeper outage left it, and fails it for growing past that", () => {
+    // the outage kept dead holds' unit rows active, the index grew with them, and afterwards it holds that size
+    expect(judgeChurn({ samples: series(() => ({ exclusionIndexBytes: 90_000 }), { offIndex: 90_000 }), ...good })).toEqual({ verdict: "pass", reasons: [] });
+    expect(judgeChurn({ samples: series(() => ({ exclusionIndexBytes: 120_000 }), { offIndex: 90_000 }), ...good }).reasons).toEqual([expect.stringMatching(/exclusion index bytes went from 90000.0 to 120000.0/)]);
   });
 
   it("fails on a value still rising inside the last window even when the two window levels are close", () => {

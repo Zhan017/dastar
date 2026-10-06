@@ -38,6 +38,12 @@ export type ChurnSample = {
   retainedUnitRows: number; activeUnitRows: number;
   /** Held rows past their expiry that nobody has expired yet. */
   pendingDead: number;
+  /**
+   * The pending dead holds that expired more than two sweep intervals ago: the ones a working sweeper should
+   * already have taken. Between ticks `pendingDead` rises and falls with the rate holds die, so a sample read
+   * at a different moment of the interval moves it; this does not move unless the sweeper falls behind.
+   */
+  overdueDead: number;
   heapBytes: number; exclusionIndexBytes: number; totalBytes: number;
   heapDeadTuplePercent: number; heapFreePercent: number; indexFreePercent: number;
   nLiveTup: number; nDeadTup: number; autovacuumCount: number; autoanalyzeCount: number; lastAutovacuum: string | null;
@@ -68,6 +74,8 @@ export type ChurnReport = {
   sampleError: string | null;
   /** owner-aged: holds left to expire were moved to the edge of expiry by the owner role; natural-ttl: they waited out the venue's TTL. */
   expiry: { mode: "natural-ttl" | "owner-aged"; ttlSeconds: number; ageMs: number | null; aged: number; ageErrors: number };
+  /** Holds sent to a slot of their own (PRIVATE_SLOT_SHARE of all holds); their dead holds only the sweeper can clear. */
+  privateHolds: number;
   samples: ChurnSample[]; verdict: ChurnVerdict; rules: string[];
 };
 
@@ -76,6 +84,7 @@ const SAMPLE_SQL = `
     (select count(*) from dastar.reservation_unit)::int as retained,
     (select count(*) from dastar.reservation_unit where active)::int as active,
     (select count(*) from dastar.reservation where status = 'held' and hold_expires_at <= now())::int as pending_dead,
+    (select count(*) from dastar.reservation where status = 'held' and hold_expires_at <= now() - make_interval(secs => $1::float8 / 1000))::int as overdue_dead,
     pg_relation_size('dastar.reservation_unit')::float8 as heap_bytes,
     pg_relation_size('dastar.reservation_unit_no_overlap')::float8 as excl_bytes,
     pg_total_relation_size('dastar.reservation_unit')::float8 as total_bytes,
@@ -96,8 +105,8 @@ export const CHURN_RULES: readonly string[] = [
   "inconclusive: neither of the design's bounds was reached (1800 s or 100 000 operations)",
   "inconclusive: mean active unit rows after is outside 0.75 to 1.25 times the mean before, so the windows are not comparable",
   "inconclusive: dead holds did not pile up while the sweeper was off (peak under 10, or under three times the mean before)",
-  "fail: dead holds were not cleared afterwards (mean after above 10 and above twice the mean before)",
-  "fail: exclusion index: largest size after above 1.25 times the largest before, or a fitted rise across the after window above 10 percent of its mean",
+  "fail: dead holds were not cleared afterwards: mean overdue dead holds (expired more than two sweep intervals ago) after above 10 and above twice the mean before",
+  "fail: exclusion index: largest size after above 1.25 times the largest from the before window through the sweeper-off phase and its recovery, or a fitted rise across the after window above 10 percent of its mean; a GiST index keeps the pages an outage made it grow, so it may stay at its outage peak but must not grow past it",
   "fail: heap dead-tuple percent: mean after above the mean before plus 5 points, or a fitted rise across the after window above 5 points",
   "fail: heap bytes per retained unit row: mean after above 1.25 times the mean before, or a fitted rise across the after window above 10 percent",
   "fail: p95 of granted holds: mean after above 1.5 times the mean before plus 1 ms, or a fitted rise across the after window above 25 percent plus 1 ms",
@@ -122,6 +131,9 @@ export function fittedRise(ys: readonly number[]): number {
 /** The design's bounded churn run: 1800 s or 100 000 operations, whichever comes first (design 15.1). */
 export const DESIGN_CHURN = { seconds: 1_800, ops: 100_000 } as const;
 
+/** The share of holds sent to a slot of their own, whose dead holds only the sweeper can clear. */
+export const PRIVATE_SLOT_SHARE = 0.03;
+
 export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Readonly<Record<string, number>>; sweepErrors: number; sweepTicks: number; ageErrors: number; sampleError: string | null; elapsedS: number; ops: number }): ChurnVerdict {
   const { samples, byCode } = run;
   const broken: string[] = [];
@@ -134,6 +146,8 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
   if (broken.length > 0) return { verdict: "invalid", reasons: broken };
 
   const before = samples.filter((x) => x.progress >= 0.15 && x.progress < 0.4);
+  // the before window through the sweeper-off phase and its recovery: the reference for a size an outage may leave behind
+  const throughOutage = samples.filter((x) => x.progress >= 0.15 && x.progress < 0.75);
   const off = samples.filter((x) => x.sweeper === "off");
   const after = samples.filter((x) => x.progress >= 0.75);
   // the terminal sample's interval was cut short: its storage numbers count below, but it has too few holds to compare a latency percentile against a full interval
@@ -159,15 +173,16 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
   if (open.length > 0) return { verdict: "inconclusive", reasons: open };
 
   const reasons: string[] = [];
-  const deadAfter = mean(after.map((x) => x.pendingDead));
-  if (deadAfter > 10 && deadAfter > deadBefore * 2) reasons.push(`dead holds were not cleared: mean ${deadAfter.toFixed(1)} after against ${deadBefore.toFixed(1)} before`);
+  const overdueBefore = mean(before.map((x) => x.overdueDead));
+  const overdueAfter = mean(after.map((x) => x.overdueDead));
+  if (overdueAfter > 10 && overdueAfter > overdueBefore * 2) reasons.push(`dead holds were not cleared: mean ${overdueAfter.toFixed(1)} overdue after against ${overdueBefore.toFixed(1)} before`);
   const judge = (what: string, b: number[], a: number[], ratio: { times: number; plus: number; by: "max" | "mean" }, rise: { share: number; plus: number }): void => {
     const level = (xs: number[]): number => (ratio.by === "max" ? Math.max(...xs) : mean(xs));
     if (level(a) > level(b) * ratio.times + ratio.plus) reasons.push(`${what} went from ${level(b).toFixed(1)} to ${level(a).toFixed(1)}`);
     const r = fittedRise(a);
     if (r > mean(a) * rise.share + rise.plus) reasons.push(`${what} was still rising at the end: ${r.toFixed(1)} across the last window, mean ${mean(a).toFixed(1)}`);
   };
-  judge("exclusion index bytes", before.map((x) => x.exclusionIndexBytes), after.map((x) => x.exclusionIndexBytes), { times: 1.25, plus: 0, by: "max" }, { share: 0.1, plus: 0 });
+  judge("exclusion index bytes", throughOutage.map((x) => x.exclusionIndexBytes), after.map((x) => x.exclusionIndexBytes), { times: 1.25, plus: 0, by: "max" }, { share: 0.1, plus: 0 });
   judge("heap dead-tuple percent", before.map((x) => x.heapDeadTuplePercent), after.map((x) => x.heapDeadTuplePercent), { times: 1, plus: 5, by: "mean" }, { share: 0, plus: 5 });
   judge("heap bytes per retained row", before.map((x) => x.heapBytes / Math.max(1, x.retainedUnitRows)), after.map((x) => x.heapBytes / Math.max(1, x.retainedUnitRows)), { times: 1.25, plus: 0, by: "mean" }, { share: 0.1, plus: 0 });
   judge("granted-hold p95 ms", beforeLatency.map((x) => x.holdOkLatencyMs.p95!.atLeast), afterLatency.map((x) => x.holdOkLatencyMs.p95!.atLeast), { times: 1.5, plus: 1, by: "mean" }, { share: 0.25, plus: 1 });
@@ -178,7 +193,9 @@ export function judgeChurn(run: { samples: readonly ChurnSample[]; byCode: Reado
  * Bounded churn (system design, section 15.1): holds on a bounded slot space, of which some are cancelled
  * at once, some are confirmed and cancelled later, and the rest are left to expire; attempts against live
  * reservations fail as conflicts; the sweeper is off between 40 and 60 percent of the run so dead holds pile
- * up and are then cleared. Storage, dead tuples, WAL, autovacuum activity, and hold latency are sampled on
+ * up and are then cleared. A hold clears the dead holds that overlap it (10.1 step 5), and on the shared slot
+ * space the next competing request clears a dead hold within seconds, sweeper or not; so a share of holds goes
+ * to a slot of its own, a unit and day no other request uses, where only the sweeper can expire a dead one. Storage, dead tuples, WAL, autovacuum activity, and hold latency are sampled on
  * an interval through pgstattuple and the statistics views.
  */
 export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<ChurnReport> {
@@ -200,6 +217,9 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
   let refused: number[] = [];
   let aged = 0;
   let ageErrors = 0;
+  // each private hold takes the next (unit, day) pair, starting far past the shared range, so no two collide
+  const privateFirstDay = firstDay + 1_000 * 86_400_000;
+  let privateHolds = 0;
   let done = false;
   const progress = (): number => Math.max((performance.now() - started) / (opts.maxSeconds * 1_000), ops / opts.maxOps);
   const sweeperOff = (): boolean => { const p = progress(); return p >= 0.4 && p < 0.6; };
@@ -218,11 +238,20 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
       const t0 = performance.now();
       let reservationId: string | null = null;
       let answer = "error";
+      let startsAt: string;
+      let unit: string;
+      if (r.next() < PRIVATE_SLOT_SHARE) {
+        const k = privateHolds++;
+        unit = deps.seed.units[k % deps.seed.units.length]!;
+        startsAt = new Date(privateFirstDay + Math.floor(k / deps.seed.units.length) * 86_400_000).toISOString();
+      } else {
+        unit = r.pick(deps.seed.units);
+        startsAt = new Date(firstDay + r.int(14) * 86_400_000 + r.int(16) * 900_000).toISOString();
+      }
       try {
         const out = await app.hold({
-          venueId, actor, traceId, idempotencyKey: traceId, partySize: 2, durationMinutes: 90,
-          startsAt: new Date(firstDay + r.int(14) * 86_400_000 + r.int(16) * 900_000).toISOString(),
-          assignment: { kind: "unit", id: r.pick(deps.seed.units) },
+          venueId, actor, traceId, idempotencyKey: traceId, partySize: 2, durationMinutes: 90, startsAt,
+          assignment: { kind: "unit", id: unit },
         });
         answer = out.ok ? "ok" : out.error.code;
         bump(`hold:${answer}`);
@@ -256,7 +285,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
 
   async function sample(partial = false): Promise<void> {
     const sampleStarted = performance.now();
-    const x = (await deps.owner.query(SAMPLE_SQL)).rows[0];
+    const x = (await deps.owner.query(SAMPLE_SQL, [2 * (opts.sweep ?? DESIGN_SWEEP).everyMs])).rows[0];
     const sampleMs = performance.now() - sampleStarted;
     const ok = granted;
     const conflict = refused;
@@ -264,7 +293,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
     refused = [];
     samples.push({
       atS: (performance.now() - started) / 1_000, progress: Math.min(1, progress()), ops, sweeper: sweeperOff() ? "off" : "on",
-      retainedUnitRows: x.retained, activeUnitRows: x.active, pendingDead: x.pending_dead,
+      retainedUnitRows: x.retained, activeUnitRows: x.active, pendingDead: x.pending_dead, overdueDead: x.overdue_dead,
       heapBytes: x.heap_bytes, exclusionIndexBytes: x.excl_bytes, totalBytes: x.total_bytes,
       heapDeadTuplePercent: x.heap_dead_pct, heapFreePercent: x.heap_free_pct, indexFreePercent: x.index_free_pct,
       nLiveTup: x.n_live, nDeadTup: x.n_dead, autovacuumCount: x.autovacuum_count, autoanalyzeCount: x.autoanalyze_count,
@@ -332,6 +361,7 @@ export async function runChurn(deps: ChurnDeps, opts: ChurnOptions): Promise<Chu
     command: "churn", runId, seed: opts.seed, environment: await environment(deps.owner, deps.appPool.options.max ?? 10), options: opts,
     ops, byCode, elapsedS, sweep: sweeping.stats, cleanup, sampleError,
     expiry: { mode: opts.ageMs === undefined ? "natural-ttl" : "owner-aged", ttlSeconds, ageMs: opts.ageMs ?? null, aged, ageErrors },
+    privateHolds,
     samples, verdict: judgeChurn({ samples, byCode, sweepErrors: sweeping.stats.errors, sweepTicks: sweeping.stats.ticks, ageErrors, sampleError, elapsedS, ops }), rules: [...CHURN_RULES],
   };
 }
