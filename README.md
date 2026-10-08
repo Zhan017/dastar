@@ -12,7 +12,7 @@ The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
 [Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
-[Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
+[Correctness](CORRECTNESS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Decisions](docs/adr/README.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
 ## Try it
 
@@ -38,13 +38,15 @@ pnpm install
 pnpm test
 ```
 
-`pnpm test` runs every package: the database, API, worker, and harness suites. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
+`pnpm test` runs every package: the core, database, API, worker, and harness suites. Each starts a real `postgres:18` container, applies the migrations, and creates isolated test databases. The first run may need to download the image.
 
-To run only the database package, or to type-check:
+To run only the database package, to type-check, to lint, or to check the package boundaries:
 
 ```bash
 pnpm test:db
 pnpm typecheck
+pnpm lint
+pnpm deps:check
 ```
 
 ## See the race
@@ -71,17 +73,17 @@ pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --
 A small HTTP server over the same engine: five routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
 
 ```bash
-pnpm seed --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
+pnpm seed:demo --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
 DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label demo --capabilities hold,confirm,cancel,read
 DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm api
 ```
 
-`seed` prints a venue id and its unit ids. `keys:create` prints a key once; only its hash is stored. The server listens on 127.0.0.1:8080; `HOST` and `PORT` change that. From another terminal, with those values in `VENUE`, `UNIT`, and `KEY`:
+`seed:demo` applies [`packages/db/seed/demo-venue.sql`](packages/db/seed/demo-venue.sql): one venue with six tables and two combinations under fixed ids, and applying it again changes nothing. The Compose stack from [Try it](#try-it) applies the same file after its migrations. `keys:create` prints a key once; only its hash is stored. The server listens on 127.0.0.1:8080; `HOST` and `PORT` change that. From another terminal, with the key in `KEY`, hold table T1 for two:
 
 ```bash
-curl -s -X POST localhost:8080/v1/venues/$VENUE/holds \
+curl -s -X POST localhost:8080/v1/venues/0199a000-0000-7000-8000-000000000001/holds \
   -H "authorization: Bearer $KEY" -H "idempotency-key: friday-1" -H "content-type: application/json" \
-  -d '{"party_size":2,"starts_at":"2030-06-07T19:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"'$UNIT'"}}'
+  -d '{"party_size":2,"starts_at":"2030-06-07T19:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"0199a000-0000-7000-8000-000000000101"}}'
 ```
 
 The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, and `/health/ready` reports whether the database is reachable and migrated.
@@ -170,6 +172,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 
 | Area | Implemented |
 |---|---|
+| Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, and the workload bounds, each checked against the schema by the engine's tests |
 | Inventory | Venues, units with capacity ranges, and fixed unit combinations |
 | Reservations | Hold, confirm, cancel, batch expiry, token minting, and reads, behind one pool-owned API |
 | Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
@@ -209,10 +212,11 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
 
-The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria.
+The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the five decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
 
 ## Explore the code
 
+- [Domain types and the state table](packages/core/src)
 - [Public API and connection contract](packages/db/src/handle.ts)
 - [Schema and migrations](packages/db/migrations)
 - [Reservation commands](packages/db/src/commands)
@@ -221,7 +225,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Race and naive harness](apps/harness)
 - [Reference API](apps/api)
 - [Sweeper worker](packages/worker)
-- [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md)
+- [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md), [Decisions](docs/adr/README.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
 
 Bug reports and reproducible counterexamples are welcome in [Issues](https://github.com/Zhan017/dastar/issues). Include the command, expected behavior, and observed result.

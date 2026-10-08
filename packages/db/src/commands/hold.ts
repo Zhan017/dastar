@@ -1,29 +1,12 @@
 import type { ClientBase } from "pg";
 import { createHash } from "node:crypto";
-import { DastarError, STORED_OUTCOMES, mapPgError, asDastarError, type DastarErrorCode } from "../errors.js";
+import { DastarError, STORED_OUTCOMES, mapPgError, asDastarError } from "../errors.js";
 import { setContext, setActor } from "../context.js";
 import { sortUnitIds, LOCK_UNIT_SQL } from "../units.js";
 import { enqueue, reservationPayload } from "../outbox.js";
+import { BOUNDS, canonicalHoldRequest, type HoldInput, type HoldOutcome } from "@dastar/core";
 
-export type Assignment = { kind: "unit" | "combo"; id: string };
-
-export type HoldInput = {
-  venueId: string;
-  actor: string;
-  traceId: string;
-  idempotencyKey: string;
-  partySize: number;
-  startsAt: string;
-  durationMinutes: number;
-  assignment: Assignment;
-  externalRef?: string;
-};
-
-export type Receipt = { reservationId: string; status: string; version: number; auditId: number; traceId: string };
-
-export type HoldOutcome =
-  | { ok: true; receipt: Receipt; holdExpiresAt: string; replayed: boolean }
-  | { ok: false; error: { code: DastarErrorCode; message: string }; replayed: boolean };
+export type { Assignment, HoldInput, Receipt, HoldOutcome } from "@dastar/core";
 
 export type HoldHooks = {
   /** Before BEGIN, once per attempt. With the command's return it brackets one whole transaction as the client sees it. */
@@ -41,20 +24,6 @@ export type HoldHooks = {
    */
   onRetry?: (info: { attempt: number; sqlstate: string; error: DastarError }) => void;
 };
-
-const MAX_OVERLAP_SET = 64;
-
-export function canonicalHoldRequest(i: HoldInput): string {
-  const startsAt = new Date(i.startsAt).toISOString();
-  return JSON.stringify({
-    assignment: { id: i.assignment.id.toLowerCase(), kind: i.assignment.kind },
-    durationMinutes: i.durationMinutes,
-    externalRef: i.externalRef ?? null,
-    partySize: i.partySize,
-    startsAt,
-    venueId: i.venueId.toLowerCase(),
-  });
-}
 
 export function rangeLiteral(startsAt: string, durationMinutes: number): string {
   const s = new Date(startsAt);
@@ -134,7 +103,7 @@ async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, h
         where ru.unit_id = any ($1::uuid[]) and ru.active and ru.during && $2::tstzrange`,
       [units, during],
     );
-    if (overlap.rowCount! > MAX_OVERLAP_SET) {
+    if (overlap.rowCount! > BOUNDS.overlapSet) {
       throw new DastarError("overlap_set_too_large", `${overlap.rowCount} overlapping reservations; the sweeper is behind`, undefined, true);
     }
     if (overlap.rowCount! > 0) {

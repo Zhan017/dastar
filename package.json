@@ -2,16 +2,21 @@
   "name": "dastar-monorepo",
   "private": true,
   "packageManager": "pnpm@10.12.1",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "pnpm -r test",
     "test:db": "pnpm --filter @dastar/db test",
     "typecheck": "pnpm -r typecheck",
+    "deps:check": "depcruise packages/*/src apps/*/src",
+    "lint": "eslint .",
     "race": "pnpm --filter @dastar/harness race",
     "naive": "pnpm --filter @dastar/harness naive",
     "migrate": "pnpm --filter @dastar/harness migrate",
     "roles": "pnpm --filter @dastar/harness roles",
     "seed": "pnpm --filter @dastar/harness seed",
+    "seed:demo": "pnpm --filter @dastar/harness seed-demo",
     "load": "pnpm --filter @dastar/harness load",
     "mixed": "pnpm --filter @dastar/harness mixed",
     "exhaust": "pnpm --filter @dastar/harness exhaust",
@@ -20,5 +25,12 @@
     "keys:create": "pnpm --filter @dastar/api keys:create",
     "api": "pnpm --filter @dastar/api start",
     "worker": "pnpm --filter @dastar/worker start"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "dependency-cruiser": "^16.10.4",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0",
+    "typescript-eslint": "^8.71.1"
   }
 }

@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Client, Pool } from "pg";
 import { createDastar, migrate } from "@dastar/db";
-import { seedBench } from "./seed.js";
+import { seedBench, seedDemo, DEMO } from "./seed.js";
 import { runRace } from "./race.js";
 import { prepareNaiveDatabase, dropNaiveDatabase, disableProtections, runNaive } from "./naive.js";
 import { fmt, writeReport } from "./stats.js";
@@ -125,6 +125,13 @@ if (command === "race") {
   await owner.end();
   if (set.length === 0) { console.error("set DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD, or both"); process.exit(2); }
   console.log(`roles: password set for ${set.join(", ")}`);
+} else if (command === "seed-demo") {
+  const owner = new Client({ connectionString: need("owner-url") });
+  owner.on("error", () => undefined);
+  await owner.connect();
+  await seedDemo(owner);
+  await owner.end();
+  console.log(`seed-demo: venue ${DEMO.venue}, units ${Object.entries(DEMO.units).map(([k, v]) => `${k}=${v}`).join(" ")}`);
 } else if (command === "seed") {
   const owner = new Client({ connectionString: need("owner-url") });
   owner.on("error", () => undefined);
@@ -239,6 +246,7 @@ if (command === "race") {
     "  migrate --owner-url <url>",
     "  roles --owner-url <url>   (sets the passwords in DASTAR_APP_PASSWORD and DASTAR_WORKER_PASSWORD)",
     "  seed --owner-url <url> [--units 6] [--combos 2]",
+    "  seed-demo --owner-url <url>   (the demo venue from packages/db/seed/demo-venue.sql, fixed ids, idempotent)",
     "  race --owner-url <url> --app-url <url> [--n 500]",
     "  naive --admin-url <url> [--n 50] [--keep]",
     "  load --owner-url <url> --app-url <url> --worker-url <url> [--target engine|http] [--api-url <url>] [--keys 64] [--steps 10,25,50,100] [--step-seconds 60] [--sustain 50x600] [--blend target|overlapping|distinct_dates|disjoint_units|combos] [--seed 1] [--target-hardware]",

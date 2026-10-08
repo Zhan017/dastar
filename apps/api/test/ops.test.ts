@@ -168,7 +168,8 @@ describe("operations", () => {
     const r = await api.app.request(`/v1/venues/${seed.venue}/holds`, jsonInit("POST", { party_size: 2, starts_at: "2047-03-03T19:00:00Z", duration_minutes: 60, assignment: { kind: "unit", id: seed.units[0] } }, { ...bearer(created.key), "idempotency-key": "ops-3" }));
     expect(r.status).toBe(201);
     await api.close();
-    await expect(runKeysCli(["--label", "bad", "--capabilities", "hold,admin"], { DATABASE_URL: conn.app })).rejects.toThrow(/unknown capability/);
+    expect((await runKeysCli(["--label", "adm", "--capabilities", "admin"], { DATABASE_URL: conn.app })).key).toMatch(/^dsk_/);
+    await expect(runKeysCli(["--label", "bad", "--capabilities", "hold,root"], { DATABASE_URL: conn.app })).rejects.toThrow(/unknown capability/);
     await expect(runKeysCli(["--capabilities", "hold"], { DATABASE_URL: conn.app })).rejects.toThrow(/--label/);
   });
 });

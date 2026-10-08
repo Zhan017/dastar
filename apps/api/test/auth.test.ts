@@ -63,6 +63,11 @@ describe("keys and authorization", () => {
     expect((await app.request(`/venues/${VENUE_A}/probe`, { headers: { authorization: `bearer ${scoped.key}` } })).status).toBe(200);
   });
 
+  it("admin is reserved: a key can carry it, and it implies no other capability", async () => {
+    const admin = await createKey(pool, { label: "admin", capabilities: ["admin"] });
+    expect((await app.request(`/venues/${VENUE_A}/probe`, { headers: bearer(admin.key) })).status).toBe(403);
+  });
+
   it("a token-capable route admits no key, validates a presented key, and does not consult its capabilities", async () => {
     expect(await (await app.request("/token-probe")).json()).toEqual({ key_id: null });
     expect((await app.request("/token-probe", { headers: bearer("dsk_" + "C".repeat(43)) })).status).toBe(401);
