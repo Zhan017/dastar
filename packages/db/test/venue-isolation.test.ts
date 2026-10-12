@@ -201,6 +201,52 @@ describe("venue isolation", () => {
     expect(r.rows.every((x) => x.prosecdef === true)).toBe(true);
   });
 
+  it("no function in schema dastar is executable by PUBLIC", async () => {
+    // a null proacl is the default privilege set, which includes EXECUTE for PUBLIC
+    const r = await owner.query(
+      `select p.proname::text as proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'dastar'
+          and (p.proacl is null or exists (select 1 from aclexplode(p.proacl) a where a.grantee = 0 and a.privilege_type = 'EXECUTE'))
+        order by p.proname`,
+    );
+    expect(r.rows.map((x) => x.proname as string)).toEqual([]);
+  });
+
+  it("the application, worker, and reporting roles keep exactly the function grants they need", async () => {
+    const ROLES = ["dastar_app", "dastar_worker", "dastar_readonly"] as const;
+    const can = async (role: string, fn: string): Promise<boolean> =>
+      (await owner.query("select has_function_privilege($1::name, $2::text, 'EXECUTE') as ok", [role, fn])).rows[0].ok as boolean;
+
+    // the helper functions that defaults, checks, and statements call, by name since 0005
+    const HELPERS = [
+      "dastar.dastar_now()", "dastar.unit_lock_key(uuid)",
+      "dastar.effective_status(dastar.reservation_status, timestamptz)", "dastar.require_actor()",
+    ];
+    for (const fn of HELPERS) {
+      for (const role of ROLES) expect(await can(role, fn), `${role} on ${fn}`).toBe(true);
+    }
+
+    // the venue lookups, granted to the application role only (0007)
+    for (const fn of ["dastar.reservation_venue(uuid)", "dastar.reservation_token(uuid)"]) {
+      expect(await can("dastar_app", fn), `dastar_app on ${fn}`).toBe(true);
+      expect(await can("dastar_worker", fn), `dastar_worker on ${fn}`).toBe(false);
+      expect(await can("dastar_readonly", fn), `dastar_readonly on ${fn}`).toBe(false);
+    }
+
+    // trigger functions are checked when a trigger is created and never when it fires, so no role needs them
+    const triggers = (await owner.query(
+      `select p.proname::text as proname, r.rolname::text as rolname, has_function_privilege(r.oid, p.oid, 'EXECUTE') as ok
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        cross join pg_roles r
+        where n.nspname = 'dastar' and p.prorettype = 'trigger'::regtype and r.rolname = any ($1::text[])
+        order by p.proname, r.rolname`,
+      [[...ROLES]],
+    )).rows as { proname: string; rolname: string; ok: boolean }[];
+    expect(new Set(triggers.map((x) => x.proname)).size, "trigger functions found").toBeGreaterThan(0);
+    expect(triggers.length, "one row per trigger function and role").toBe(new Set(triggers.map((x) => x.proname)).size * ROLES.length);
+    expect(triggers.filter((x) => x.ok).map((x) => `${x.rolname} on ${x.proname}`)).toEqual([]);
+  });
+
   it("bound to A, each scoped table shows only A's rows; B's venue is refused on insert and unreachable by update", async () => {
     await bound(app, A.venue, async () => {
       for (const t of SCOPED) {
