@@ -194,16 +194,16 @@ describe("named interleavings (H1)", () => {
 
   it("a read sees one snapshot: a confirmation that lands between the row and the history is invisible to it", async () => {
     const id = ok(await hold(A, input("key:A", { assignment: { kind: "unit", id: seed.units[3]! } })));
-    const before = await getReservation(A, id);
+    const before = await getReservation(A, { reservationId: id, venueId: seed.venue });
     const p = pause();
-    const pRead = getReservation(A, id, { afterRow: p.hook });
+    const pRead = getReservation(A, { reservationId: id, venueId: seed.venue }, { afterRow: p.hook });
     await p.reached;
     expect((await confirm(B, { reservationId: id, actor: "key:B", traceId: "snap", venueId: seed.venue })).status).toBe("confirmed");
     p.release();
     const view = await pRead;
     expect(view?.status).toBe("held");
     expect(view?.history).toEqual(before?.history);
-    const after = await getReservation(A, id);
+    const after = await getReservation(A, { reservationId: id, venueId: seed.venue });
     expect(after?.status).toBe("confirmed");
     expect(after?.history.length).toBeGreaterThan(before!.history.length);
   });

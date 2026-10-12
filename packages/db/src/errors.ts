@@ -31,6 +31,8 @@ export function mapPgError(e: unknown): DastarError | null {
   }
   // the first statement of a hold claims an idempotency row that references the venue
   if (pe.code === "23503" && pe.constraint === "idempotency_venue_id_fkey") return new DastarError("not_found", "venue not found", pe.detail, false, pe.code);
+  // Postgres's English text names the policy; under a translated lc_messages the violation reads forbidden_write, still a refusal
+  if (pe.code === "42501" && pe.message?.includes("row-level security")) return new DastarError("venue_scope_violation", pe.message, pe.detail, false, pe.code);
   const code = BY_SQLSTATE[pe.code];
   return code ? new DastarError(code, pe.message ?? pe.code, pe.detail, false, pe.code) : null;
 }

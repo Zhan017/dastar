@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { Client } from "pg";
+import { Pool, type Client } from "pg";
 import { createHash } from "node:crypto";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
+import { createDastar, type Dastar } from "../src/handle.js";
 import { hold, type HoldInput } from "../src/commands/hold.js";
 import { cancel } from "../src/commands/cancel.js";
 import { mintConfirmToken } from "../src/commands/mint-token.js";
@@ -36,6 +37,19 @@ describe("venue isolation", () => {
     const cancelled = await place(seed);
     await cancel(app, { reservationId: cancelled, actor: "key:iso", traceId: "iso-cancel", venueId: seed.venue, reason: "test" });
     return { live, cancelled };
+  }
+
+  /** The engine handle over a pool of the application role, closed when the callback ends. */
+  async function withHandle<T>(fn: (d: Dastar) => Promise<T>): Promise<T> {
+    const pool = new Pool({ connectionString: conn.app, max: 2 });
+    pool.on("error", () => undefined);
+    const d = createDastar({ pool });
+    try {
+      return await fn(d);
+    } finally {
+      await d.close();
+      await pool.end();
+    }
   }
 
   beforeAll(async () => {
@@ -117,6 +131,24 @@ describe("venue isolation", () => {
     expect(await occupancy(unbound, null)).toEqual([]);
     expect((await unbound.query("select 1 from dastar.occupancy")).rowCount).toBe(0);
     expect(await occupancy(app, null)).toEqual([]);
+  });
+
+  it("getReservation declares its venue: a reservation of another venue reads as absent", async () => {
+    await withHandle(async (d) => {
+      expect(await d.getReservation({ reservationId: aLive[0]!, venueId: A.venue })).toMatchObject({ id: aLive[0], venueId: A.venue, status: "held" });
+      expect(await d.getReservation({ reservationId: aLive[0]!, venueId: B.venue })).toBeNull();
+      expect(await d.getReservation({ reservationId: bLive[0]!, venueId: A.venue })).toBeNull();
+      expect(await d.getReservation({ reservationId: bLive[0]!, venueId: B.venue })).toMatchObject({ id: bLive[0], venueId: B.venue });
+    });
+  });
+
+  it("findReservationVenue answers the venue of an id, null for an absent one, and rejects a malformed one", async () => {
+    await withHandle(async (d) => {
+      expect(await d.findReservationVenue(aLive[0]!)).toBe(A.venue);
+      expect(await d.findReservationVenue(bLive[1]!)).toBe(B.venue);
+      expect(await d.findReservationVenue(ABSENT)).toBeNull();
+      await expect(d.findReservationVenue("not-a-uuid")).rejects.toMatchObject({ name: "DastarError", code: "internal" });
+    });
   });
 
   it("the seven trigger functions that read or write other tables run as the owner", async () => {

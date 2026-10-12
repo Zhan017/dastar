@@ -98,9 +98,9 @@ async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, h
 
     // step 5: overlap lock set in reservation-id order, then expire the dead ones
     const overlap = await client.query(
-      `select distinct ru.reservation_id as id
-         from dastar.reservation_unit ru
-        where ru.unit_id = any ($1::uuid[]) and ru.active and ru.during && $2::tstzrange`,
+      `select distinct o.reservation_id as id
+         from dastar.occupancy o
+        where o.unit_id = any ($1::uuid[]) and o.during && $2::tstzrange`,
       [units, during],
     );
     if (overlap.rowCount! > BOUNDS.overlapSet) {

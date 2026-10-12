@@ -12,7 +12,7 @@ describe("problem details", () => {
     expect(byStatus(404)).toEqual(["not_found"]);
     expect(byStatus(429)).toEqual(["too_many_live_holds"]);
     expect(byStatus(503)).toEqual(["overlap_set_too_large", "pool_timeout", "timeout"]);
-    expect(byStatus(500)).toEqual(["actor_required", "audit_immutable", "combo_immutable", "idempotency_replay", "internal", "unit_rows_immutable"]);
+    expect(byStatus(500)).toEqual(["actor_required", "audit_immutable", "combo_immutable", "idempotency_replay", "internal", "unit_rows_immutable", "venue_scope_violation"]);
   });
 
   it("adds Retry-After where the mapping says so", () => {
@@ -26,6 +26,12 @@ describe("problem details", () => {
     const p = problemFor("hold_conflict", "taken", { replayed: true });
     expect(problemBody(p, "t1")).toEqual({ type: "https://dastar.dev/errors/hold_conflict", title: "hold conflict", status: 409, code: "hold_conflict", detail: "the assignment is already taken for an overlapping time range", trace_id: "t1", replayed: true });
     expect(problemBody(problemFor("internal", "secret cause"), "t2")).toEqual({ type: "https://dastar.dev/errors/internal", title: "internal", status: 500, code: "internal", trace_id: "t2" });
+  });
+
+  it("answers a venue scope violation as 500 with text the API owns, never the database's sentence", () => {
+    const p = fromUnknown(new DastarError("venue_scope_violation", 'new row violates row-level security policy for table "reservation"', undefined, false, "42501"));
+    expect(p).toMatchObject({ status: 500, code: "venue_scope_violation", message: "the operation reached outside its venue" });
+    expect(problemBody(p, "t3")).toEqual({ type: "https://dastar.dev/errors/venue_scope_violation", title: "venue scope violation", status: 500, code: "venue_scope_violation", trace_id: "t3" });
   });
 
   it("converts unknown failures", () => {

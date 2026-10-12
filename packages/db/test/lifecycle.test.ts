@@ -161,13 +161,13 @@ describe("lifecycle", () => {
 
   it("get returns effective status by database time and stored status separately", async () => {
     const id = await heldId();
-    const before = await getReservation(app, id);
+    const before = await getReservation(app, { reservationId: id, venueId: seed.venue });
     expect(before).toMatchObject({ status: "held", storedStatus: "held", version: 1 });
     await setClock(app, "2040-01-01T00:00:00Z");
-    const after = await getReservation(app, id);
+    const after = await getReservation(app, { reservationId: id, venueId: seed.venue });
     expect(after).toMatchObject({ status: "expired", storedStatus: "held" });
     await setClock(app, null);
-    expect(await getReservation(app, "00000000-0000-7000-8000-000000000000")).toBeNull();
+    expect(await getReservation(app, { reservationId: "00000000-0000-7000-8000-000000000000", venueId: seed.venue })).toBeNull();
     expect(before!.history.map((h) => h.action)).toEqual(["insert"]);
   });
 

@@ -16,8 +16,10 @@ const NO_HASH = Buffer.alloc(32);
 export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   /** A reservation outside the key's venues reads as absent. */
   async function loadInScope(key: ApiKey, id: string): Promise<ReservationView> {
-    const view = await deps.dastar.getReservation(id);
-    if (!view || (key.venueIds !== null && !key.venueIds.includes(view.venueId))) throw new ApiProblem(404, "not_found", "no such reservation");
+    const venueId = await deps.dastar.findReservationVenue(id);
+    if (venueId === null || (key.venueIds !== null && !key.venueIds.includes(venueId))) throw new ApiProblem(404, "not_found", "no such reservation");
+    const view = await deps.dastar.getReservation({ reservationId: id, venueId });
+    if (!view) throw new ApiProblem(404, "not_found", "no such reservation");
     return view;
   }
   const json = <S>(schema: S) => ({ "application/json": { schema } });
