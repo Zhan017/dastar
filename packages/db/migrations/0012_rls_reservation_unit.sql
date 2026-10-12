@@ -1,7 +1,7 @@
 -- transaction: yes
 -- impact: instant-exclusive
 -- invariant 10: a transaction bound to one venue reads and writes only that venue's unit rows; unbound, none.
--- One table per file: a migration that locks one table cannot deadlock against a live hold.
+-- One table per file, so the migration holds one table's lock at a time; the runner retries a lock timeout, not a deadlock.
 alter table dastar.reservation_unit enable row level security;
 create policy venue_scope on dastar.reservation_unit for all to dastar_app
   using (venue_id = nullif(current_setting('dastar.venue_id', true), '')::uuid)

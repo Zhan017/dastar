@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 import { createDastar, type Dastar } from "../src/handle.js";
-import { hold, rangeLiteral, type HoldInput } from "../src/commands/hold.js";
+import { hold, rangeLiteral, OVERLAP_SQL, LIVE_HOLDS_SQL, type HoldInput } from "../src/commands/hold.js";
 import { confirm } from "../src/commands/confirm.js";
 import { cancel } from "../src/commands/cancel.js";
+import { expireDue } from "../src/commands/expire.js";
 import { mintConfirmToken } from "../src/commands/mint-token.js";
 import { mapPgError } from "../src/errors.js";
 
@@ -190,15 +191,17 @@ describe("venue isolation", () => {
     });
   });
 
-  it("the seven trigger functions that read or write other tables run as the owner", async () => {
+  it("the seven trigger functions that read or write other tables run as the owner, with a pinned search path", async () => {
     const names = ["trg_fit", "trg_capacity_guard", "trg_config_version", "trg_audit", "trg_sync_unit_rows", "trg_unit_row_insert_guard", "trg_membership"];
     const r = await owner.query(
-      `select proname, prosecdef from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      `select proname, prosecdef, proconfig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where nspname = 'dastar' and proname = any ($1::text[])`,
       [names],
     );
     expect(r.rows.map((x) => x.proname as string).sort()).toEqual([...names].sort());
     expect(r.rows.every((x) => x.prosecdef === true)).toBe(true);
+    // the search path is pinned, so a schema earlier on a caller's path cannot shadow what the owner-run function reads
+    for (const x of r.rows) expect(x.proconfig, x.proname).toContain("search_path=pg_catalog, dastar, pg_temp");
   });
 
   it("no function in schema dastar is executable by PUBLIC", async () => {
@@ -320,7 +323,7 @@ describe("venue isolation", () => {
     }
   });
 
-  it("the hold's overlap read keeps a range index condition under row-level security", async () => {
+  it("the hold's overlap read keeps a range index condition, and its live-holds count the actor index, under row-level security", async () => {
     const P = await seedVenue(owner);
     // 6 units for 200 days at one hour, every hold its own actor, so no cap and no overlap is in the way
     let i = 0;
@@ -336,16 +339,18 @@ describe("venue isolation", () => {
     }
     expect(i).toBe(1200);
     await owner.query("analyze dastar.reservation_unit");
+    await owner.query("analyze dastar.reservation");
+    // the plan of a statement the hold sends, in a transaction bound to the venue as the hold's is
+    const planOf = (sql: string, params: unknown[]): Promise<string[]> =>
+      bound(app, P.venue, async () => (await app.query(`explain (costs off) ${sql}`, params)).rows.map((r) => r["QUERY PLAN"] as string));
+
     const during = rangeLiteral(new Date(Date.UTC(2047, 0, 1 + 100, 19)).toISOString(), 60);
-    // the text of the overlap read in commands/hold.ts
-    const plan = await bound(app, P.venue, async () => (await app.query(
-      `explain (costs off)
-       select distinct o.reservation_id as id
-         from dastar.occupancy o
-        where o.unit_id = any ($1::uuid[]) and o.during && $2::tstzrange`,
-      [[P.units[2]!], during],
-    )).rows.map((r) => r["QUERY PLAN"] as string));
-    expect(plan.some((line) => /Index Cond:.*during &&/.test(line)), plan.join("\n")).toBe(true);
+    const overlap = await planOf(OVERLAP_SQL, [[P.units[2]!], during]);
+    expect(overlap.some((line) => /Index Cond:.*during &&/.test(line)), overlap.join("\n")).toBe(true);
+
+    // one of the seeded actors, who holds one of the 1200
+    const live = await planOf(LIVE_HOLDS_SQL, [P.venue, "key:pin600"]);
+    expect(live.some((line) => line.includes("reservation_actor_held")), live.join("\n")).toBe(true);
   }, 120_000);
 
   it("a venue cleared before commit does not hide a mismatched unit row from the membership check (DA010)", async () => {
@@ -379,6 +384,40 @@ describe("venue isolation", () => {
     for (const row of r.rows) {
       expect(row.relrowsecurity, row.relname).toBe(true);
       expect(row.policies, row.relname).toContain("venue_scope");
+    }
+
+    // the policy applies to every command, to dastar_app alone, and tests the table's venue column against the bound venue
+    const pol = await owner.query(
+      `select c.relname::text as relname, pol.polcmd::text as polcmd,
+              array(select ro.rolname::text from pg_roles ro where ro.oid = any (pol.polroles) order by ro.rolname) as roles,
+              pg_get_expr(pol.polqual, pol.polrelid) as qual, pg_get_expr(pol.polwithcheck, pol.polrelid) as withcheck
+         from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'dastar' and pol.polname = 'venue_scope'`,
+    );
+    expect(pol.rows.map((x) => x.relname as string).sort()).toEqual(SCOPED.map((t) => t.table).sort());
+    for (const t of SCOPED) {
+      const p = pol.rows.find((x) => x.relname === t.table);
+      expect(p, `${t.table}: venue_scope`).toMatchObject({ polcmd: "*", roles: ["dastar_app"] });
+      for (const [clause, expr] of [["using", p.qual], ["with check", p.withcheck]] as const) {
+        const text = String(expr ?? "").toLowerCase();
+        const setting = "current_setting('dastar.venue_id'";
+        expect(text, `${t.table}: ${clause}`).toContain(setting);
+        expect(text, `${t.table}: ${clause}`).toContain("nullif");
+        // the column is named outside the setting's own name, which contains venue_id
+        expect(text.replace(setting, ""), `${t.table}: ${clause}`).toMatch(new RegExp(`\\b${t.column}\\b`));
+      }
+    }
+  });
+
+  it("expireDue is refused on dastar_app with forbidden and runs on dastar_worker", async () => {
+    await expect(expireDue(app, { limit: 5 })).rejects.toMatchObject({ name: "DastarError", code: "forbidden" });
+    // the sweep itself on dastar_worker is covered by "the sweeper expires due holds" in lifecycle.test.ts;
+    // a batch of none shows here that the role passes the check without touching any row
+    const worker = await connect(conn.worker);
+    try {
+      expect(await expireDue(worker, { limit: 0 })).toEqual({ expired: [] });
+    } finally {
+      await worker.end();
     }
   });
 

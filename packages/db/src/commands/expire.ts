@@ -1,10 +1,16 @@
 import type { ClientBase } from "pg";
-import { asDastarError } from "../errors.js";
+import { DastarError, asDastarError } from "../errors.js";
 import { enqueue, reservationPayload } from "../outbox.js";
 
 /** One sweeper batch (spec 10.4). Connect as dastar_worker. */
 export async function expireDue(client: ClientBase, opts: { limit?: number } = {}): Promise<{ expired: string[] }> {
   const limit = opts.limit ?? 20;
+  // The sweep reads and updates every venue's rows, which row-level security allows only a role that bypasses it.
+  // The check runs before the transaction opens, so it adds no statement to the sweep's own transaction.
+  const role = await client.query("select rolsuper or rolbypassrls as ok from pg_roles where rolname = current_user");
+  if (role.rows[0]?.ok !== true) {
+    throw new DastarError("forbidden", "expireDue needs a role that bypasses row-level security, such as dastar_worker");
+  }
   await client.query("begin");
   try {
     await client.query("select set_config('dastar.actor', 'system:sweeper', true), set_config('dastar.trace_id', 'sweeper', true)");

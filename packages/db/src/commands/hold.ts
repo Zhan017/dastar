@@ -25,6 +25,15 @@ export type HoldHooks = {
   onRetry?: (info: { attempt: number; sqlstate: string; error: DastarError }) => void;
 };
 
+/** The live-holds count of one actor in one venue (step 4), checked against the venue's cap. */
+export const LIVE_HOLDS_SQL =
+  "select count(*)::int as n from dastar.reservation where venue_id = $1 and created_by = $2 and status = 'held' and hold_expires_at > dastar.dastar_now()";
+
+/** The overlap read (step 5): the reservations holding any of the units over the range, through the occupancy view. */
+export const OVERLAP_SQL = `select distinct o.reservation_id as id
+         from dastar.occupancy o
+        where o.unit_id = any ($1::uuid[]) and o.during && $2::tstzrange`;
+
 export function rangeLiteral(startsAt: string, durationMinutes: number): string {
   const s = new Date(startsAt);
   const e = new Date(s.getTime() + durationMinutes * 60_000);
@@ -89,20 +98,12 @@ async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, h
     await hooks.afterUnitLocks?.();
 
     const cap = await client.query("select max_live_holds_per_actor as cap, hold_ttl_seconds as ttl from dastar.venue where id = $1", [input.venueId]);
-    const live = await client.query(
-      "select count(*)::int as n from dastar.reservation where venue_id = $1 and created_by = $2 and status = 'held' and hold_expires_at > dastar.dastar_now()",
-      [input.venueId, input.actor],
-    );
+    const live = await client.query(LIVE_HOLDS_SQL, [input.venueId, input.actor]);
     if (live.rows[0].n >= cap.rows[0].cap) throw new DastarError("too_many_live_holds", `actor has ${live.rows[0].n} live holds`);
     const ttlSeconds: number = cap.rows[0].ttl;
 
     // step 5: overlap lock set in reservation-id order, then expire the dead ones
-    const overlap = await client.query(
-      `select distinct o.reservation_id as id
-         from dastar.occupancy o
-        where o.unit_id = any ($1::uuid[]) and o.during && $2::tstzrange`,
-      [units, during],
-    );
+    const overlap = await client.query(OVERLAP_SQL, [units, during]);
     if (overlap.rowCount! > BOUNDS.overlapSet) {
       throw new DastarError("overlap_set_too_large", `${overlap.rowCount} overlapping reservations; the sweeper is behind`, undefined, true);
     }
