@@ -15,7 +15,7 @@ What the database enforces, how, and which test would show it broken. Guarantees
 | 7 | Only transitions in the state table happen | Transition trigger | `invalid_transition` (DA005) | `transitions.test.ts`, every pair |
 | 8 | A unit row is active exactly while its reservation occupies the unit; completed rows stay active as history | Definer-rights sync trigger is the only writer of `active`; no UPDATE or DELETE for the application role | `unit_rows_immutable` (DA006), 42501 | `attack.test.ts`, `lifecycle.test.ts` |
 | 9 | A reservation's unit rows are exactly its assignment's members and never change | Deferred membership trigger at commit, composite foreign keys, combo immutability | `assignment_mismatch` (DA010), `combo_immutable` (DA011) | `guards.test.ts`, `attack.test.ts`, `venue-isolation.test.ts` |
-| 10 | A transaction bound to one venue reads and writes only that venue's rows, and a transaction bound to none reads and writes nothing | Row-level security on every venue-scoped table for the application role, keyed on the transaction-local `dastar.venue_id` | `venue_scope_violation` (42501) on a write; a read sees no rows | `venue-isolation.test.ts` |
+| 10 | A transaction bound to one venue reads and writes only that venue's rows, and a transaction bound to none reads and writes nothing, apart from the two owner-run lookups of a reservation's venue | Row-level security on every venue-scoped table for the application role, keyed on the transaction-local `dastar.venue_id` | A write is refused, usually as `venue_scope_violation` (42501); a read or update sees no rows | `venue-isolation.test.ts` |
 
 Supporting guards: `actor_required` (DA007), `range_mismatch` (DA008), `token_requires_held` (DA013), `forbidden_write` (42501).
 
