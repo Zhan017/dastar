@@ -1,6 +1,7 @@
 import { Client, Pool } from "pg";
 import { listen } from "@dastar/api/server";
 import { createKey } from "@dastar/api/auth";
+import { revokeLoadKeys } from "./target.js";
 import { seedBench, type BenchSeed } from "./seed.js";
 import { advisoryLocks, backends, waitFor } from "./observe.js";
 
@@ -221,6 +222,7 @@ export async function runExhaust(opts: ExhaustOptions): Promise<ExhaustReport> {
   }
   let started: Awaited<ReturnType<typeof listen>> | null = null;
   let keyPool: Pool | null = null;
+  let keyId: string | null = null;
   // every answer this run waits for arrives by the statement timeout plus the handle's grace; twice that, and never under 30 s
   const deadlineMs = Math.max(30_000, statementTimeoutMs * 2 + 10_000);
   try {
@@ -232,11 +234,12 @@ export async function runExhaust(opts: ExhaustOptions): Promise<ExhaustReport> {
         DATABASE_URL: opts.appUrl, HOST: "127.0.0.1", PORT: 0, POOL_MAX: poolMax, POOL_ACQUIRE_MS: acquireMs, READ_TIMEOUT_MS: 2_000,
         REQUEST_DEADLINE_MS: opts.deadlineMs ?? statementTimeoutMs + 2_000,
       }, { log: () => undefined });
+      // kept until the cleanup, which revokes the key
       keyPool = new Pool({ connectionString: opts.appUrl, max: 1 });
       keyPool.on("error", () => undefined);
-      api = { url: started.url, key: (await createKey(keyPool, { label: "exhaust run", capabilities: ["hold"] })).key, deadlineMs };
-      await keyPool.end();
-      keyPool = null;
+      const made = await createKey(keyPool, { label: "exhaust run", capabilities: ["hold"] });
+      keyId = made.id;
+      api = { url: started.url, key: made.key, deadlineMs };
     }
     const variants: VariantReport[] = [];
     for (const v of ["release_before_statement_timeout", "blocker_past_statement_timeout"] as const) {
@@ -245,7 +248,11 @@ export async function runExhaust(opts: ExhaustOptions): Promise<ExhaustReport> {
     }
     return { command: "exhaust", poolMax, acquireMs, statementTimeoutMs, startedApi: started !== null, variants, pass: exhaustPassed(variants) };
   } finally {
-    if (keyPool) await keyPool.end().catch(() => undefined);
+    if (keyPool) {
+      // the key made for an API started here is this run's alone; one the caller supplied is left as it is
+      if (keyId !== null) await revokeLoadKeys(keyPool, [keyId]).catch(() => undefined);
+      await keyPool.end().catch(() => undefined);
+    }
     if (started) await started.close().catch(() => undefined);
     await owner.end();
   }

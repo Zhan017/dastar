@@ -94,11 +94,26 @@ export function engineTarget(appPool: Pool, opts: { acquireTimeoutMs?: number; d
   };
 }
 
-/** Keys for an HTTP run. An API key is one actor, and a venue allows an actor at most 100 live holds, so a run spreads its requests over several keys. */
-export async function createLoadKeys(appPool: Pool, n: number): Promise<string[]> {
+/**
+ * Keys for an HTTP run, with their ids so the run can revoke them afterwards. An API key is one actor, and a
+ * venue allows an actor at most 100 live holds, so a run spreads its requests over several keys.
+ */
+export async function createLoadKeys(appPool: Pool, n: number): Promise<{ keys: string[]; ids: string[] }> {
   const keys: string[] = [];
-  for (let i = 0; i < n; i++) keys.push((await createKey(appPool, { label: `load run ${i}`, capabilities: ["hold", "confirm", "cancel"] })).key);
-  return keys;
+  const ids: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const made = await createKey(appPool, { label: `load run ${i}`, capabilities: ["hold", "confirm", "cancel"] });
+    keys.push(made.key);
+    ids.push(made.id);
+  }
+  return { keys, ids };
+}
+
+/** Revokes rather than deletes: the application role cannot delete, and the rows stay as a record of the run. Returns how many were revoked now. */
+export async function revokeLoadKeys(pool: Pool, ids: readonly string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const r = await pool.query("update dastar.api_key set revoked_at = now() where id = any($1::uuid[]) and revoked_at is null", [ids]);
+  return r.rowCount ?? 0;
 }
 
 /** Comfortably past the API's own budget for one command: a 5 s acquire, a 12 s deadline, and a 2 s grace. */

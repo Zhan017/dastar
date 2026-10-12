@@ -1,4 +1,4 @@
-import type { ClientBase, Pool } from "pg";
+import type { ClientBase, Pool, PoolClient } from "pg";
 import { createDastar, DastarError, type Dastar } from "@dastar/db";
 import type { BenchSeed } from "./seed.js";
 import { rng, type Rng } from "./rng.js";
@@ -22,6 +22,29 @@ const WEIGHTS: Record<MixedOp, number> = { hold_unit: 30, hold_combo: 15, confir
  * 50 ms, the sweeper almost never got there first, and a run said little about the sweeper as a concurrent writer.
  */
 const FLOOR_DAYS = 14;
+
+/** How long a capacity edit waits for a pooled connection: the handle's default for a command, so the edit waits no longer than the commands it runs beside. */
+export const CHECKOUT_MS = 5_000;
+
+/**
+ * A pool checkout that gives up. The pool has no checkout timeout of its own, and a pending `connect()` cannot
+ * be cancelled, so a client that arrives after the timer has fired goes straight back to the pool.
+ */
+export async function checkoutWithin(pool: Pool, ms: number): Promise<PoolClient> {
+  const pending = pool.connect();
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`no pooled connection within ${ms}ms`), { code: "checkout_timeout" })), ms);
+  });
+  try {
+    return await Promise.race([pending, timeout]);
+  } catch (e) {
+    pending.then((c) => c.release(), () => undefined);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Answers each operation may legitimately receive while the others run. Anything else is reported as unexpected. */
 export const EXPECTED: Record<MixedOp, readonly string[]> = {
@@ -159,7 +182,7 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
       return out.ok ? "ok" : out.error.code;
     }
     if (op === "capacity_edit") {
-      const c = await deps.appPool.connect();
+      const c = await checkoutWithin(deps.appPool, CHECKOUT_MS);
       // pg-pool detaches its own listener while a client is checked out
       let fatal: Error | null = null;
       const onError = (e: Error): void => { fatal = e; };

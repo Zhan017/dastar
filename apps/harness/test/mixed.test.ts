@@ -3,7 +3,7 @@ import { Pool, Client } from "pg";
 import { createDastar } from "@dastar/db";
 import { cloneDatabase, dropDatabase, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedBench } from "../src/seed.js";
-import { runMixed, judgeMixed, EXPECTED, type MixedOp } from "../src/mixed.js";
+import { runMixed, judgeMixed, checkoutWithin, EXPECTED, type MixedOp } from "../src/mixed.js";
 
 describe("mixed verdict", () => {
   const okByOp = { hold_unit: 900, hold_combo: 300, confirm: 200, cancel: 500, mint_confirm: 150, capacity_edit: 250 };
@@ -95,5 +95,39 @@ describe("mixed run", () => {
   it("refuses a seed without shared-member combos", async () => {
     const seed = await seedBench(owner, { units: 4, combos: 1 });
     await expect(runMixed({ appPool, workerPool, owner, ager, seed }, { seconds: 1, workers: 1, seed: 1 })).rejects.toThrow(/mesh/);
+  });
+});
+
+describe("bounded pool checkout", () => {
+  let conn: Conn; let pool: Pool;
+  beforeAll(async () => {
+    conn = await cloneDatabase("harness_checkout");
+    pool = new Pool({ connectionString: conn.app, max: 1 });
+    pool.on("error", () => undefined);
+  });
+  afterAll(async () => { await pool.end(); await dropDatabase("harness_checkout"); });
+
+  it("a pool with no client to hand out is given up on at the bound, and the client that arrives afterwards goes back to the pool", async () => {
+    const held = await pool.connect();
+    const t0 = Date.now();
+    await expect(checkoutWithin(pool, 200)).rejects.toMatchObject({ code: "checkout_timeout", message: "no pooled connection within 200ms" });
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(180);
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    // the pool cannot cancel the abandoned checkout: it stays queued for the next client
+    expect(pool.waitingCount).toBe(1);
+    held.release();
+    // the abandoned checkout takes that client and must give it back; a leaked one would leave this checkout waiting for good
+    const later = await checkoutWithin(pool, 2_000);
+    later.release();
+    expect(pool.totalCount).toBe(1);
+    expect(pool.idleCount).toBe(1);
+    expect(pool.waitingCount).toBe(0);
+  });
+
+  it("a client that arrives within the bound is the caller's to use and release", async () => {
+    const c = await checkoutWithin(pool, 2_000);
+    expect((await c.query("select 1 as one")).rows[0].one).toBe(1);
+    c.release();
+    expect(pool.idleCount).toBe(1);
   });
 });

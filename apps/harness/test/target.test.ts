@@ -7,7 +7,7 @@ import type { HoldInput } from "@dastar/db";
 import { listen } from "@dastar/api/server";
 import { cloneDatabase, dropDatabase, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedBench, type BenchSeed } from "../src/seed.js";
-import { createLoadKeys, engineTarget, httpTarget } from "../src/target.js";
+import { createLoadKeys, revokeLoadKeys, engineTarget, httpTarget } from "../src/target.js";
 import { waitFor, backends } from "../src/observe.js";
 import { classify } from "../src/load.js";
 
@@ -82,8 +82,9 @@ describe("load targets", () => {
   it("http: the same requests through the reference API, spread over several keys, with no phases", async () => {
     const api = await listen({ DATABASE_URL: conn.app, HOST: "127.0.0.1", PORT: 0, POOL_MAX: 4, POOL_ACQUIRE_MS: 5_000, READ_TIMEOUT_MS: 2_000, REQUEST_DEADLINE_MS: 12_000 }, { log: () => undefined });
     try {
-      const keys = await createLoadKeys(pool(1, "T4"), 3);
+      const { keys, ids } = await createLoadKeys(pool(1, "T4"), 3);
       expect(new Set(keys).size).toBe(3);
+      expect(new Set(ids).size).toBe(3);
       const t = httpTarget({ url: api.url, keys });
       const first = input(3);
       const a = await t.hold(first);
@@ -102,6 +103,25 @@ describe("load targets", () => {
     } finally {
       await api.close();
     }
+  });
+
+  it("load keys: revoking sets revoked_at on every key of the run, once, and on no other key", async () => {
+    const app = pool(1, "T5");
+    const mine = await createLoadKeys(app, 3);
+    const others = await createLoadKeys(app, 2);
+    const revokedAt = async (ids: string[]): Promise<(Date | null)[]> =>
+      (await owner.query("select revoked_at from dastar.api_key where id = any($1::uuid[]) order by id", [ids])).rows.map((r) => r.revoked_at as Date | null);
+    expect(mine.ids).toHaveLength(3);
+    expect(await revokedAt(mine.ids)).toEqual([null, null, null]);
+    expect(await revokeLoadKeys(app, mine.ids)).toBe(3);
+    const revoked = await revokedAt(mine.ids);
+    expect(revoked).toHaveLength(3);
+    for (const at of revoked) expect(at).toBeInstanceOf(Date);
+    expect(await revokedAt(others.ids)).toEqual([null, null]);
+    // a second call has nothing left to revoke and leaves the first revocation's time alone
+    expect(await revokeLoadKeys(app, mine.ids)).toBe(0);
+    expect(await revokedAt(mine.ids)).toEqual(revoked);
+    expect(await revokeLoadKeys(app, [])).toBe(0);
   });
 
   it("http: a response that never starts, or never ends, is a transport timeout at the harness's deadline, and says nothing about the database", async () => {
