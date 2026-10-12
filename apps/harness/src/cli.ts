@@ -60,6 +60,13 @@ const { positionals, values } = parseArgs({
 const exitFor = (verdict: "pass" | "met" | "fail" | "missed" | "invalid" | "inconclusive"): number =>
   verdict === "pass" || verdict === "met" ? 0 : verdict === "inconclusive" ? 3 : 1;
 
+/** Exits once stdout and stderr have taken everything written to them: process.exit() ends the process with writes to a pipe still pending, which cuts a summary short. */
+async function exit(code: number): Promise<never> {
+  const drained = (stream: NodeJS.WriteStream): Promise<void> => new Promise<void>((done) => { stream.write("", () => done()); });
+  await Promise.all([drained(process.stdout), drained(process.stderr)]);
+  process.exit(code);
+}
+
 function need(name: "owner-url" | "app-url" | "admin-url" | "worker-url"): string {
   const v = values[name];
   if (!v) { console.error(`--${name} is required`); process.exit(2); }
@@ -91,7 +98,7 @@ if (command === "race") {
   console.log(`race n=${r.n}: winners=${r.winners} conflicts=${r.conflicts} overlaps=${r.overlaps} retries=${r.retries} other=${JSON.stringify(r.other)}`);
   console.log(`latency ms: p50=${r.latencyMs.p50.toFixed(1)} p95=${r.latencyMs.p95.toFixed(1)} p99=${r.latencyMs.p99.toFixed(1)} max=${r.latencyMs.max.toFixed(1)}; elapsed=${r.elapsedMs.toFixed(0)}ms`);
   console.log(`report: ${path}`);
-  process.exit(r.winners === 1 && r.conflicts === r.n - 1 && r.overlaps === 0 ? 0 : 1);
+  await exit(r.winners === 1 && r.conflicts === r.n - 1 && r.overlaps === 0 ? 0 : 1);
 } else if (command === "naive") {
   const admin = need("admin-url");
   const { name, url } = await prepareNaiveDatabase(admin, MIGRATIONS);
@@ -106,7 +113,7 @@ if (command === "race") {
   const path = await writeReport("naive", r);
   console.log(`naive n=${r.n}: committed=${r.committed} overlapping pairs=${r.overlaps} (what a plain check-then-insert does)`);
   console.log(`report: ${path}`);
-  process.exit(r.overlaps > 0 ? 0 : 1);
+  await exit(r.overlaps > 0 ? 0 : 1);
 } else if (command === "migrate") {
   const r = await migrate(need("owner-url"), MIGRATIONS);
   console.log(`migrate: applied ${r.applied.length} file(s)${r.applied.length ? ": " + r.applied.join(", ") : ""}`);
@@ -123,7 +130,7 @@ if (command === "race") {
     set.push(role);
   }
   await owner.end();
-  if (set.length === 0) { console.error("set DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD, or both"); process.exit(2); }
+  if (set.length === 0) { console.error("set DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD, or both"); await exit(2); }
   console.log(`roles: password set for ${set.join(", ")}`);
 } else if (command === "seed-demo") {
   const owner = new Client({ connectionString: need("owner-url") });
@@ -140,12 +147,12 @@ if (command === "race") {
   await owner.end();
   console.log(JSON.stringify(seeded, null, 2));
 } else if (command === "load") {
-  if (values.target !== "engine" && values.target !== "http") { console.error("--target is engine or http"); process.exit(2); }
-  if (values.sustain && !/^\d+x\d+$/.test(values.sustain)) { console.error("--sustain takes <rate>x<seconds>, for example 50x600"); process.exit(2); }
+  if (values.target !== "engine" && values.target !== "http") { console.error("--target is engine or http"); await exit(2); }
+  if (values.sustain && !/^\d+x\d+$/.test(values.sustain)) { console.error("--sustain takes <rate>x<seconds>, for example 50x600"); await exit(2); }
   const label = values["target-hardware"] ? "target-hardware" : "provisional";
   if (values.target === "http" && label === "target-hardware" && !values["api-url"]) {
     console.error("a target-hardware run over HTTP needs --api-url: the API must run in its own process, not inside the load generator");
-    process.exit(2);
+    await exit(2);
   }
   const poolMax = num("pool-max", values["pool-max"]);
   const { owner, appPool, workerPool, end } = await connections(poolMax);
@@ -174,7 +181,7 @@ if (command === "race") {
   console.log(`report: ${await writeReport("load", r)}`);
   // an invalid run is not evidence of anything, whatever its latencies look like; a provisional run has no verdict to report
   const sound = r.overlaps === 0 && r.deadlockDelta === 0 && r.fitViolations === 0 && r.validity.valid;
-  process.exit(!sound ? 1 : r.targets ? exitFor(r.targets.verdict) : 0);
+  await exit(!sound ? 1 : r.targets ? exitFor(r.targets.verdict) : 0);
 } else if (command === "mixed") {
   const { owner, appPool, workerPool, end } = await connections(num("pool-max", values["pool-max"]));
   const ager = new Client({ connectionString: need("owner-url") });
@@ -190,10 +197,10 @@ if (command === "race") {
   for (const u of r.unexpected.slice(0, 5)) console.log(`unexpected: ${u.op} ${u.code} ${u.message}`);
   console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
   console.log(`report: ${await writeReport("mixed", r)}`);
-  process.exit(exitFor(r.verdict.verdict));
+  await exit(exitFor(r.verdict.verdict));
 } else if (command === "exhaust") {
   const external = values["api-url"] !== undefined;
-  if (external && !values["api-key"]) { console.error("--api-url needs --api-key, a key with the hold capability"); process.exit(2); }
+  if (external && !values["api-key"]) { console.error("--api-url needs --api-key, a key with the hold capability"); await exit(2); }
   const r = await runExhaust({
     ownerUrl: need("owner-url"), appUrl: need("app-url"), poolMax: num("pool-max", values["pool-max"]), acquireMs: num("acquire-ms", values["acquire-ms"]),
     ...(external ? { external: { url: values["api-url"]!, key: values["api-key"]! } } : {}),
@@ -203,7 +210,7 @@ if (command === "race") {
     for (const c of v.checks) console.log(`  ${c.pass ? "ok  " : "FAIL"} ${c.name}${c.pass ? "" : ` :: ${c.detail}`}`);
   }
   console.log(`report: ${await writeReport("exhaust", r)}`);
-  process.exit(r.pass ? 0 : 1);
+  await exit(r.pass ? 0 : 1);
 } else if (command === "churn") {
   const { owner, appPool, workerPool, end } = await connections(num("pool-max", values["pool-max"]));
   const seed = await seedBench(owner, { holdTtlSeconds: 60 });
@@ -219,7 +226,7 @@ if (command === "race") {
   console.log(`verdict ${r.verdict.verdict}${r.verdict.reasons.length ? `: ${r.verdict.reasons.join("; ")}` : ""}`);
   console.log(`after the last sample, outside the verdict: ${r.cleanup.pendingDeadAtEnd} dead holds were left; cleanup expired ${r.cleanup.expired} in ${r.cleanup.batches} batches${r.cleanup.cleared ? "" : "; cleanup did not finish inside its budget"}`);
   console.log(`report: ${await writeReport("churn", r)}`);
-  process.exit(exitFor(r.verdict.verdict));
+  await exit(exitFor(r.verdict.verdict));
 } else if (command === "migrate-under-load") {
   const r = await runMigrateUnderLoad({
     adminUrl: need("admin-url"), appUrl: need("app-url"), workerUrl: need("worker-url"), migrationsDir: MIGRATIONS,
@@ -239,7 +246,7 @@ if (command === "race") {
   if (r.underLoad.verdict === "inconclusive") console.log("raise --rate or --preload to put more traffic in a migration's way");
   if (values.keep) console.log(`kept database ${r.database}`);
   console.log(`report: ${await writeReport("migrate-under-load", r)}`);
-  process.exit(r.fixturesApplied ? exitFor(r.underLoad.verdict) : 1);
+  await exit(r.fixturesApplied ? exitFor(r.underLoad.verdict) : 1);
 } else {
   console.error([
     "usage:",
@@ -257,7 +264,7 @@ if (command === "race") {
     "  exit codes: 0 a positive verdict, or a valid run that has none; 1 a negative verdict or an invalid run; 2 usage; 3 inconclusive",
     "  load, mixed, churn and migrate-under-load run the design's sweeper (every 5000 ms, 20 rows, repeated while rows remain); [--sweep-every-ms N] [--sweep-limit N] change it, and the report records what was used",
   ].join("\n"));
-  process.exit(2);
+  await exit(2);
 }
 
 async function connections(poolMax: number): Promise<{ owner: Client; appPool: Pool; workerPool: Pool; end: () => Promise<void> }> {
