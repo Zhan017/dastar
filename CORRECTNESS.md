@@ -14,9 +14,14 @@ What the database enforces, how, and which test would show it broken. Guarantees
 | 6 | Every transition writes an audit row | After trigger on reservation | none | `lifecycle.test.ts`, `transitions.test.ts` |
 | 7 | Only transitions in the state table happen | Transition trigger | `invalid_transition` (DA005) | `transitions.test.ts`, every pair |
 | 8 | A unit row is active exactly while its reservation occupies the unit; completed rows stay active as history | Definer-rights sync trigger is the only writer of `active`; no UPDATE or DELETE for the application role | `unit_rows_immutable` (DA006), 42501 | `attack.test.ts`, `lifecycle.test.ts` |
-| 9 | A reservation's unit rows are exactly its assignment's members and never change | Deferred membership trigger at commit, composite foreign keys, combo immutability | `assignment_mismatch` (DA010), `combo_immutable` (DA011) | `guards.test.ts`, `attack.test.ts` |
+| 9 | A reservation's unit rows are exactly its assignment's members and never change | Deferred membership trigger at commit, composite foreign keys, combo immutability | `assignment_mismatch` (DA010), `combo_immutable` (DA011) | `guards.test.ts`, `attack.test.ts`, `venue-isolation.test.ts` |
+| 10 | A transaction bound to one venue reads and writes only that venue's rows, and a transaction bound to none reads and writes nothing | Row-level security on every venue-scoped table for the application role, keyed on the transaction-local `dastar.venue_id` | `venue_scope_violation` (42501) on a write; a read sees no rows | `venue-isolation.test.ts` |
 
 Supporting guards: `actor_required` (DA007), `range_mismatch` (DA008), `token_requires_held` (DA013), `forbidden_write` (42501).
+
+## Venue isolation
+
+Invariant 10 sits behind boundary B ([SECURITY.md](SECURITY.md)): the caller declares the venue, and the database confines the transaction to it without being able to tell a true declaration from a false one. Invariants 1, 2, 4, 5, 7, 8, and 9 sit behind boundary A and do not depend on that declaration. The triggers that read other rows to enforce them (the fit check, the capacity guard, the unit-row insert guard, and the membership check) run with the owner's rights, so row-level security, which follows a setting the caller controls, never changes what they see; `venue-isolation.test.ts` clears the setting before commit and still gets `assignment_mismatch`. The hold's overlap query reads `dastar.occupancy`, an owner view with the policies' own filter, because row-level security would otherwise keep the range index out of the plan; the same test pins the index condition.
 
 ## Effective status
 
