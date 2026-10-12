@@ -325,7 +325,7 @@ Notes.
 
 ```sql
 -- dastar_owner:    owns schema, tables, and functions; used only by the migration runner.
--- dastar_app:      USAGE on schemas, EXECUTE on functions, and the table and column grants below.
+-- dastar_app:      USAGE on schemas, EXECUTE on the helper functions and the two venue lookups, and the table and column grants below.
 --                  No ownership, no DELETE anywhere, no TRUNCATE, no DDL. Subject to row-level security (M2).
 -- dastar_worker:   dastar_app's grants plus UPDATE on outbox, DELETE on idempotency, outbox, and
 --                  dastar_agent tables for retention, and BYPASSRLS. Used only by the worker container.
@@ -358,7 +358,7 @@ Boundary A, adversarial. Invariants 1, 2, 4, 5, 7, 8, 9 and the supporting guard
 
 Boundary B, declared context. `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` are declarations by the caller. The database enforces that they are present (DA007) and that a transaction is internally consistent with its declared venue (row-level security, invariant 10). It cannot verify that the declaration is true, because custom settings are user-settable and the app role can address every venue. What authenticates the declaration is the API key check in the API process, or the host application in embedded mode. Invariant 3 also sits here: the actor in the idempotency key is whatever the caller declared. CORRECTNESS.md states this plainly rather than implying the database authenticates tenants.
 
-Row-level security, M2, boundary B. Every venue-scoped table gets `ENABLE ROW LEVEL SECURITY` and one policy for `dastar_app` of the form `USING (venue_id = nullif(current_setting('dastar.venue_id', true), '')::uuid) WITH CHECK (same)`; the `nullif` turns the empty string a finished transaction-local setting leaves behind into no venue. It contains a bug that mixes venues inside one transaction, and it fails closed when the context is missing; it does not stop a caller that declares the wrong venue on purpose. `api_key` and `schema_migration` are not venue-scoped and carry no policy; key lookup happens before the venue is known. A route addressed by a reservation id finds the reservation's venue through an owner-run lookup, checks it against the key's scope, and then binds it (ADR 6). Foreign-key checks run as the table owner and are unaffected. The exclusion constraint checks the whole table regardless of policy, which is correct because a unit belongs to exactly one venue.
+Row-level security, M2, boundary B. Every venue-scoped table gets `ENABLE ROW LEVEL SECURITY` and one policy for `dastar_app` of the form (on `venue` the column is `id`) `USING (venue_id = nullif(current_setting('dastar.venue_id', true), '')::uuid) WITH CHECK (same)`; the `nullif` turns the empty string a finished transaction-local setting leaves behind into no venue. It contains a bug that mixes venues inside one transaction, and it fails closed when the context is missing; it does not stop a caller that declares the wrong venue on purpose. `api_key` and `schema_migration` are not venue-scoped and carry no policy; key lookup happens before the venue is known. A route addressed by a reservation id finds the reservation's venue through an owner-run lookup, checks it against the key's scope, and then binds it (ADR 6). Foreign-key checks run as the table owner and are unaffected. The exclusion constraint checks the whole table regardless of policy, which is correct because a unit belongs to exactly one venue.
 
 ### 6.2 Clock
 
