@@ -8,7 +8,7 @@ import { prepareNaiveDatabase, dropNaiveDatabase, disableProtections, runNaive }
 import { fmt, writeReport } from "./stats.js";
 import { listen } from "@dastar/api/server";
 import { runLoad, warmPool, type LoadReport } from "./load.js";
-import { createLoadKeys, engineTarget, httpTarget } from "./target.js";
+import { createLoadKeys, revokeLoadKeys, engineTarget, httpTarget } from "./target.js";
 import { DESIGN_SWEEP, type SweepConfig } from "@dastar/worker";
 import { parseBlend } from "./workload.js";
 import { runMixed } from "./mixed.js";
@@ -165,17 +165,26 @@ if (command === "race") {
   const seed = await seedBench(owner, { holdTtlSeconds: 60 });
   let api: Awaited<ReturnType<typeof listen>> | null = null;
   let target;
-  if (values.target === "http") {
-    // an API started here shares this process with the load generator: fine for a look, not for a claim
-    if (!values["api-url"]) api = await listen({ DATABASE_URL: need("app-url"), HOST: "127.0.0.1", PORT: 0, POOL_MAX: poolMax, POOL_ACQUIRE_MS: 5_000, READ_TIMEOUT_MS: 2_000, REQUEST_DEADLINE_MS: 12_000 }, { log: () => undefined });
-    target = httpTarget({ url: values["api-url"] ?? api!.url, keys: await createLoadKeys(appPool, num("keys", values.keys)) });
-  } else {
-    await warmPool(appPool);
-    target = engineTarget(appPool);
+  let keyIds: string[] = [];
+  let r: LoadReport;
+  try {
+    if (values.target === "http") {
+      // an API started here shares this process with the load generator: fine for a look, not for a claim
+      if (!values["api-url"]) api = await listen({ DATABASE_URL: need("app-url"), HOST: "127.0.0.1", PORT: 0, POOL_MAX: poolMax, POOL_ACQUIRE_MS: 5_000, READ_TIMEOUT_MS: 2_000, REQUEST_DEADLINE_MS: 12_000 }, { log: () => undefined });
+      const made = await createLoadKeys(appPool, num("keys", values.keys));
+      keyIds = made.ids;
+      target = httpTarget({ url: values["api-url"] ?? api!.url, keys: made.keys });
+    } else {
+      await warmPool(appPool);
+      target = engineTarget(appPool);
+    }
+    r = await runLoad({ target, workerPool, owner, seed }, { steps, blend: parseBlend(values.blend), seed: num("seed", values.seed), label, poolMax, sweep: sweepFromFlags() });
+    await target.close();
+    if (api) await api.close();
+  } finally {
+    // the run's keys end with the run, whether or not it finished; a failure to revoke is reported and changes neither the report nor the exit code
+    await revokeLoadKeys(appPool, keyIds).catch((e: unknown) => { console.error(`could not revoke the run's API keys: ${e instanceof Error ? e.message : String(e)}`); });
   }
-  const r = await runLoad({ target, workerPool, owner, seed }, { steps, blend: parseBlend(values.blend), seed: num("seed", values.seed), label, poolMax, sweep: sweepFromFlags() });
-  await target.close();
-  if (api) await api.close();
   await end();
   printLoad(r, api !== null);
   console.log(`report: ${await writeReport("load", r)}`);

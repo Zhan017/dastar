@@ -25,7 +25,7 @@ What the engine target calls phases are client-side spans, not server wait times
 
 Over HTTP every request has a 30-second deadline of the harness's own, covering headers and body, so a stalled response cannot keep a run from finishing. A request past it is `transport_timeout`, and a connection that failed is `transport_error`; both are counted apart from the API's own `timeout` answers, both are lower bounds on latency, and neither says anything about the database: after the run the harness looks up each such hold's idempotency row and reports, for the holds among them, how many the database holds as granted, as refused, and with no outcome observed yet; the last is not a failure, because an outstanding request can still commit.
 
-An API key is one actor, and a venue allows an actor at most 100 live holds, so the HTTP run creates 64 keys and rotates them.
+An API key is one actor, and a venue allows an actor at most 100 live holds, so the HTTP run creates 64 keys, rotates them, and revokes them when it ends, whether or not it finished.
 
 ## Set up
 

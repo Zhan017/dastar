@@ -79,7 +79,7 @@ describe("load run", () => {
     const seed = await seedBench(owner, { holdTtlSeconds: 60 });
     const api = await listen({ DATABASE_URL: conn.app, HOST: "127.0.0.1", PORT: 0, POOL_MAX: 8, POOL_ACQUIRE_MS: 5_000, READ_TIMEOUT_MS: 2_000, REQUEST_DEADLINE_MS: 12_000 }, { log: () => undefined });
     try {
-      const target = httpTarget({ url: api.url, keys: await createLoadKeys(appPool, 4) });
+      const target = httpTarget({ url: api.url, keys: (await createLoadKeys(appPool, 4)).keys });
       const r = await runLoad({ target, workerPool, owner, seed }, { steps: [{ ratePerSec: 40, seconds: 2 }], blend: TARGET_BLEND, seed: 12, label: "target-hardware", poolMax: 8, sweep: FAST_SWEEP });
       expect(r).toMatchObject({ target: "http", deadlockDelta: 0, overlaps: 0, fitViolations: 0 });
       expect(r.records.every((x) => x.code === "ok" || x.code === "hold_conflict")).toBe(true);

@@ -37,6 +37,13 @@ describe("pool exhaustion and recovery over HTTP", () => {
     expect(r.variants[0]!.drainMs).not.toBeNull();
     expect(r.variants[0]!.checks.length).toBeGreaterThanOrEqual(9);
     expect(r.variants[1]!.checks.length).toBeGreaterThanOrEqual(9);
+    // the key made for the API this run started is not left live
+    const owner = new Client({ connectionString: conn.owner });
+    await owner.connect();
+    const keys = (await owner.query("select count(*)::int as made, count(revoked_at)::int as revoked from dastar.api_key where label = 'exhaust run'")).rows[0];
+    await owner.end();
+    expect(keys.made).toBeGreaterThan(0);
+    expect(keys.revoked).toBe(keys.made);
   });
 
   it("an API that never answers is a transport timeout at the harness's deadline, not a hung run", async () => {
