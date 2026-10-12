@@ -92,6 +92,16 @@ describe("mixed run", () => {
     expect(otherVenueExpired).toBe(12);
   });
 
+  it("a capacity edit that changes no row is an unexpected answer and never counts as ok", async () => {
+    const real = await seedBench(owner, { units: 8, mesh: true, holdTtlSeconds: 60 });
+    // unit ids of no row: a hold on one is refused as a misfit, and an edit of one finds nothing to change
+    const seed = { ...real, units: real.units.map(() => "00000000-0000-7000-8000-000000000000") };
+    const r = await runMixed({ appPool, workerPool, owner, ager, seed }, { seconds: 2, workers: 4, seed: 5, sweep: { everyMs: 300, limit: 20, drain: true } });
+    expect(r.ops.capacity_edit.count).toBeGreaterThan(0);
+    expect(r.ops.capacity_edit.byCode.ok ?? 0).toBe(0);
+    expect(r.unexpected).toContainEqual({ op: "capacity_edit", code: "thrown:unknown", message: "capacity edit matched no unit" });
+  });
+
   it("refuses a seed without shared-member combos", async () => {
     const seed = await seedBench(owner, { units: 4, combos: 1 });
     await expect(runMixed({ appPool, workerPool, owner, ager, seed }, { seconds: 1, workers: 1, seed: 1 })).rejects.toThrow(/mesh/);

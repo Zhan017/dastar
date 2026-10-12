@@ -189,8 +189,10 @@ export async function runMixed(deps: MixedDeps, opts: MixedOptions): Promise<Mix
       c.on("error", onError);
       try {
         await c.query("begin");
-        await c.query("select set_config('dastar.actor', $1, true), set_config('dastar.trace_id', $2, true)", [actor, traceId]);
-        await c.query("update dastar.unit set capacity_max = $2 where id = $1", [r.pick(units), r.pick([2, 4, 6, 8])]);
+        await c.query("select set_config('dastar.actor', $1, true), set_config('dastar.trace_id', $2, true), set_config('dastar.venue_id', $3, true)", [actor, traceId, venueId]);
+        const edit = await c.query("update dastar.unit set capacity_max = $2 where id = $1", [r.pick(units), r.pick([2, 4, 6, 8])]);
+        // an update outside the bound venue changes nothing and raises nothing, so a missing row must not read as ok
+        if (edit.rowCount !== 1) throw new Error("capacity edit matched no unit");
         await c.query("commit");
         return "ok";
       } catch (e) {
