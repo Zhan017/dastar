@@ -95,7 +95,7 @@ describe("hold retry on deadlock and serialization failure", () => {
 
     // R holds the dead row; the hold under test holds the unit lock and pauses
     await R.query("begin");
-    await R.query("select set_config('dastar.actor', 'key:R', true)");
+    await R.query("select set_config('dastar.actor', 'key:R', true), set_config('dastar.venue_id', $1, true)", [seed.venue]);
     await R.query("select id from dastar.reservation where id = $1 for update", [dead.receipt.reservationId]);
     const retries: { attempt: number; sqlstate: string }[] = [];
     const p = pause();

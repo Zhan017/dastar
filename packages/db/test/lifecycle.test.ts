@@ -19,6 +19,7 @@ describe("lifecycle", () => {
     await owner.query("select set_config('dastar.actor', 'owner', false), set_config('dastar.trace_id', 'owner', false)");
     seed = await seedVenue(owner);
     await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = $1", [seed.venue]);
+    await app.query("select set_config('dastar.venue_id', $1, false)", [seed.venue]);
   });
   afterAll(async () => { await app.end(); await worker.end(); await owner.end(); await dropDatabase("lifecycle_test"); });
 

@@ -12,8 +12,8 @@ describe("guards", () => {
     conn = await cloneDatabase("guards_test");
     owner = await connect(conn.owner);
     app = await connect(conn.app);
-    await app.query("select set_config('dastar.actor', 'test', false), set_config('dastar.trace_id', 't1', false)");
     seed = await seedVenue(owner);
+    await app.query("select set_config('dastar.actor', 'test', false), set_config('dastar.trace_id', 't1', false), set_config('dastar.venue_id', $1, false)", [seed.venue]);
   });
   afterAll(async () => { await app.end(); await owner.end(); await dropDatabase("guards_test"); });
 

@@ -139,7 +139,7 @@ describe("named interleavings (H1)", () => {
     const p = pause();
     const pA = hold(A, input("key:A", { partySize: 4, assignment: { kind: "unit", id: u } }), { afterUnitLocks: p.hook });
     await p.reached;
-    await B.query("select set_config('dastar.actor','key:B',false)");
+    await B.query("select set_config('dastar.actor','key:B',false), set_config('dastar.venue_id', $1, false)", [seed.venue]);
     const pEdit = outcome(B.query("update dastar.unit set capacity_max = 2 where id = $1", [u]));
     await waitForBackend(owner, "B", { type: "Lock", event: "advisory" });
     p.release();

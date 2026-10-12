@@ -15,8 +15,8 @@ describe("capacity edit versus confirmation near expiry (invariant 4)", () => {
     owner = await connect(conn.owner);
     A = await connectAs(conn.app, "A");
     B = await connectAs(conn.app, "B");
-    await B.query("select set_config('dastar.actor', 'key:B', false), set_config('dastar.trace_id', 'b', false)");
     seed = await seedVenue(owner);
+    await B.query("select set_config('dastar.actor', 'key:B', false), set_config('dastar.trace_id', 'b', false), set_config('dastar.venue_id', $1, false)", [seed.venue]);
     await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = $1", [seed.venue]);
     deadlocksAtStart = await deadlockCountStable(owner);
   });
