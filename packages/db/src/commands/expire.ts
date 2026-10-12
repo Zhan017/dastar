@@ -5,10 +5,10 @@ import { enqueue, reservationPayload } from "../outbox.js";
 /** One sweeper batch (spec 10.4). Connect as dastar_worker. */
 export async function expireDue(client: ClientBase, opts: { limit?: number } = {}): Promise<{ expired: string[] }> {
   const limit = opts.limit ?? 20;
-  // The sweep reads and updates every venue's rows, which row-level security allows only a role that bypasses it.
-  // The check runs before the transaction opens, so it adds no statement to the sweep's own transaction.
-  const role = await client.query("select rolsuper or rolbypassrls as ok from pg_roles where rolname = current_user");
-  if (role.rows[0]?.ok !== true) {
+  // The sweep reads and updates every venue's rows; a role that row-level security binds would see none and expire
+  // nothing. The check runs before the transaction opens, so it adds no statement to the sweep's own transaction.
+  const rls = await client.query("select row_security_active('dastar.reservation') as bound");
+  if (rls.rows[0]?.bound !== false) {
     throw new DastarError("forbidden", "expireDue needs a role that bypasses row-level security, such as dastar_worker");
   }
   await client.query("begin");

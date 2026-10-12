@@ -215,7 +215,7 @@ describe("venue isolation", () => {
     expect(r.rows.map((x) => x.proname as string)).toEqual([]);
   });
 
-  it("the application, worker, and reporting roles keep exactly the function grants they need", async () => {
+  it("the helper functions go to the application, worker, and reporting roles, the lookups to the application role alone, and no trigger function to any role", async () => {
     const ROLES = ["dastar_app", "dastar_worker", "dastar_readonly"] as const;
     const can = async (role: string, fn: string): Promise<boolean> =>
       (await owner.query("select has_function_privilege($1::name, $2::text, 'EXECUTE') as ok", [role, fn])).rows[0].ok as boolean;
@@ -398,13 +398,32 @@ describe("venue isolation", () => {
     for (const t of SCOPED) {
       const p = pol.rows.find((x) => x.relname === t.table);
       expect(p, `${t.table}: venue_scope`).toMatchObject({ polcmd: "*", roles: ["dastar_app"] });
-      for (const [clause, expr] of [["using", p.qual], ["with check", p.withcheck]] as const) {
-        const text = String(expr ?? "").toLowerCase();
-        const setting = "current_setting('dastar.venue_id'";
-        expect(text, `${t.table}: ${clause}`).toContain(setting);
-        expect(text, `${t.table}: ${clause}`).toContain("nullif");
-        // the column is named outside the setting's own name, which contains venue_id
-        expect(text.replace(setting, ""), `${t.table}: ${clause}`).toMatch(new RegExp(`\\b${t.column}\\b`));
+      // exactly the venue rule, in the text Postgres keeps for it, on both sides
+      const rule = `(${t.column} = (NULLIF(current_setting('dastar.venue_id'::text, true), ''::text))::uuid)`;
+      expect(p.qual, `${t.table}: using`).toBe(rule);
+      expect(p.withcheck, `${t.table}: with check`).toBe(rule);
+    }
+    // no other policy widens what any role sees: the venue rule, and reporting's read of every venue
+    for (const row of r.rows) expect(row.policies, row.relname).toEqual(["readonly_reads", "venue_scope"]);
+    const reads = await owner.query(
+      `select c.relname::text as relname, pol.polcmd::text as polcmd, pg_get_expr(pol.polqual, pol.polrelid) as qual,
+              array(select ro.rolname::text from pg_roles ro where ro.oid = any (pol.polroles)) as roles
+         from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'dastar' and pol.polname = 'readonly_reads'`,
+    );
+    expect(reads.rows).toHaveLength(SCOPED.length);
+    for (const x of reads.rows) expect(x, x.relname).toMatchObject({ polcmd: "r", qual: "true", roles: ["dastar_readonly"] });
+  });
+
+  it("no role but the owner can put a dastar trigger function on a table of its own (42501)", async () => {
+    for (const url of [conn.app, conn.worker, conn.readonly]) {
+      const c = await connect(url);
+      try {
+        await c.query("create temp table probe (id uuid, status text)");
+        await expect(c.query("create trigger probe_t after update on probe for each row execute function dastar.trg_audit()"))
+          .rejects.toMatchObject({ code: "42501" });
+      } finally {
+        await c.end();
       }
     }
   });
