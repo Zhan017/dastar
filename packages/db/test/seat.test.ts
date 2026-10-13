@@ -116,7 +116,7 @@ describe("seat and complete", () => {
       const id = await reservationIn(from);
       const before = await snapshot(id);
       expect(before.status).toBe(from);
-      await expect(seat(app, { reservationId: id, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition", message: `cannot seat a ${from} reservation` });
+      await expect(seat(app, { reservationId: id, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition", message: `cannot seat ${from === "expired" ? "an" : "a"} ${from} reservation` });
       expect(await snapshot(id)).toEqual(before);
     });
   }
@@ -126,7 +126,7 @@ describe("seat and complete", () => {
       const id = await reservationIn(from);
       const before = await snapshot(id);
       expect(before.status).toBe(from);
-      await expect(complete(app, { reservationId: id, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition", message: `cannot complete a ${from} reservation` });
+      await expect(complete(app, { reservationId: id, ...ctx() })).rejects.toMatchObject({ code: "invalid_transition", message: `cannot complete ${from === "expired" ? "an" : "a"} ${from} reservation` });
       expect(await snapshot(id)).toEqual(before);
     });
   }
