@@ -7,3 +7,4 @@ export type { CancelInput, CancelHooks } from "./commands/cancel.js";
 export type { StatusInput } from "./commands/seat.js";
 export type { MintInput } from "./commands/mint-token.js";
 export type { GetInput, ReservationView } from "./commands/get.js";
+export type { ListHoldsInput, HoldView } from "./commands/list-holds.js";

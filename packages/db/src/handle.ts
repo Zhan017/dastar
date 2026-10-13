@@ -6,6 +6,7 @@ import { cancel, type CancelInput, type CancelHooks } from "./commands/cancel.js
 import { seat, complete, type StatusInput } from "./commands/seat.js";
 import { mintConfirmToken, type MintInput } from "./commands/mint-token.js";
 import { getReservation, findReservationVenue, type GetInput, type ReservationView } from "./commands/get.js";
+import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
 
 export type DastarOptions = {
@@ -35,7 +36,7 @@ export type DastarOptions = {
   onAcquire?: (info: AcquireInfo) => void;
 };
 
-export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "expireDue";
+export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "expireDue";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 export interface Dastar {
@@ -51,6 +52,8 @@ export interface Dastar {
   getReservation(input: GetInput): Promise<ReservationView | null>;
   /** The venue of a reservation, for a caller that holds only its id; null when there is none. */
   findReservationVenue(reservationId: string): Promise<string | null>;
+  /** The live holds the actor owns in the venue, soonest expiry first. */
+  listHolds(input: ListHoldsInput): Promise<HoldView[]>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
@@ -248,6 +251,7 @@ export function createDastar(opts: DastarOptions): Dastar {
     mintConfirmToken: (input) => run("mintConfirmToken", input.traceId, (c) => mintConfirmToken(c, input)),
     getReservation: (input) => run("getReservation", null, (c) => getReservation(c, input)),
     findReservationVenue: (reservationId) => run("findReservationVenue", null, (c) => findReservationVenue(c, reservationId)),
+    listHolds: (input) => run("listHolds", null, (c) => listHolds(c, input)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
     close: async () => {
       const p = cancellerPromise;
