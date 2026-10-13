@@ -170,6 +170,14 @@ describe("seat and complete", () => {
     });
   }
 
+  it("cancel from expired answers invalid_transition, reads \"an expired reservation\", and changes nothing", async () => {
+    const id = await reservationIn("expired");
+    const before = await snapshot(id);
+    expect(before.status).toBe("expired");
+    await expect(cancel(app, { reservationId: id, ...ctx(), reason: "guest" })).rejects.toMatchObject({ code: "invalid_transition", message: "cannot cancel an expired reservation" });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
   it("expected_version: a mismatch answers version_conflict and changes nothing, the matching version succeeds", async () => {
     const id = await reservationIn("confirmed");
     const before = await snapshot(id);

@@ -43,7 +43,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   const list = createRoute({
     method: "get",
     path: "/v1/venues/{id}/holds",
-    summary: "List the live holds the calling key owns in a venue, soonest expiry first. A venue that does not exist lists nothing.",
+    summary: "List the live holds the calling key owns in a venue, soonest expiry first. For a key scoped to all venues a venue that does not exist lists nothing; a venue outside the key's venues answers 404.",
     security: [{ Bearer: [] }],
     middleware: [requireCapability(deps, "read")] as const,
     request: { params: IdParam },

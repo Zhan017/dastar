@@ -105,7 +105,7 @@ describe("named interleavings (H1)", () => {
     const swept2 = await expireDue(W, { limit: 50 });
     await setClock(W, null);
     expect(swept2.expired).toContain(id2);
-    await expect(confirm(A, { reservationId: id2, actor: "key:A", traceId: "c", venueId: seed.venue })).rejects.toMatchObject({ code: "invalid_transition" });
+    await expect(confirm(A, { reservationId: id2, actor: "key:A", traceId: "c", venueId: seed.venue })).rejects.toMatchObject({ code: "invalid_transition", message: "cannot confirm an expired reservation" });
   });
 
   it("confirm vs confirm: the loser sees invalid_transition, or version_conflict with expected_version", async () => {

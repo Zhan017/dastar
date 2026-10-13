@@ -12,8 +12,9 @@ export type ListHoldsInput = { venueId: string; actor: string };
 /**
  * The live holds one actor owns in one venue, soonest expiry first. A hold is live by the predicate the
  * live-holds cap counts (LIVE_HOLDS_SQL in hold.ts), judged by database time, so the list and the cap never
- * disagree: a hold past its expiry that the sweeper has not stored yet is absent. The cap is at most 100,
- * which bounds the list.
+ * disagree: a hold past its expiry that the sweeper has not stored yet is absent. The venue's per-actor cap
+ * (at most 100) bounds the list in practice; it is a policy check read without serializing one actor's holds, so
+ * concurrent holds by one actor can pass it together.
  */
 export async function listHolds(client: ClientBase, input: ListHoldsInput): Promise<HoldView[]> {
   await client.query("begin isolation level repeatable read read only");

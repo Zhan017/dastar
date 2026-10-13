@@ -4,7 +4,8 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
 import { createDastar } from "../src/handle.js";
-import { hold, type HoldInput } from "../src/commands/hold.js";
+import { hold, LIVE_HOLDS_SQL, type HoldInput } from "../src/commands/hold.js";
+import { bindVenue } from "../src/context.js";
 import { confirm } from "../src/commands/confirm.js";
 import { cancel } from "../src/commands/cancel.js";
 import { listHolds, type HoldView } from "../src/commands/list-holds.js";
@@ -127,17 +128,33 @@ describe("list holds", () => {
     expect(await listHolds(app, { venueId: V2.venue, actor: BOB })).toEqual([]);
   });
 
-  it("liveness is judged by the database clock: a hold drops out when the clock passes its expiry, and returns with the clock", async () => {
+  it("liveness is judged by the database clock: a hold drops out when the clock passes its expiry, and returns with the clock; the live-holds cap counts the same holds", async () => {
     const at = (iso: string, plusMs: number) => new Date(new Date(iso).getTime() + plusMs).toISOString();
+    /** What the cap counts for Alice in the first venue: hold's own statement, on this connection's clock, in a transaction bound to the venue. */
+    const capCount = async (): Promise<number> => {
+      await app.query("begin");
+      try {
+        await bindVenue(app, V1.venue);
+        return (await app.query(LIVE_HOLDS_SQL, [V1.venue, ALICE])).rows[0].n as number;
+      } finally {
+        await app.query("rollback");
+      }
+    };
+    /** The listing's ids at the current clock position, after checking that the cap counts as many holds. */
+    const listed = async (): Promise<string[]> => {
+      const out = await listHolds(app, { venueId: V1.venue, actor: ALICE });
+      expect(await capCount()).toBe(out.length);
+      return ids(out);
+    };
     try {
       await setClock(app, at(aMid.holdExpiresAt, 1));
-      expect(ids(await listHolds(app, { venueId: V1.venue, actor: ALICE }))).toEqual([aLate.id]);
+      expect(await listed()).toEqual([aLate.id]);
       await setClock(app, at(aLate.holdExpiresAt, 1));
-      expect(await listHolds(app, { venueId: V1.venue, actor: ALICE })).toEqual([]);
+      expect(await listed()).toEqual([]);
     } finally {
       await setClock(app, null);
     }
-    expect(ids(await listHolds(app, { venueId: V1.venue, actor: ALICE }))).toEqual([aSoon.id, aMid.id, aLate.id]);
+    expect(await listed()).toEqual([aSoon.id, aMid.id, aLate.id]);
   });
 
   it("a hold leaves the list when it is confirmed or cancelled", async () => {

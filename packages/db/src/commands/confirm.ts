@@ -4,6 +4,7 @@ import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
 import { sortUnitIds, LOCK_UNIT_SQL } from "../units.js";
 import { enqueue, reservationPayload } from "../outbox.js";
+import { withArticle } from "../status-text.js";
 import type { Receipt } from "./hold.js";
 
 export type ConfirmInput = { reservationId: string; actor: string; traceId: string; venueId: string; expectedVersion?: number; confirmToken?: string };
@@ -56,7 +57,7 @@ export async function confirm(client: ClientBase, input: ConfirmInput, hooks: Co
       if (!stored || stored.length !== presented.length || !timingSafeEqual(stored, presented)) throw new DastarError("forbidden", "confirm token does not match");
     }
     if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
-    if (locked.rows[0].status !== "held") throw new DastarError("invalid_transition", `cannot confirm a ${locked.rows[0].status} reservation`);
+    if (locked.rows[0].status !== "held") throw new DastarError("invalid_transition", `cannot confirm ${withArticle(locked.rows[0].status)} reservation`);
     const upd = await client.query(
       `update dastar.reservation set status = 'confirmed', confirm_token_hash = null
         where id = $1 and ($2::int is null or version = $2)

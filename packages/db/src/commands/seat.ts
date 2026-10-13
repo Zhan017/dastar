@@ -2,13 +2,13 @@ import type { ClientBase } from "pg";
 import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
 import { enqueue, reservationPayload } from "../outbox.js";
+import { withArticle } from "../status-text.js";
 import type { Receipt } from "./hold.js";
 
 export type StatusInput = { reservationId: string; actor: string; traceId: string; venueId: string; expectedVersion?: number };
 export type StatusHooks = { afterLock?: () => Promise<void> };
 
 const VERB = { seated: "seat", completed: "complete" } as const;
-const article = (word: string): string => (/^[aeiou]/.test(word) ? "an" : "a");
 
 /**
  * One step along confirmed, seated, completed, in cancel's shape: the reservation row is the only lock, taken with
@@ -30,7 +30,7 @@ async function advance(
     if (locked.rowCount === 0) throw new DastarError("not_found", "reservation not found");
     await hooks.afterLock?.();
     if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
-    if (locked.rows[0].status !== from) throw new DastarError("invalid_transition", `cannot ${VERB[to]} ${article(locked.rows[0].status)} ${locked.rows[0].status} reservation`);
+    if (locked.rows[0].status !== from) throw new DastarError("invalid_transition", `cannot ${VERB[to]} ${withArticle(locked.rows[0].status)} reservation`);
     const upd = await client.query(
       `update dastar.reservation set status = $3
         where id = $1 and ($2::int is null or version = $2)
