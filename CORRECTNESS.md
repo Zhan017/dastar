@@ -38,7 +38,7 @@ Postgres evaluates `now()` at transaction start. A confirmation that begins befo
 | hold | unit advisory locks (sorted) → overlapping reservation rows (`order by id for update`) → own inserts |
 | confirm | unit advisory locks (sorted) → own reservation row |
 | capacity edit | the unit row itself (held by the UPDATE) → unit advisory lock → reads of reservations, no reservation row locks |
-| cancel, token mint | own reservation row only |
+| cancel, seat, complete, token mint | own reservation row only |
 | batch expiry | reservation rows in batch, `skip locked`, no unit locks |
 
 Every command acquires resources in this order and never returns to an earlier stage, which is why the reference paths are designed not to deadlock. This is a hypothesis with named tests (`interleavings.test.ts`, `capacity-expiry.test.ts`), not a proof; a mixed-load run is not yet part of the suite. Deadlock and serialization errors stay mapped to `serialization_conflict`, and the hold command retries once (`hold-retry.test.ts`). The assignment columns are immutable for the application role, which is what lets confirm look up the units to lock before it locks the row.
