@@ -14,6 +14,7 @@ describe("hold", () => {
     app = await connect(conn.app);
     seed = await seedVenue(owner);
     await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = $1", [seed.venue]);
+    await app.query("select set_config('dastar.venue_id', $1, false)", [seed.venue]);
   });
   afterAll(async () => { await app.end(); await owner.end(); await dropDatabase("hold_test"); });
 
@@ -67,7 +68,7 @@ describe("hold", () => {
     const loser = await hold(app, b);
     expect(loser).toMatchObject({ ok: false, error: { code: "hold_conflict" }, replayed: false });
     await app.query("begin");
-    await app.query("select set_config('dastar.actor','key:test',true)");
+    await app.query("select set_config('dastar.actor','key:test',true), set_config('dastar.venue_id', $1, true)", [seed.venue]);
     await app.query("update dastar.reservation set status = 'cancelled', cancel_reason = 'x' where id = $1", [(winner as { receipt: { reservationId: string } }).receipt.reservationId]);
     await app.query("commit");
     const again = await hold(app, b);

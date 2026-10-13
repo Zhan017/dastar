@@ -48,6 +48,22 @@ describe("reservation routes", () => {
     expect((await get(id, holder)).status).toBe(403);
   });
 
+  it("a key scoped to one venue cannot read, cancel, mint a token for, or confirm a reservation of another venue", async () => {
+    const other = await seedVenue(owner);
+    const scoped = await createKey(api.pool, { label: "scoped", capabilities: ["hold", "confirm", "cancel", "read"], venueIds: [seed.venue] });
+    const start = new Date(Date.UTC(2047, 0, 1, 19));
+    const made = await api.app.request(`/v1/venues/${other.venue}/holds`, jsonInit("POST", { party_size: 2, starts_at: start.toISOString(), duration_minutes: 60, assignment: { kind: "unit", id: other.units[0] } }, { ...bearer(agent.key), "idempotency-key": "other-venue" }));
+    expect(made.status).toBe(201);
+    const id = (await made.json() as { receipt: { reservation_id: string } }).receipt.reservation_id;
+    expect((await get(id, scoped)).status).toBe(404);
+    expect((await post(id, "cancel", { reason: "x" }, bearer(scoped.key))).status).toBe(404);
+    expect((await post(id, "confirm-token", {}, bearer(scoped.key))).status).toBe(404);
+    expect((await post(id, "confirm", {}, bearer(scoped.key))).status).toBe(404);
+    // nothing changed, and inside its own venue the same key reads
+    expect(await (await get(id, staff)).json()).toMatchObject({ venue_id: other.venue, status: "held", version: 1 });
+    expect((await get(await held(), scoped)).status).toBe(200);
+  });
+
   it("cancels with a reason; a second cancel and a stale version are conflicts", async () => {
     const id = await held();
     expect((await post(id, "cancel", { reason: "guest called" }, bearer(agent.key))).status).toBe(403);

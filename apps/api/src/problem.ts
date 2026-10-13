@@ -50,6 +50,7 @@ export const STATUS_BY_CODE = {
   unit_rows_immutable: { status: 500 },
   actor_required: { status: 500 },
   combo_immutable: { status: 500 },
+  venue_scope_violation: { status: 500 },
 } as const satisfies Record<DastarErrorCode, Mapping>;
 
 /**
@@ -59,6 +60,7 @@ export const STATUS_BY_CODE = {
 const DETAIL_BY_CODE: Partial<Record<DastarErrorCode, string>> = {
   hold_conflict: "the assignment is already taken for an overlapping time range",
   forbidden_write: "the operation is not permitted",
+  venue_scope_violation: "the operation reached outside its venue",
   serialization_conflict: "the operation conflicted with a concurrent one; retry",
   timeout: "the operation timed out; retry",
   pool_timeout: "the service is busy; retry",

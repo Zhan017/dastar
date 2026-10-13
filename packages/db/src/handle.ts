@@ -4,7 +4,7 @@ import { hold, type HoldInput, type HoldHooks, type HoldOutcome, type Receipt } 
 import { confirm, type ConfirmInput, type ConfirmHooks } from "./commands/confirm.js";
 import { cancel, type CancelInput, type CancelHooks } from "./commands/cancel.js";
 import { mintConfirmToken, type MintInput } from "./commands/mint-token.js";
-import { getReservation, type ReservationView } from "./commands/get.js";
+import { getReservation, findReservationVenue, type GetInput, type ReservationView } from "./commands/get.js";
 import { expireDue } from "./commands/expire.js";
 
 export type DastarOptions = {
@@ -34,7 +34,7 @@ export type DastarOptions = {
   onAcquire?: (info: AcquireInfo) => void;
 };
 
-export type DastarCommand = "hold" | "confirm" | "cancel" | "mintConfirmToken" | "getReservation" | "expireDue";
+export type DastarCommand = "hold" | "confirm" | "cancel" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "expireDue";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 export interface Dastar {
@@ -42,7 +42,10 @@ export interface Dastar {
   confirm(input: ConfirmInput, hooks?: ConfirmHooks): Promise<Receipt>;
   cancel(input: CancelInput, hooks?: CancelHooks): Promise<Receipt>;
   mintConfirmToken(input: MintInput): Promise<{ token: string; version: number }>;
-  getReservation(reservationId: string): Promise<ReservationView | null>;
+  /** A reservation of another venue reads as absent. */
+  getReservation(input: GetInput): Promise<ReservationView | null>;
+  /** The venue of a reservation, for a caller that holds only its id; null when there is none. */
+  findReservationVenue(reservationId: string): Promise<string | null>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
@@ -236,7 +239,8 @@ export function createDastar(opts: DastarOptions): Dastar {
     confirm: (input, hooks) => run("confirm", input.traceId, (c) => confirm(c, input, hooks)),
     cancel: (input, hooks) => run("cancel", input.traceId, (c) => cancel(c, input, hooks)),
     mintConfirmToken: (input) => run("mintConfirmToken", input.traceId, (c) => mintConfirmToken(c, input)),
-    getReservation: (reservationId) => run("getReservation", null, (c) => getReservation(c, reservationId)),
+    getReservation: (input) => run("getReservation", null, (c) => getReservation(c, input)),
+    findReservationVenue: (reservationId) => run("findReservationVenue", null, (c) => findReservationVenue(c, reservationId)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
     close: async () => {
       const p = cancellerPromise;

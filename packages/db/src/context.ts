@@ -13,3 +13,8 @@ export async function setContext(client: ClientBase, ctx: Context): Promise<void
 export async function setActor(client: ClientBase, actor: string): Promise<void> {
   await client.query("select set_config('dastar.actor', $1, true)", [actor]);
 }
+
+/** Transaction-local; call after BEGIN. The venue every row-level security policy compares with. */
+export async function bindVenue(client: ClientBase, venueId: string): Promise<void> {
+  await client.query("select set_config('dastar.venue_id', $1, true)", [venueId]);
+}

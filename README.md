@@ -178,9 +178,9 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
 | Retry handling | Stored hold outcomes scoped by venue, actor, and idempotency key, with a 24-hour retention policy; one retry on deadlock or serialization failure |
 | History | Trigger-written audit records, reservation versions, and transactional outbox writes |
-| Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, and restricted roles |
+| Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, restricted roles, and row-level security that confines each transaction to the venue it declares |
 | Migrations | Ordered, checksummed files with lock timeouts; concurrent index builds with validated recovery |
-| Verification | Raw-SQL attacks, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
+| Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
 | Reference API | Five v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
@@ -201,7 +201,7 @@ This is an early implementation for evaluation, not yet validated under producti
 
 Dastar models **exclusive units**: a restaurant table, a specific room, a rental item, or a vehicle. Each unit belongs to at most one occupying reservation over a given time range. A unit's capacity determines which party sizes fit; a combination reserves all of its members together.
 
-Quantity-based inventory, such as selling individual tickets from a pool of fifty seats, is outside this model. Payments, guest identity, notifications, authentication, and tenant isolation are the host application's responsibility.
+Quantity-based inventory, such as selling individual tickets from a pool of fifty seats, is outside this model. Payments, guest identity, notifications, and authentication are the host application's responsibility. The database confines each transaction to the venue it declares; which venues a caller may act for is the host's decision.
 
 ## Next
 
@@ -212,7 +212,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
 
-The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the five decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
+The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the six decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
 
 ## Explore the code
 

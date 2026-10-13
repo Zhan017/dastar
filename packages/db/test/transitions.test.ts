@@ -12,8 +12,8 @@ describe("state machine", () => {
     const c = await cloneDatabase("transitions_test");
     owner = await connect(c.owner);
     app = await connect(c.app);
-    await app.query("select set_config('dastar.actor', 'test', false), set_config('dastar.trace_id', 't', false)");
     seed = await seedVenue(owner);
+    await app.query("select set_config('dastar.actor', 'test', false), set_config('dastar.trace_id', 't', false), set_config('dastar.venue_id', $1, false)", [seed.venue]);
   });
   afterAll(async () => { await app.end(); await owner.end(); await dropDatabase("transitions_test"); });
 

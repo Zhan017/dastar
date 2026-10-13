@@ -12,8 +12,8 @@ describe("attack suite as dastar_app (boundary A)", () => {
     conn = await cloneDatabase("attack_test");
     owner = await connect(conn.owner);
     app = await connect(conn.app);
-    await app.query("select set_config('dastar.actor', 'attacker', false), set_config('dastar.trace_id', 'a', false)");
     seed = await seedVenue(owner);
+    await app.query("select set_config('dastar.actor', 'attacker', false), set_config('dastar.trace_id', 'a', false), set_config('dastar.venue_id', $1, false)", [seed.venue]);
     otherVenue = (await owner.query("insert into dastar.venue(name, timezone) values ('Other','UTC') returning id")).rows[0].id;
     otherUnit = (await owner.query("insert into dastar.unit(venue_id,label,capacity_min,capacity_max) values ($1,'O',1,4) returning id", [otherVenue])).rows[0].id;
   });

@@ -5,4 +5,4 @@ export type { Assignment, HoldInput, HoldHooks, HoldOutcome, Receipt } from "./c
 export type { ConfirmInput, ConfirmHooks } from "./commands/confirm.js";
 export type { CancelInput, CancelHooks } from "./commands/cancel.js";
 export type { MintInput } from "./commands/mint-token.js";
-export type { ReservationView } from "./commands/get.js";
+export type { GetInput, ReservationView } from "./commands/get.js";

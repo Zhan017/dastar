@@ -49,11 +49,11 @@ describe("pool-owned handle", () => {
     const out = await d.hold(input());
     expect(out.ok).toBe(true);
     const id = (out as { receipt: { reservationId: string } }).receipt.reservationId;
-    expect((await d.getReservation(id))?.status).toBe("held");
+    expect((await d.getReservation({ reservationId: id, venueId: seed.venue }))?.status).toBe("held");
     const { token } = await d.mintConfirmToken({ reservationId: id, actor: "key:H", traceId: "m", venueId: seed.venue });
     expect((await d.confirm({ reservationId: id, actor: "ignored", traceId: "c", venueId: seed.venue, confirmToken: token })).status).toBe("confirmed");
     expect((await d.cancel({ reservationId: id, actor: "key:H", traceId: "x", venueId: seed.venue, reason: "test" })).status).toBe("cancelled");
-    await expect(d.getReservation(NIL)).resolves.toBeNull();
+    await expect(d.getReservation({ reservationId: NIL, venueId: seed.venue })).resolves.toBeNull();
     expect(pool.idleCount).toBe(pool.totalCount);
     await d.close();
     await pool.end();
@@ -79,7 +79,7 @@ describe("pool-owned handle", () => {
     const p = pause();
     const pHold = d.hold(input(), { afterUnitLocks: p.hook });
     await p.reached;
-    await expect(d.getReservation(NIL)).rejects.toMatchObject({ code: "pool_timeout", retryable: true });
+    await expect(d.getReservation({ reservationId: NIL, venueId: seed.venue })).rejects.toMatchObject({ code: "pool_timeout", retryable: true });
     p.release();
     expect((await pHold).ok).toBe(true);
     await eventually(() => pool.idleCount === pool.totalCount && pool.waitingCount === 0);
@@ -211,7 +211,7 @@ describe("pool-owned handle", () => {
     expect(seen[0]).toMatchObject({ command: "hold", traceId: first.traceId, acquired: true });
     expect(seen[1]).toMatchObject({ command: "hold", traceId: second.traceId, acquired: false });
     expect(seen[1]!.waitMs).toBeGreaterThanOrEqual(190);
-    await d.getReservation(NIL);
+    await d.getReservation({ reservationId: NIL, venueId: seed.venue });
     expect(seen[2]).toMatchObject({ command: "getReservation", traceId: null, acquired: true });
     await d.close();
     await pool.end();
@@ -233,7 +233,7 @@ describe("pool-owned handle", () => {
     expect(out).toMatchObject({ ok: true, value: { ok: true } });
     await eventually(() => pool.totalCount === 0);
     const id = (out as { value: { receipt: { reservationId: string } } }).value.receipt.reservationId;
-    expect((await d.getReservation(id))?.status).toBe("held");
+    expect((await d.getReservation({ reservationId: id, venueId: seed.venue }))?.status).toBe("held");
     await d.close();
     await pool.end();
   });
@@ -281,7 +281,7 @@ describe("connection accounting when the cancel request itself stalls", () => {
     let acquisitions = 0;
     const pool = { connect: async () => handed[acquisitions++]!.client } as unknown as Pool;
     const d = createDastar({ pool, deadlineMs: 50, cancelGraceMs: 100 });
-    await expect(d.getReservation("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({ code: "timeout" });
+    await expect(d.getReservation({ reservationId: "00000000-0000-0000-0000-000000000000", venueId: "00000000-0000-0000-0000-000000000000" })).rejects.toMatchObject({ code: "timeout" });
     await eventually(() => second.releases.length === 1);
     expect(acquisitions).toBe(2);
     expect(first.releases).toHaveLength(1);
