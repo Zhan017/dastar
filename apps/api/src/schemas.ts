@@ -51,4 +51,12 @@ export const ReceiptResponseSchema = z.object({ receipt: ReceiptSchema }).openap
 export const CancelBodySchema = z.object({ reason: z.string().min(1).max(500), expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("CancelRequest");
 export const ConfirmBodySchema = z.object({ confirm_token: z.string().min(1).max(200).optional(), expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("ConfirmRequest");
 export const MintBodySchema = z.object({ expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("ConfirmTokenRequest");
+export const StatusChangeBodySchema = z.object({ expected_version: z.number().int().min(1).max(2_147_483_647).optional() }).openapi("StatusChangeRequest");
 export const MintResponseSchema = z.object({ confirm_token: z.string(), version: z.number().int() }).openapi("ConfirmTokenResponse");
+
+export const HoldListSchema = z.object({
+  holds: z.array(z.object({
+    id: z.string(), party_size: z.number().int(), during: z.string(), assignment: z.object({ kind: z.string(), id: z.string() }),
+    hold_expires_at: z.string(), version: z.number().int(), external_ref: z.string().nullable(),
+  })),
+}).openapi("HoldList");

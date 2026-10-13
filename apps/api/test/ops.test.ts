@@ -172,4 +172,17 @@ describe("operations", () => {
     await expect(runKeysCli(["--label", "bad", "--capabilities", "hold,root"], { DATABASE_URL: conn.app })).rejects.toThrow(/unknown capability/);
     await expect(runKeysCli(["--capabilities", "hold"], { DATABASE_URL: conn.app })).rejects.toThrow(/--label/);
   });
+
+  it("the key script accepts the seat capability, and the seat route admits a key made with it", async () => {
+    const created = await runKeysCli(["--label", "host", "--capabilities", "seat,read", "--venues", seed.venue], { DATABASE_URL: conn.app });
+    expect((await owner.query("select capabilities from dastar.api_key where id = $1", [created.id])).rows[0].capabilities).toEqual(["seat", "read"]);
+    const api = makeApi(conn, { appName: "api-cli-seat" });
+    // past the capability check an absent reservation is a 404; a key without seat would be a 403
+    const absent = "/v1/reservations/00000000-0000-0000-0000-000000000000";
+    expect((await api.app.request(`${absent}/seat`, jsonInit("POST", {}, bearer(created.key)))).status).toBe(404);
+    expect((await api.app.request(`${absent}/complete`, jsonInit("POST", {}, bearer(created.key)))).status).toBe(404);
+    const reader = await runKeysCli(["--label", "reader", "--capabilities", "read"], { DATABASE_URL: conn.app });
+    expect((await api.app.request(`${absent}/seat`, jsonInit("POST", {}, bearer(reader.key)))).status).toBe(403);
+    await api.close();
+  });
 });

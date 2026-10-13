@@ -112,3 +112,109 @@ describe("POST /v1/venues/{id}/holds", () => {
     }
   });
 });
+
+type Key = { id: string; key: string };
+type Placed = { id: string; hold_expires_at: string };
+type ListedHold = { id: string; party_size: number; during: string; assignment: { kind: string; id: string }; hold_expires_at: string; version: number; external_ref: string | null };
+
+describe("GET /v1/venues/{id}/holds", () => {
+  let conn: Conn; let owner: Client; let seed: Seed; let other: Seed; let api: ReturnType<typeof makeApi>;
+  let lister: Key; let rival: Key; let n = 0;
+  let a: Placed; let b: Placed; let rivals: Placed; let elsewhere: Placed;
+  const NIL = "00000000-0000-0000-0000-000000000000";
+
+  /** One hold through the API; every call gets its own day, so no overlap is in the way. */
+  async function place(key: Key, venue: Seed, over: Record<string, unknown> = {}): Promise<Placed> {
+    n += 1;
+    const start = new Date(Date.UTC(2045, 0, 1 + n, 19));
+    const body = { party_size: 2, starts_at: start.toISOString(), duration_minutes: 60, assignment: { kind: "unit", id: venue.units[0] }, ...over };
+    const r = await api.app.request(`/v1/venues/${venue.venue}/holds`, jsonInit("POST", body, { ...bearer(key.key), "idempotency-key": `list-${n}` }));
+    expect(r.status).toBe(201);
+    const out = await r.json() as { receipt: { reservation_id: string }; hold_expires_at: string };
+    return { id: out.receipt.reservation_id, hold_expires_at: out.hold_expires_at };
+  }
+  const list = (key: Key | null, venue: string) => api.app.request(`/v1/venues/${venue}/holds`, { headers: key === null ? {} : bearer(key.key) });
+  const reservation = (id: string, action: string, body: unknown, key: Key) => api.app.request(`/v1/reservations/${id}/${action}`, jsonInit("POST", body, bearer(key.key)));
+  async function listed(key: Key, venue: string): Promise<ListedHold[]> {
+    const r = await list(key, venue);
+    expect(r.status).toBe(200);
+    return (await r.json() as { holds: ListedHold[] }).holds;
+  }
+
+  beforeAll(async () => {
+    conn = await cloneDatabase("api_holds_list_test");
+    owner = await connect(conn.owner);
+    seed = await seedVenue(owner);
+    other = await seedVenue(owner);
+    await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = any($1::uuid[])", [[seed.venue, other.venue]]);
+    api = makeApi(conn);
+    lister = await createKey(api.pool, { label: "lister", capabilities: ["hold", "confirm", "cancel", "read"] });
+    rival = await createKey(api.pool, { label: "rival", capabilities: ["hold", "read"] });
+
+    // two live holds, one that is confirmed and one that is cancelled, the rival's, and one in the other venue
+    a = await place(lister, seed, { external_ref: "walk-in-1" });
+    b = await place(lister, seed, { party_size: 6, assignment: { kind: "combo", id: seed.combos[0]!.id } });
+    const confirmedHold = await place(lister, seed);
+    const cancelledHold = await place(lister, seed);
+    rivals = await place(rival, seed);
+    elsewhere = await place(lister, other);
+    expect((await reservation(confirmedHold.id, "confirm", {}, lister)).status).toBe(200);
+    expect((await reservation(cancelledHold.id, "cancel", { reason: "guest" }, lister)).status).toBe(200);
+  });
+  afterAll(async () => { await api.close(); await owner.end(); await dropDatabase("api_holds_list_test"); });
+
+  it("lists the calling key's live holds in the venue, soonest expiry first, with snake_case fields and no token", async () => {
+    const r = await list(lister, seed.venue);
+    expect(r.status).toBe(200);
+    expect(api.lines.at(-1)).toMatchObject({ method: "GET", path: `/v1/venues/${seed.venue}/holds`, status: 200, key_id: lister.id });
+    const text = await r.text();
+    expect(text).not.toContain("token");
+    const out = JSON.parse(text) as { holds: ListedHold[] };
+    // not the confirmed hold, the cancelled one, the rival's, or the other venue's
+    expect(out.holds.map((h) => h.id)).toEqual([a.id, b.id]);
+    expect(out.holds[0]).toEqual({
+      id: a.id, party_size: 2, during: expect.any(String), assignment: { kind: "unit", id: seed.units[0] },
+      hold_expires_at: a.hold_expires_at, version: 1, external_ref: "walk-in-1",
+    });
+    expect(out.holds[1]).toEqual({
+      id: b.id, party_size: 6, during: expect.any(String), assignment: { kind: "combo", id: seed.combos[0]!.id },
+      hold_expires_at: b.hold_expires_at, version: 1, external_ref: null,
+    });
+  });
+
+  it("another key lists its own holds only, and the other venue lists only its own", async () => {
+    expect((await listed(rival, seed.venue)).map((h) => h.id)).toEqual([rivals.id]);
+    expect((await listed(lister, other.venue)).map((h) => h.id)).toEqual([elsewhere.id]);
+    expect(await listed(rival, other.venue)).toEqual([]);
+  });
+
+  it("403 without the read capability, 401 without a key, 400 for a malformed venue id", async () => {
+    const writer = await createKey(api.pool, { label: "writer", capabilities: ["hold"] });
+    expect((await list(writer, seed.venue)).status).toBe(403);
+    expect((await list(null, seed.venue)).status).toBe(401);
+    expect((await list(lister, "not-a-uuid")).status).toBe(400);
+  });
+
+  it("404 for a venue outside the key's venues, and an empty list for a venue that does not exist", async () => {
+    const away = await createKey(api.pool, { label: "away", capabilities: ["read"], venueIds: ["01a0b07c-189a-70cb-a39e-1f679b38fe4d"] });
+    const hidden = await list(away, seed.venue);
+    expect(hidden.status).toBe(404);
+    expect(await hidden.json()).toMatchObject({ code: "not_found" });
+
+    const scoped = await createKey(api.pool, { label: "scoped lister", capabilities: ["hold", "read"], venueIds: [seed.venue] });
+    const mine = await place(scoped, seed);
+    expect((await listed(scoped, seed.venue)).map((h) => h.id)).toEqual([mine.id]);
+    expect((await list(scoped, other.venue)).status).toBe(404);
+
+    const unknown = await list(lister, NIL);
+    expect(unknown.status).toBe(200);
+    expect(await unknown.json()).toEqual({ holds: [] });
+  });
+
+  it("a hold is listed once it is made and leaves the list when it is cancelled", async () => {
+    const mine = await place(lister, seed);
+    expect((await listed(lister, seed.venue)).map((h) => h.id)).toEqual([a.id, b.id, mine.id]);
+    expect((await reservation(mine.id, "cancel", { reason: "guest" }, lister)).status).toBe(200);
+    expect((await listed(lister, seed.venue)).map((h) => h.id)).toEqual([a.id, b.id]);
+  });
+});

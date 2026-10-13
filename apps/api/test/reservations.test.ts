@@ -10,7 +10,7 @@ type Key = { id: string; key: string };
 
 describe("reservation routes", () => {
   let conn: Conn; let owner: Client; let seed: Seed; let api: ReturnType<typeof makeApi>;
-  let staff: Key; let agent: Key; let elsewhere: Key; let holder: Key; let n = 0;
+  let staff: Key; let agent: Key; let elsewhere: Key; let holder: Key; let host: Key; let elsewhereHost: Key; let n = 0;
 
   beforeAll(async () => {
     conn = await cloneDatabase("api_reservations_test");
@@ -22,6 +22,8 @@ describe("reservation routes", () => {
     agent = await createKey(api.pool, { label: "agent", capabilities: ["hold", "read"] });
     holder = await createKey(api.pool, { label: "holder", capabilities: ["hold"] });
     elsewhere = await createKey(api.pool, { label: "elsewhere", capabilities: ["hold", "confirm", "cancel", "read"], venueIds: ["01a0b07c-189a-70cb-a39e-1f679b38fe4d"] });
+    host = await createKey(api.pool, { label: "host", capabilities: ["seat", "read"] });
+    elsewhereHost = await createKey(api.pool, { label: "elsewhere host", capabilities: ["seat", "read"], venueIds: ["01a0b07c-189a-70cb-a39e-1f679b38fe4d"] });
   });
   afterAll(async () => { await api.close(); await owner.end(); await dropDatabase("api_reservations_test"); });
 
@@ -34,6 +36,12 @@ describe("reservation routes", () => {
   }
   const get = (id: string, key: Key) => api.app.request(`/v1/reservations/${id}`, { headers: bearer(key.key) });
   const post = (id: string, action: string, body: unknown, headers: Record<string, string>) => api.app.request(`/v1/reservations/${id}/${action}`, jsonInit("POST", body, headers));
+  /** A held reservation that `staff` has confirmed: version 2. */
+  async function confirmed(): Promise<string> {
+    const id = await held();
+    expect((await post(id, "confirm", {}, bearer(staff.key))).status).toBe(200);
+    return id;
+  }
 
   it("reads a reservation with effective status and history; hides it outside the key's venues", async () => {
     const id = await held();
@@ -155,5 +163,109 @@ describe("reservation routes", () => {
     expect(dead.status).toBe(403);
     expect(await dead.json()).toMatchObject({ code: "forbidden", detail: "confirm token does not match" });
     expect((await post(id2, "confirm", { confirm_token: "guess" }, {})).status).toBe(403);
+  });
+
+  it("seats a confirmed reservation and completes it with a key that holds seat; each receipt carries the status and version", async () => {
+    const id = await confirmed();
+    const seated = await post(id, "seat", {}, { ...bearer(host.key), "x-trace-id": "trace-seat" });
+    expect(seated.status).toBe(200);
+    expect(await seated.json()).toMatchObject({ receipt: { reservation_id: id, status: "seated", version: 3, trace_id: "trace-seat" } });
+    expect(await (await get(id, host)).json()).toMatchObject({ status: "seated", stored_status: "seated", version: 3 });
+    const done = await post(id, "complete", { expected_version: 3 }, bearer(host.key));
+    expect(done.status).toBe(200);
+    expect(await done.json()).toMatchObject({ receipt: { reservation_id: id, status: "completed", version: 4 } });
+    const view = await (await get(id, host)).json() as { status: string; history: { action: string; actor: string }[] };
+    expect(view.status).toBe("completed");
+    expect(view.history.map((h) => h.action)).toEqual(["insert", "update:held>confirmed", "update:confirmed>seated", "update:seated>completed"]);
+    expect(view.history.at(-1)!.actor).toBe(`key:${host.id}`);
+  });
+
+  it("a key without seat gets 403 on both routes and no key gets 401; seat implies neither confirm nor cancel", async () => {
+    const id = await confirmed();
+    const refused = await post(id, "seat", {}, bearer(staff.key));
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ code: "forbidden", detail: "the key lacks the seat capability" });
+    expect((await post(id, "complete", {}, bearer(staff.key))).status).toBe(403);
+    expect((await post(id, "seat", {}, {})).status).toBe(401);
+    expect((await post(id, "complete", {}, {})).status).toBe(401);
+    expect((await post(id, "confirm", {}, bearer(host.key))).status).toBe(403);
+    expect((await post(id, "cancel", { reason: "x" }, bearer(host.key))).status).toBe(403);
+    expect(await (await get(id, staff)).json()).toMatchObject({ status: "confirmed", version: 2 });
+  });
+
+  it("a key scoped to another venue gets 404 on seat and complete, so does an absent id, and nothing changes", async () => {
+    const id = await confirmed();
+    expect((await post(id, "seat", {}, bearer(elsewhereHost.key))).status).toBe(404);
+    expect((await post(id, "complete", {}, bearer(elsewhereHost.key))).status).toBe(404);
+    expect((await post(NIL, "seat", {}, bearer(host.key))).status).toBe(404);
+    expect((await post(NIL, "complete", {}, bearer(host.key))).status).toBe(404);
+    expect(await (await get(id, staff)).json()).toMatchObject({ status: "confirmed", version: 2 });
+
+    // a reservation of another venue, against a key whose venues are this one
+    const other = await seedVenue(owner);
+    const scoped = await createKey(api.pool, { label: "scoped host", capabilities: ["seat", "read"], venueIds: [seed.venue] });
+    const made = await api.app.request(`/v1/venues/${other.venue}/holds`, jsonInit("POST", { party_size: 2, starts_at: new Date(Date.UTC(2047, 1, 1, 19)).toISOString(), duration_minutes: 60, assignment: { kind: "unit", id: other.units[0] } }, { ...bearer(agent.key), "idempotency-key": "seat-other-venue" }));
+    expect(made.status).toBe(201);
+    const otherId = (await made.json() as { receipt: { reservation_id: string } }).receipt.reservation_id;
+    expect((await post(otherId, "confirm", {}, bearer(staff.key))).status).toBe(200);
+    expect((await post(otherId, "seat", {}, bearer(scoped.key))).status).toBe(404);
+    expect((await post(otherId, "complete", {}, bearer(scoped.key))).status).toBe(404);
+    expect(await (await get(otherId, staff)).json()).toMatchObject({ venue_id: other.venue, status: "confirmed", version: 2 });
+    expect((await post(otherId, "seat", {}, bearer(host.key))).status).toBe(200);
+  });
+
+  it("expected_version: a mismatch is a 409 version_conflict, a value out of range or a missing body is a 400, and the matching version succeeds", async () => {
+    const id = await confirmed();
+    const stale = await post(id, "seat", { expected_version: 1 }, bearer(host.key));
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: "version_conflict" });
+    for (const bad of [3_000_000_000, 0, 1.5]) expect((await post(id, "seat", { expected_version: bad }, bearer(host.key))).status).toBe(400);
+    const noBody = await api.app.request(`/v1/reservations/${id}/seat`, { method: "POST", headers: { ...bearer(host.key), "content-type": "application/json" } });
+    expect(noBody.status).toBe(400);
+    expect(await noBody.json()).toMatchObject({ code: "validation" });
+    expect(await (await get(id, staff)).json()).toMatchObject({ status: "confirmed", version: 2 });
+
+    expect((await post(id, "seat", { expected_version: 2 }, bearer(host.key))).status).toBe(200);
+    const staleComplete = await post(id, "complete", { expected_version: 2 }, bearer(host.key));
+    expect(staleComplete.status).toBe(409);
+    expect(await staleComplete.json()).toMatchObject({ code: "version_conflict" });
+    const done = await post(id, "complete", { expected_version: 3 }, bearer(host.key));
+    expect(done.status).toBe(200);
+    expect(await done.json()).toMatchObject({ receipt: { status: "completed", version: 4 } });
+  });
+
+  it("seating a held reservation is a 409 invalid_transition, as is completing a confirmed one, seating twice, and completing twice", async () => {
+    const id = await held();
+    const early = await post(id, "seat", {}, bearer(host.key));
+    expect(early.status).toBe(409);
+    expect(early.headers.get("content-type")).toBe("application/problem+json");
+    expect(await early.json()).toMatchObject({ code: "invalid_transition", status: 409, detail: "cannot seat a held reservation" });
+
+    expect((await post(id, "confirm", {}, bearer(staff.key))).status).toBe(200);
+    const skipped = await post(id, "complete", {}, bearer(host.key));
+    expect(skipped.status).toBe(409);
+    expect(await skipped.json()).toMatchObject({ code: "invalid_transition", detail: "cannot complete a confirmed reservation" });
+
+    expect((await post(id, "seat", {}, bearer(host.key))).status).toBe(200);
+    const twice = await post(id, "seat", {}, bearer(host.key));
+    expect(twice.status).toBe(409);
+    expect(await twice.json()).toMatchObject({ code: "invalid_transition", detail: "cannot seat a seated reservation" });
+
+    expect((await post(id, "complete", {}, bearer(host.key))).status).toBe(200);
+    const again = await post(id, "complete", {}, bearer(host.key));
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ code: "invalid_transition", detail: "cannot complete a completed reservation" });
+    expect(await (await get(id, staff)).json()).toMatchObject({ status: "completed", version: 4 });
+  });
+
+  it("a seated reservation can still be cancelled, and a cancelled one cannot be completed", async () => {
+    const id = await confirmed();
+    expect((await post(id, "seat", {}, bearer(host.key))).status).toBe(200);
+    const cancelled = await post(id, "cancel", { reason: "guest left" }, bearer(staff.key));
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({ receipt: { reservation_id: id, status: "cancelled", version: 4 } });
+    const late = await post(id, "complete", {}, bearer(host.key));
+    expect(late.status).toBe(409);
+    expect(await late.json()).toMatchObject({ code: "invalid_transition", detail: "cannot complete a cancelled reservation" });
   });
 });

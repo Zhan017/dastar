@@ -70,7 +70,7 @@ pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --
 
 ## Run the reference API
 
-A small HTTP server over the same engine: five routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
+A small HTTP server over the same engine: eight routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
 
 ```bash
 pnpm seed:demo --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
@@ -174,7 +174,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 |---|---|
 | Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, and the workload bounds, each checked against the schema by the engine's tests |
 | Inventory | Venues, units with capacity ranges, and fixed unit combinations |
-| Reservations | Hold, confirm, cancel, batch expiry, token minting, and reads, behind one pool-owned API |
+| Reservations | Hold, confirm, seat, complete, cancel, batch expiry, token minting, reads, and a listing of an actor's live holds, behind one pool-owned API |
 | Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
 | Retry handling | Stored hold outcomes scoped by venue, actor, and idempotency key, with a 24-hour retention policy; one retry on deadlock or serialization failure |
 | History | Trigger-written audit records, reservation versions, and transactional outbox writes |
@@ -183,7 +183,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
-| Reference API | Five v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
+| Reference API | Eight v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and the retention job are still planned.
 

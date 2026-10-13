@@ -6,7 +6,7 @@ import { readLimits, withClient } from "../db.js";
 import { ApiProblem } from "../problem.js";
 import {
   CancelBodySchema, ConfirmBodySchema, IdParam, MintBodySchema, MintResponseSchema,
-  ReceiptResponseSchema, ReservationSchema, problemResponses, toReceipt,
+  ReceiptResponseSchema, ReservationSchema, StatusChangeBodySchema, problemResponses, toReceipt,
 } from "../schemas.js";
 
 const TOKEN_REFUSED = "confirm token does not match";
@@ -51,6 +51,42 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const venueId = await venueInScope(key, id);
     const receipt = await deps.dastar.cancel({
       reservationId: id, actor: `key:${key.id}`, traceId: c.get("traceId"), venueId, reason: body.reason,
+      ...(body.expected_version !== undefined ? { expectedVersion: body.expected_version } : {}),
+    });
+    return c.json({ receipt: toReceipt(receipt) }, 200);
+  });
+
+  const seat = createRoute({
+    method: "post", path: "/v1/reservations/{id}/seat", summary: "Seat a confirmed reservation.",
+    security: [{ Bearer: [] }], middleware: [requireCapability(deps, "seat")] as const,
+    request: { params: IdParam, body: { required: true, content: json(StatusChangeBodySchema) } },
+    responses: { 200: { description: "Seated", content: json(ReceiptResponseSchema) }, ...problemResponses },
+  });
+  app.openapi(seat, async (c) => {
+    const key = requireKey(c);
+    const id = c.req.valid("param").id.toLowerCase();
+    const body = c.req.valid("json");
+    const venueId = await venueInScope(key, id);
+    const receipt = await deps.dastar.seat({
+      reservationId: id, actor: `key:${key.id}`, traceId: c.get("traceId"), venueId,
+      ...(body.expected_version !== undefined ? { expectedVersion: body.expected_version } : {}),
+    });
+    return c.json({ receipt: toReceipt(receipt) }, 200);
+  });
+
+  const complete = createRoute({
+    method: "post", path: "/v1/reservations/{id}/complete", summary: "Complete a seated reservation.",
+    security: [{ Bearer: [] }], middleware: [requireCapability(deps, "seat")] as const,
+    request: { params: IdParam, body: { required: true, content: json(StatusChangeBodySchema) } },
+    responses: { 200: { description: "Completed", content: json(ReceiptResponseSchema) }, ...problemResponses },
+  });
+  app.openapi(complete, async (c) => {
+    const key = requireKey(c);
+    const id = c.req.valid("param").id.toLowerCase();
+    const body = c.req.valid("json");
+    const venueId = await venueInScope(key, id);
+    const receipt = await deps.dastar.complete({
+      reservationId: id, actor: `key:${key.id}`, traceId: c.get("traceId"), venueId,
       ...(body.expected_version !== undefined ? { expectedVersion: body.expected_version } : {}),
     });
     return c.json({ receipt: toReceipt(receipt) }, 200);

@@ -2,6 +2,7 @@ import type { ClientBase } from "pg";
 import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
 import { enqueue, reservationPayload } from "../outbox.js";
+import { withArticle } from "../status-text.js";
 import type { Receipt } from "./hold.js";
 
 export type CancelInput = { reservationId: string; actor: string; traceId: string; venueId: string; reason: string; expectedVersion?: number };
@@ -15,7 +16,7 @@ export async function cancel(client: ClientBase, input: CancelInput, hooks: Canc
     if (locked.rowCount === 0) throw new DastarError("not_found", "reservation not found");
     await hooks.afterLock?.();
     if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
-    if (!["held", "confirmed", "seated"].includes(locked.rows[0].status)) throw new DastarError("invalid_transition", `cannot cancel a ${locked.rows[0].status} reservation`);
+    if (!["held", "confirmed", "seated"].includes(locked.rows[0].status)) throw new DastarError("invalid_transition", `cannot cancel ${withArticle(locked.rows[0].status)} reservation`);
     const upd = await client.query(
       `update dastar.reservation set status = 'cancelled', cancel_reason = $3
         where id = $1 and ($2::int is null or version = $2)
