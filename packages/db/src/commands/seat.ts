@@ -5,6 +5,7 @@ import { enqueue, reservationPayload } from "../outbox.js";
 import type { Receipt } from "./hold.js";
 
 export type StatusInput = { reservationId: string; actor: string; traceId: string; venueId: string; expectedVersion?: number };
+export type StatusHooks = { afterLock?: () => Promise<void> };
 
 const VERB = { seated: "seat", completed: "complete" } as const;
 const article = (word: string): string => (/^[aeiou]/.test(word) ? "an" : "a");
@@ -20,12 +21,14 @@ async function advance(
   from: "confirmed" | "seated",
   to: "seated" | "completed",
   topic: "reservation.seated" | "reservation.completed",
+  hooks: StatusHooks,
 ): Promise<Receipt> {
   await client.query("begin");
   try {
     await setContext(client, { actor: input.actor, traceId: input.traceId, venueId: input.venueId });
     const locked = await client.query("select id, status, version from dastar.reservation where id = $1 and venue_id = $2 for update", [input.reservationId, input.venueId]);
     if (locked.rowCount === 0) throw new DastarError("not_found", "reservation not found");
+    await hooks.afterLock?.();
     if (input.expectedVersion !== undefined && locked.rows[0].version !== input.expectedVersion) throw new DastarError("version_conflict", "expected_version does not match");
     if (locked.rows[0].status !== from) throw new DastarError("invalid_transition", `cannot ${VERB[to]} ${article(locked.rows[0].status)} ${locked.rows[0].status} reservation`);
     const upd = await client.query(
@@ -47,7 +50,7 @@ async function advance(
 }
 
 /** confirmed to seated. */
-export const seat = (client: ClientBase, input: StatusInput): Promise<Receipt> => advance(client, input, "confirmed", "seated", "reservation.seated");
+export const seat = (client: ClientBase, input: StatusInput, hooks: StatusHooks = {}): Promise<Receipt> => advance(client, input, "confirmed", "seated", "reservation.seated", hooks);
 
 /** seated to completed. */
-export const complete = (client: ClientBase, input: StatusInput): Promise<Receipt> => advance(client, input, "seated", "completed", "reservation.completed");
+export const complete = (client: ClientBase, input: StatusInput, hooks: StatusHooks = {}): Promise<Receipt> => advance(client, input, "seated", "completed", "reservation.completed", hooks);

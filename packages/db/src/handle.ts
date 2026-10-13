@@ -3,7 +3,7 @@ import { DastarError, asDastarError } from "./errors.js";
 import { hold, type HoldInput, type HoldHooks, type HoldOutcome, type Receipt } from "./commands/hold.js";
 import { confirm, type ConfirmInput, type ConfirmHooks } from "./commands/confirm.js";
 import { cancel, type CancelInput, type CancelHooks } from "./commands/cancel.js";
-import { seat, complete, type StatusInput } from "./commands/seat.js";
+import { seat, complete, type StatusInput, type StatusHooks } from "./commands/seat.js";
 import { mintConfirmToken, type MintInput } from "./commands/mint-token.js";
 import { getReservation, findReservationVenue, type GetInput, type ReservationView } from "./commands/get.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
@@ -44,9 +44,9 @@ export interface Dastar {
   confirm(input: ConfirmInput, hooks?: ConfirmHooks): Promise<Receipt>;
   cancel(input: CancelInput, hooks?: CancelHooks): Promise<Receipt>;
   /** confirmed to seated. */
-  seat(input: StatusInput): Promise<Receipt>;
+  seat(input: StatusInput, hooks?: StatusHooks): Promise<Receipt>;
   /** seated to completed. */
-  complete(input: StatusInput): Promise<Receipt>;
+  complete(input: StatusInput, hooks?: StatusHooks): Promise<Receipt>;
   mintConfirmToken(input: MintInput): Promise<{ token: string; version: number }>;
   /** A reservation of another venue reads as absent. */
   getReservation(input: GetInput): Promise<ReservationView | null>;
@@ -246,8 +246,8 @@ export function createDastar(opts: DastarOptions): Dastar {
     hold: (input, hooks) => run("hold", input.traceId, (c) => hold(c, input, hooks)),
     confirm: (input, hooks) => run("confirm", input.traceId, (c) => confirm(c, input, hooks)),
     cancel: (input, hooks) => run("cancel", input.traceId, (c) => cancel(c, input, hooks)),
-    seat: (input) => run("seat", input.traceId, (c) => seat(c, input)),
-    complete: (input) => run("complete", input.traceId, (c) => complete(c, input)),
+    seat: (input, hooks) => run("seat", input.traceId, (c) => seat(c, input, hooks)),
+    complete: (input, hooks) => run("complete", input.traceId, (c) => complete(c, input, hooks)),
     mintConfirmToken: (input) => run("mintConfirmToken", input.traceId, (c) => mintConfirmToken(c, input)),
     getReservation: (input) => run("getReservation", null, (c) => getReservation(c, input)),
     findReservationVenue: (reservationId) => run("findReservationVenue", null, (c) => findReservationVenue(c, reservationId)),
