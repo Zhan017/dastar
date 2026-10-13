@@ -500,7 +500,7 @@ Defined once as data in core, hand-written into the SQL trigger, with an exhaust
 | seated | completed | complete | none | key with `seat` |
 | seated | cancelled | cancel | reason required | key with `cancel` |
 
-Terminal: completed, cancelled, expired. `version` increments on every transition. Two racing confirms: the loser gets `version_conflict` if it supplied `expected_version`, otherwise `invalid_transition`. That second outcome is the command layer's: after taking the row lock and checking any supplied version, confirm requires stored status `held` and cancel requires `held`, `confirmed`, or `seated`, and raises `invalid_transition` otherwise. At the database boundary a same-status write is a metadata update, which is not a transition and cannot violate an invariant, so the trigger does not and cannot reject it; the row trigger cannot see a statement's SET list.
+Terminal: completed, cancelled, expired. `version` increments on every transition. Two racing confirms: the loser gets `version_conflict` if it supplied `expected_version`, otherwise `invalid_transition`. That second outcome is the command layer's: after taking the row lock and checking any supplied version, confirm requires stored status `held`, cancel requires `held`, `confirmed`, or `seated`, seat requires `confirmed`, and complete requires `seated`; each raises `invalid_transition` otherwise. At the database boundary a same-status write is a metadata update, which is not a transition and cannot violate an invariant, so the trigger does not and cannot reject it; the row trigger cannot see a statement's SET list.
 
 Two words used throughout, each tied to one kind of status. A reservation occupies its units when its stored status is not cancelled or expired; its unit rows are active, completed reservations keep occupying their past range as history, and an expired-but-unswept hold still occupies until the sweeper or a hold's overlap pass moves its stored status. A reservation is live when its effective status (D43) is held, confirmed, or seated; only live reservations are subject to capacity and blackout checks and to the force option in admin edits. Occupancy is a fact about rows; liveness is a fact about time.
 
@@ -568,7 +568,7 @@ HTTP mapping: hold_conflict, hold_expired, invalid_transition, version_conflict,
 
 ### 10.3 Cancel, seat, complete
 
-Same shape as confirm with the transition trigger as the judge. Cancel sets `cancel_reason`. The sync trigger deactivates unit rows on cancel.
+Each locks its own reservation row, checks any supplied version and then the stored status in the command layer, and updates; the transition trigger backs the state table, and a same-status write would pass it as a metadata update, so the row lock and the command's status check are what keep a second seat or complete from repeating a transition. None takes unit locks: the fit check skips these updates. Cancel sets `cancel_reason`. The sync trigger deactivates unit rows on cancel.
 
 ### 10.4 Expiry
 
