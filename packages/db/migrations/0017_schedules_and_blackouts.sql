@@ -30,7 +30,7 @@ create table dastar.schedule (
   )
 );
 
--- A closure: a bounded, non-empty range during which the venue takes no reservation. The range is fixed once written;
+-- A closure: a bounded, non-empty, half-open range (as reservations use) during which the venue takes no reservation. The range is fixed once written;
 -- to change it, deactivate the blackout and create another.
 create table dastar.blackout (
   id uuid not null default uuidv7(),
@@ -41,7 +41,9 @@ create table dastar.blackout (
   created_at timestamptz not null default now(),
   primary key (id),
   unique (venue_id, id),
-  constraint blackout_during_bounded check (not isempty(during) and not lower_inf(during) and not upper_inf(during))
+  constraint blackout_during_bounded check (
+    not isempty(during) and lower_inc(during) and not upper_inc(during) and not lower_inf(during) and not upper_inf(during)
+  )
 );
 create index blackout_venue_during on dastar.blackout using gist (venue_id, during) where (active);
 

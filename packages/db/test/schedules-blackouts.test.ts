@@ -165,7 +165,7 @@ describe("schedules and blackouts", () => {
         expect(row).toEqual({ active: true, reason: "x" });
       });
 
-      it(`${who} is refused an empty, unbounded, or too-long-reasoned blackout with a check violation (23514)`, async () => {
+      it(`${who} is refused an empty, unbounded, not half-open, or too-long-reasoned blackout with a check violation (23514)`, async () => {
         const client = clientOf();
         const refused = (during: string, reason = "closed") => expect(insertBlackout(client, A.venue, during, reason), `${during} / ${reason.length} chars`).rejects.toMatchObject({ code: "23514" });
         await refused("empty");
@@ -174,6 +174,10 @@ describe("schedules and blackouts", () => {
         await refused(`[${DAY(5)},)`);
         await refused(`(,${DAY(5)})`);
         await refused("(,)");
+        // half-open as reservations are, so a boundary means the same thing in both tables
+        await refused(`(${DAY(5)},${DAY(6)})`);
+        await refused(`[${DAY(5)},${DAY(6)}]`);
+        await refused(`(${DAY(5)},${DAY(6)}]`);
         await refused(range(5, 6), "");
         await refused(range(5, 6), "r".repeat(501));
       });
