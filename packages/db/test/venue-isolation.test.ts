@@ -30,8 +30,19 @@ describe("venue isolation", () => {
     return out.receipt.reservationId;
   }
 
-  /** Two single-unit holds, one combo hold (two unit rows), and one hold that was cancelled (an inactive unit row). */
+  /**
+   * One schedule and one blackout, written by the owner; the blackout lies in 2090, far from every hold below.
+   * Two single-unit holds, one combo hold (two unit rows), and one hold that was cancelled (an inactive unit row).
+   */
   async function populate(seed: Seed): Promise<{ live: string[]; cancelled: string }> {
+    await owner.query(
+      "insert into dastar.schedule(venue_id, day_of_week, opens, closes, duration_by_size, gap_minutes) values ($1, 5, '17:00', '23:00', '{\"2\":90,\"4\":120}', 15)",
+      [seed.venue],
+    );
+    await owner.query(
+      "insert into dastar.blackout(venue_id, during, reason) values ($1, '[2090-12-24T00:00:00Z,2090-12-27T00:00:00Z)', 'holiday')",
+      [seed.venue],
+    );
     const live = [
       await place(seed),
       await place(seed, { assignment: { kind: "unit", id: seed.units[1]! } }),
@@ -100,6 +111,8 @@ describe("venue isolation", () => {
     { table: "idempotency", column: "venue_id", key: "venue_id::text || '/' || actor || '/' || key" },
     { table: "audit_log", column: "venue_id", key: "id::text" },
     { table: "outbox", column: "venue_id", key: "id::text" },
+    { table: "schedule", column: "venue_id", key: "id::text" },
+    { table: "blackout", column: "venue_id", key: "id::text" },
   ] as const;
   type Scoped = (typeof SCOPED)[number];
 
@@ -222,7 +235,7 @@ describe("venue isolation", () => {
 
     // the helper functions that defaults, checks, and statements call, by name since 0005
     const HELPERS = [
-      "dastar.dastar_now()", "dastar.unit_lock_key(uuid)",
+      "dastar.dastar_now()", "dastar.unit_lock_key(uuid)", "dastar.venue_lock_key(uuid)",
       "dastar.effective_status(dastar.reservation_status, timestamptz)", "dastar.require_actor()",
     ];
     for (const fn of HELPERS) {
@@ -282,6 +295,21 @@ describe("venue isolation", () => {
       return [own.rowCount, foreign.rowCount];
     });
     expect(changed).toEqual([1, 0]);
+  });
+
+  it("bound to A, a schedule or a blackout written for B is refused by row-level security (42501), and one for A is accepted", async () => {
+    const writes = (venueId: string) => [
+      () => app.query("insert into dastar.schedule(venue_id, day_of_week, opens, closes, duration_by_size) values ($1, 2, '12:00', '15:00', '{\"2\":60}')", [venueId]),
+      () => app.query("insert into dastar.blackout(venue_id, during, reason) values ($1, $2::tstzrange, 'closed')", [venueId, "[2091-05-01T00:00:00Z,2091-05-02T00:00:00Z)"]),
+    ];
+    for (const write of writes(B.venue)) {
+      const refused = await bound(app, A.venue, () => write().then(() => null, (e: unknown) => e));
+      expect(refused).toMatchObject({ code: "42501" });
+      expect(mapPgError(refused)).toMatchObject({ code: "venue_scope_violation", retryable: false, sqlstate: "42501" });
+    }
+    for (const write of writes(A.venue)) {
+      expect((await bound(app, A.venue, () => write())).rowCount).toBe(1);
+    }
   });
 
   it("unbound, on a fresh connection and after a bind ended, every scoped table reads nothing and an insert is refused", async () => {

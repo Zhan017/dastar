@@ -71,4 +71,14 @@ describe("workload bounds", () => {
     expect(await booking(BOUNDS.durationMinutes.min - 1)).toBe("duration_out_of_range");
     expect(await booking(BOUNDS.durationMinutes.max + 1)).toBe("duration_out_of_range");
   });
+
+  it("a schedule's durations", async () => {
+    const schedule = (minutes: number) => refusedBy(
+      "insert into dastar.schedule(venue_id, day_of_week, opens, closes, duration_by_size) values ($1, 1, '10:00', '22:00', $2::jsonb)",
+      [venue, JSON.stringify({ "4": minutes })]);
+    expect(await schedule(BOUNDS.durationMinutes.min)).toBeNull();
+    expect(await schedule(BOUNDS.durationMinutes.max)).toBeNull();
+    expect(await schedule(BOUNDS.durationMinutes.min - 1)).toBe("duration_by_size_shape");
+    expect(await schedule(BOUNDS.durationMinutes.max + 1)).toBe("duration_by_size_shape");
+  });
 });
