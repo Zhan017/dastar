@@ -16,12 +16,13 @@ What the database enforces, how, and which test would show it broken. Guarantees
 | 8 | A unit row is active exactly while its reservation occupies the unit; completed rows stay active as history | Definer-rights sync trigger is the only writer of `active`; no UPDATE or DELETE for the application role | `unit_rows_immutable` (DA006), 42501 | `attack.test.ts`, `lifecycle.test.ts` |
 | 9 | A reservation's unit rows are exactly its assignment's members and never change | Deferred membership trigger at commit, composite foreign keys, combo immutability | `assignment_mismatch` (DA010), `combo_immutable` (DA011) | `guards.test.ts`, `attack.test.ts`, `venue-isolation.test.ts` |
 | 10 | A transaction bound to one venue reads and writes only that venue's rows, and a transaction bound to none reads and writes nothing, apart from the two owner-run lookups of a reservation's venue | Row-level security on every venue-scoped table for the application role, keyed on the transaction-local `dastar.venue_id` | A write is refused, usually as `venue_scope_violation` (42501); a read or update sees no rows | `venue-isolation.test.ts` |
+| 11 | A live reservation never overlaps an active blackout of its venue | Owner-run guards under a venue-level advisory lock: a reservation insert takes it shared and is refused inside an active blackout; a blackout write takes it exclusively and is refused while a live reservation's active unit row overlaps it | `blackout` (DA009) on a hold, stored as its outcome; `blackout_conflict` (DA014) on a blackout write | `schedules-blackouts.test.ts` |
 
 Supporting guards: `actor_required` (DA007), `range_mismatch` (DA008), `token_requires_held` (DA013), `forbidden_write` (42501).
 
 ## Venue isolation
 
-Invariant 10 sits behind boundary B ([SECURITY.md](SECURITY.md)): the caller declares the venue, and the database confines the transaction to it without being able to tell a true declaration from a false one. Invariants 1, 2, 4, 5, 7, 8, and 9 sit behind boundary A and do not depend on that declaration. The triggers that read other rows to enforce them (the fit check, the capacity guard, the unit-row insert guard, and the membership check) run with the owner's rights, so row-level security, which follows a setting the caller controls, never changes what they see; `venue-isolation.test.ts` clears the setting before commit and still gets `assignment_mismatch`. The hold's overlap query reads `dastar.occupancy`, an owner view with the policies' own filter, because row-level security would otherwise keep the range index out of the plan; the same test pins the index condition.
+Invariant 10 sits behind boundary B ([SECURITY.md](SECURITY.md)): the caller declares the venue, and the database confines the transaction to it without being able to tell a true declaration from a false one. Invariants 1, 2, 4, 5, 7, 8, 9, and 11 sit behind boundary A and do not depend on that declaration. The triggers that read other rows to enforce them (the fit check, the capacity guard, the unit-row insert guard, the membership check, and the two blackout guards) run with the owner's rights, so row-level security, which follows a setting the caller controls, never changes what they see; `venue-isolation.test.ts` clears the setting before commit and still gets `assignment_mismatch`. The hold's overlap query reads `dastar.occupancy`, an owner view with the policies' own filter, because row-level security would otherwise keep the range index out of the plan; the same test pins the index condition.
 
 ## Effective status
 
@@ -35,13 +36,14 @@ Postgres evaluates `now()` at transaction start. A confirmation that begins befo
 
 | Writer | Locks, in order |
 |---|---|
-| hold | unit advisory locks (sorted) → overlapping reservation rows (`order by id for update`) → own inserts |
+| hold | venue advisory lock (shared) → unit advisory locks (sorted) → overlapping reservation rows (`order by id for update`) → own inserts |
 | confirm | unit advisory locks (sorted) → own reservation row |
 | capacity edit | the unit row itself (held by the UPDATE) → unit advisory lock → reads of reservations, no reservation row locks |
 | cancel, seat, complete, token mint | own reservation row only |
 | batch expiry | reservation rows in batch, `skip locked`, no unit locks |
+| blackout write | venue advisory lock (exclusive) → reads of unit rows and reservations, no row locks |
 
-Every command acquires resources in this order and never returns to an earlier stage, which is why the reference paths are designed not to deadlock. This is a hypothesis with named tests (`interleavings.test.ts`, `capacity-expiry.test.ts`), not a proof; a mixed-load run is not yet part of the suite. Deadlock and serialization errors stay mapped to `serialization_conflict`, and the hold command retries once (`hold-retry.test.ts`). The assignment columns are immutable for the application role, which is what lets confirm look up the units to lock before it locks the row.
+Every command acquires resources in this order and never returns to an earlier stage, which is why the reference paths are designed not to deadlock. This is a hypothesis with named tests (`interleavings.test.ts`, `capacity-expiry.test.ts`, and for the venue lock `schedules-blackouts.test.ts`), not a proof; a mixed-load run is not yet part of the suite. Deadlock and serialization errors stay mapped to `serialization_conflict`, and the hold command retries once (`hold-retry.test.ts`). The assignment columns are immutable for the application role, which is what lets confirm look up the units to lock before it locks the row.
 
 ## Guarantees and hypotheses
 
