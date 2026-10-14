@@ -9,7 +9,7 @@ The exclusion constraint (ADR 1) makes a double booking impossible, but it does 
 ## Decision
 
 - **One outer transaction per hold** (D20). It claims the idempotency key, takes the unit locks, locks every occupying reservation that overlaps the requested units in reservation-id order, expires the dead ones among them, makes a single booking attempt under a savepoint, and stores the outcome under the still-owned key before committing. A deadlock or serialization failure retries the whole transaction once.
-- **A transaction-level advisory lock per unit** (D39), keyed by unit id and taken in sorted unit order: by the hold command at the start of its transaction, by the fit trigger on reservation insert, and by the capacity trigger on unit update. Confirmation takes the same locks before its row lock (`0006_confirm_fit.sql`).
+- **A transaction-level advisory lock per unit** (D39), keyed by unit id and taken in sorted unit order: by the hold command at the start of its transaction, by the fit trigger on reservation insert, and by the capacity trigger on unit update. Confirmation takes the same locks before its row lock (`0006_confirm_fit.sql`). From M2 a hold and a confirmation first take a venue-level lock, shared, which blackout writes take exclusively (ADR 7).
 
 ## Alternatives considered
 

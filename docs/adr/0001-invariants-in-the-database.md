@@ -12,7 +12,7 @@ Every invariant is a constraint or a trigger in Postgres; TypeScript orchestrate
 
 - An assignment is one reservation with one `reservation_unit` row per unit. No two active rows for the same unit may overlap: `exclude using gist (unit_id with =, during with &&) where (active)`, with half-open ranges so back-to-back bookings fit.
 - A deferred constraint trigger checks at commit that a reservation's unit rows are exactly its assignment's members.
-- Triggers enforce the state table, the expiry guard, party fit, append-only audit, the actor requirement, and combo immutability; each failure has its own SQLSTATE (`DA001` to `DA013`), which the engine maps to a stable error code.
+- Triggers enforce the state table, the expiry guard, party fit, append-only audit, the actor requirement, and combo immutability; each failure has its own SQLSTATE (`DA001` to `DA014`), which the engine maps to a stable error code.
 - The application role `dastar_app` gets table and column privileges narrow enough that it cannot drop the constraint, edit audit rows, or flip a unit row's `active` flag; only security-definer triggers write those.
 
 The model is exclusive units, a table, a room, a vehicle, and fixed combinations of them (D37). Quantity inventory, fifty seats sold from one pool, is out of scope: an exclusion constraint cannot express a sum of quantities.
