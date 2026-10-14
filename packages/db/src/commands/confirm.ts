@@ -2,7 +2,7 @@ import type { ClientBase } from "pg";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { DastarError, asDastarError } from "../errors.js";
 import { setContext } from "../context.js";
-import { sortUnitIds, LOCK_UNIT_SQL } from "../units.js";
+import { sortUnitIds, LOCK_UNIT_SQL, LOCK_VENUE_SHARED_SQL } from "../units.js";
 import { enqueue, reservationPayload } from "../outbox.js";
 import { withArticle } from "../status-text.js";
 import type { Receipt } from "./hold.js";
@@ -11,7 +11,9 @@ export type ConfirmInput = { reservationId: string; actor: string; traceId: stri
 export type ConfirmHooks = { afterUnitLocks?: () => Promise<void>; afterLock?: () => Promise<void> };
 
 /**
- * Lock order matches hold: unit advisory locks in sorted order first, the reservation row second.
+ * Lock order matches hold: the venue advisory lock shared first, the unit advisory locks in sorted order second, the
+ * reservation row third. A blackout write takes the venue lock exclusively, so a blackout write and a confirmation
+ * serialize, and the blackout guard on the held to confirmed transition runs under the lock it needs.
  * The units are read without a lock. assignment_kind, assignment_id, venue_id, party_size and during are
  * outside the app role's update grant (migration 0005), so under the application-role boundary that read
  * cannot go stale; the re-validation after the row lock covers writers above that boundary.
@@ -36,6 +38,7 @@ export async function confirm(client: ClientBase, input: ConfirmInput, hooks: Co
       if (c.rowCount === 0) throw new DastarError("assignment_mismatch", "combo not found in venue");
       members = sortUnitIds(c.rows[0].unit_ids as string[]);
     }
+    await client.query(LOCK_VENUE_SHARED_SQL, [input.venueId]);
     for (const u of members) await client.query(LOCK_UNIT_SQL, [u]);
     await hooks.afterUnitLocks?.();
 

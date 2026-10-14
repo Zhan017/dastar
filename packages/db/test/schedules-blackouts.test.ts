@@ -182,6 +182,14 @@ describe("schedules and blackouts", () => {
         await refused(range(5, 6), "r".repeat(501));
       });
 
+      it(`${who} is refused an infinite bound by the bounded-range constraint (23514)`, async () => {
+        const client = clientOf();
+        // an explicit infinite bound is not an unbounded range for lower_inf and upper_inf, so the constraint also asks for finite bounds
+        for (const during of [`[${DAY(5)},infinity)`, `[-infinity,${DAY(5)})`]) {
+          await expect(insertBlackout(client, A.venue, during), during).rejects.toMatchObject({ code: "23514", constraint: "blackout_during_bounded" });
+        }
+      });
+
       it(`${who} cannot write a reversed range: the range type itself refuses it (22000)`, async () => {
         const client = clientOf();
         await expect(insertBlackout(client, A.venue, range(9, 8))).rejects.toMatchObject({ code: "22000" });
@@ -488,6 +496,55 @@ describe("schedules and blackouts", () => {
       await expect(app.query("update dastar.blackout set active = true where id = $1", [bid])).rejects.toMatchObject({ code: "DA014", detail: `reservation=${id}` });
     });
 
+    it("a deactivation and a reason-only update take the venue lock exclusively, though they judge nothing", async () => {
+      const day = nextDay();
+      const bid = (await insertBlackout(app, A.venue, windowOf(day), "closed")).rows[0].id as string;
+      for (const set of ["reason = 'closed for the night'", "active = false"]) {
+        await W.query("begin");
+        try {
+          expect((await W.query(`update dastar.blackout set ${set} where id = $1`, [bid])).rowCount, set).toBe(1);
+          expect(await advisoryHeld("bk-W", "ExclusiveLock"), set).toBe(1);
+        } finally {
+          await W.query("rollback");
+        }
+        expect(await advisoryHeld("bk-W", "ExclusiveLock"), set).toBe(0);
+      }
+    });
+
+    it("the owner moving an active blackout's range onto a live reservation, or the blackout onto another venue with a live reservation in range, is refused (DA014)", async () => {
+      const d1 = nextDay(); const d2 = nextDay(); const d3 = nextDay();
+      const idA = await place(A, at(d1, 19));
+      const moving = (await insertBlackout(owner, A.venue, windowOf(d2))).rows[0].id as string;
+      await expect(owner.query("update dastar.blackout set during = $2::tstzrange where id = $1", [moving, windowOf(d1)]))
+        .rejects.toMatchObject({ code: "DA014", message: STRANDS, detail: `reservation=${idA}` });
+
+      const idB = await place(B, at(d3, 19));
+      const crossing = (await insertBlackout(owner, A.venue, windowOf(d3))).rows[0].id as string;
+      await expect(owner.query("update dastar.blackout set venue_id = $2 where id = $1", [crossing, B.venue]))
+        .rejects.toMatchObject({ code: "DA014", message: STRANDS, detail: `reservation=${idB}` });
+
+      const unchanged = async (id: string, venueId: string, range: string): Promise<boolean> =>
+        (await owner.query("select venue_id = $2 and during = $3::tstzrange as same from dastar.blackout where id = $1", [id, venueId, range])).rows[0].same as boolean;
+      expect(await unchanged(moving, A.venue, windowOf(d2))).toBe(true);
+      expect(await unchanged(crossing, A.venue, windowOf(d3))).toBe(true);
+    });
+
+    it("dastar_worker, which bypasses row-level security, is still guarded: its blackout over a live reservation is refused (DA014)", async () => {
+      const day = nextDay();
+      const id = await place(A, at(day, 19));
+      await expect(insertBlackout(worker, A.venue, windowOf(day))).rejects.toMatchObject({ code: "DA014", detail: `reservation=${id}` });
+      expect(await blackoutsOver(A.venue, windowOf(day))).toBe(0);
+    });
+
+    it("bound to venue A, a blackout written for venue B is refused by B's guard when B has a live reservation in range (DA014), and by row-level security otherwise (42501): the guards fire before the policy checks the new row", async () => {
+      const d1 = nextDay(); const d2 = nextDay();
+      await place(B, at(d1, 19));
+      await expect(insertBlackout(app, B.venue, windowOf(d1))).rejects.toMatchObject({ code: "DA014" });
+      await expect(insertBlackout(app, B.venue, windowOf(d2))).rejects.toMatchObject({ code: "42501" });
+      expect(await blackoutsOver(B.venue, windowOf(d1))).toBe(0);
+      expect(await blackoutsOver(B.venue, windowOf(d2))).toBe(0);
+    });
+
     it("another venue's reservations do not count", async () => {
       const day = nextDay();
       await place(B, at(day, 19));
@@ -495,6 +552,43 @@ describe("schedules and blackouts", () => {
       expect(await blackoutsOver(A.venue, windowOf(day))).toBe(1);
       // the same blackout in B is refused
       await expect(insertBlackout(owner, B.venue, windowOf(day))).rejects.toMatchObject({ code: "DA014" });
+    });
+  });
+
+  describe("guard at confirmation (DA009)", () => {
+    /** A live hold at 19:00 of a fresh day, and an active blackout over the day's window that a write on a clock an hour ahead admits over it. */
+    async function holdUnderLaterBlackout(): Promise<{ id: string; bid: string; day: number }> {
+      const day = nextDay();
+      const id = await place(A, at(day, 19));
+      await setClock(app, new Date(Date.now() + 3_600_000).toISOString());
+      try {
+        const bid = (await insertBlackout(app, A.venue, windowOf(day))).rows[0].id as string;
+        return { id, bid, day };
+      } finally {
+        await setClock(app, null);
+      }
+    }
+
+    it("a hold that a blackout write judged expired by its later clock cannot be confirmed into the blackout: refused as blackout, and the hold stays held", async () => {
+      const { id, bid } = await holdUnderLaterBlackout();
+      await expect(confirm(app, { reservationId: id, ...ctx() })).rejects.toMatchObject({ code: "blackout" });
+      expect(await storedStatus(id)).toBe("held");
+
+      // the raw transition takes the guard itself
+      await app.query("select set_config('dastar.actor', 'key:direct', false)");
+      try {
+        const refused = await app.query("update dastar.reservation set status = 'confirmed' where id = $1", [id]).then(() => null, (e: unknown) => e);
+        expect(refused).toMatchObject({ code: "DA009", message: BLACKED_OUT, detail: `blackout=${bid}` });
+        expect(await storedStatus(id)).toBe("held");
+      } finally {
+        await app.query("select set_config('dastar.actor', '', false)");
+      }
+    });
+
+    it("every other status change on such a hold is not judged: it can be cancelled", async () => {
+      const { id } = await holdUnderLaterBlackout();
+      await cancel(app, { reservationId: id, ...ctx(), reason: "guest" });
+      expect(await storedStatus(id)).toBe("cancelled");
     });
   });
 
@@ -610,6 +704,82 @@ describe("schedules and blackouts", () => {
       } finally {
         p.release();
       }
+    });
+
+    it("(e) a blackout write on a clock past the hold's expiry queues behind a confirmation holding the venue lock, then is refused: it sees the confirmed reservation", async () => {
+      const day = nextDay();
+      const id = await place(A, at(day, 19));
+      const p = pause();
+      const pConfirm = outcome(confirm(H, { reservationId: id, ...ctx() }, { afterUnitLocks: p.hook }));
+      try {
+        await p.reached;
+        // the confirmation holds the venue lock, shared, and the unit's lock, exclusive
+        expect(await advisoryHeld("bk-H", "ShareLock")).toBe(1);
+        expect(await advisoryHeld("bk-H", "ExclusiveLock")).toBe(1);
+        // W judges the hold expired, so only the venue lock stands between it and the blackout
+        await setClock(W, new Date(Date.now() + 3_600_000).toISOString());
+        const pBlackout = outcome(insertBlackout(W, A.venue, windowOf(day)));
+        await waitForBackend(owner, "bk-W", { type: "Lock", event: "advisory" });
+        p.release();
+        expect(settled(await pConfirm)).toMatchObject({ reservationId: id, status: "confirmed" });
+        expect(await pBlackout).toMatchObject({ ok: false, error: { code: "DA014", detail: `reservation=${id}` } });
+        expect(await blackoutsOver(A.venue, windowOf(day))).toBe(0);
+        expect(await storedStatus(id)).toBe("confirmed");
+      } finally {
+        p.release();
+        await setClock(W, null);
+      }
+    });
+
+    it("(f) a confirmation that starts before the hold's expiry queues behind a blackout write that judged the hold expired, then is refused as blackout", async () => {
+      const day = nextDay();
+      const id = await place(A, at(day, 19));
+      await W.query("begin");
+      let pConfirm!: Promise<Outcome<Awaited<ReturnType<typeof confirm>>>>;
+      try {
+        await setClock(W, new Date(Date.now() + 3_600_000).toISOString());
+        await insertBlackout(W, A.venue, windowOf(day), "private event");
+        expect(await advisoryHeld("bk-W", "ExclusiveLock")).toBe(1);
+        pConfirm = outcome(confirm(H, { reservationId: id, ...ctx() }));
+        await waitForBackend(owner, "bk-H", { type: "Lock", event: "advisory" });
+        await W.query("commit");
+      } catch (e) {
+        await W.query("rollback").catch(() => undefined);
+        throw e;
+      } finally {
+        await setClock(W, null);
+      }
+      expect(await pConfirm).toMatchObject({ ok: false, error: { code: "blackout" } });
+      expect(await storedStatus(id)).toBe("held");
+      expect(await blackoutsOver(A.venue, windowOf(day))).toBe(1);
+    });
+
+    it("(g) an insert that bypasses the hold queues on the guard's own shared lock behind a blackout write, then is refused (DA009)", async () => {
+      const day = nextDay();
+      const actor = `key:direct${++n}`;
+      await W.query("begin");
+      let pInsert!: Promise<Outcome<unknown>>;
+      let bid = "";
+      try {
+        bid = (await insertBlackout(W, A.venue, windowOf(day), "closed")).rows[0].id as string;
+        await H.query("select set_config('dastar.venue_id', $1, false), set_config('dastar.actor', $2, false)", [A.venue, actor]);
+        // no unit lock is held by anyone and t35 fires before t40, so the advisory wait is the guard's venue lock
+        pInsert = outcome(H.query(
+          `insert into dastar.reservation(venue_id, party_size, during, status, assignment_kind, assignment_id, hold_expires_at, created_by)
+           values ($1, 2, $2::tstzrange, 'held', 'unit', $3, dastar.dastar_now() + interval '10 minutes', $4)`,
+          [A.venue, rangeLiteral(at(day, 19), 90), A.units[0], actor],
+        ));
+        await waitForBackend(owner, "bk-H", { type: "Lock", event: "advisory" });
+        await W.query("commit");
+      } catch (e) {
+        await W.query("rollback").catch(() => undefined);
+        throw e;
+      } finally {
+        if (pInsert) await pInsert;
+        await H.query("select set_config('dastar.venue_id', '', false), set_config('dastar.actor', '', false)");
+      }
+      expect(await pInsert).toMatchObject({ ok: false, error: { code: "DA009", detail: `blackout=${bid}` } });
+      expect(await reservationsBy(actor)).toBe(0);
     });
   });
 });

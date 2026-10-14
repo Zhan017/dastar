@@ -1,18 +1,28 @@
 -- transaction: yes
 -- impact: instant-exclusive
 -- Invariant 11: a live reservation never overlaps an active blackout of its venue. Two owner-run guards enforce it
--- under the venue-level lock: reservation inserts take it shared and blackout writes take it exclusively, so whichever
--- transaction commits second sees the other (ADR 7). Both read ranges, so they run as the owner, which keeps the range
--- indexes usable under row-level security and keeps the caller's venue binding out of what they see.
+-- under the venue-level lock: reservation inserts and confirmations take it shared and blackout writes take it
+-- exclusively, so whichever transaction commits second sees the other (ADR 7). Both read ranges, so they run as the
+-- owner, which keeps the range indexes usable under row-level security and keeps the caller's venue binding out of
+-- what they see.
 
--- t35: a reservation insert takes the shared venue lock and is refused inside an active blackout of its venue (DA009).
--- A hold already holds the lock, and taking it again is a no-op; a writer that bypasses the hold takes it here.
--- Ranges and venues are not updatable by the application role, so insert is enough.
+-- t35: judges an insert and the transition from held to confirmed. It takes the shared venue lock and refuses a
+-- reservation inside an active blackout of its venue (DA009). A hold already holds the lock, and taking it again is a
+-- no-op; a writer that bypasses the hold takes it here. A confirmation is judged because it decides expired or not by
+-- its own start time (t30), so it can follow a blackout write that judged the same hold expired by a later clock.
+-- Ranges and venues are not updatable by the application role, so an insert and that one transition are all it
+-- judges; every other status change returns before taking the lock.
 create function dastar.trg_blackout_guard() returns trigger
 language plpgsql security definer set search_path = pg_catalog, dastar, pg_temp as $$
 declare
   blocking uuid;
 begin
+  -- OLD exists only on update, so it is read only there
+  if tg_op = 'UPDATE' then
+    if not (old.status = 'held' and new.status = 'confirmed') then
+      return new;
+    end if;
+  end if;
   perform pg_advisory_xact_lock_shared(dastar.venue_lock_key(new.venue_id));
   select b.id into blocking
     from dastar.blackout b
@@ -58,7 +68,7 @@ begin
   return new;
 end $$;
 
-create trigger t35_blackout_guard before insert on dastar.reservation
+create trigger t35_blackout_guard before insert or update of status on dastar.reservation
   for each row execute function dastar.trg_blackout_guard();
 create trigger t10_blackout_write before insert or update on dastar.blackout
   for each row execute function dastar.trg_blackout_write();
