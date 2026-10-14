@@ -44,23 +44,25 @@ describe("hold retry on deadlock and serialization failure", () => {
     expect(retries).toEqual([{ attempt: 1, sqlstate: "40P01" }]);
   });
 
-  it("hooks bracket the transaction and the unit locks: beforeBegin runs outside a transaction, beforeUnitLocks before any unit lock, on every attempt", async () => {
+  it("hooks bracket the transaction and the unit locks: beforeBegin runs outside a transaction, beforeUnitLocks after the venue lock and before any unit lock, on every attempt", async () => {
     let throws = 1;
     const seen: string[] = [];
     const state = async (): Promise<string> =>
       (await owner.query("select state from pg_stat_activity where pid = $1", [appPid])).rows[0].state as string;
-    const unitLocks = async (): Promise<number> =>
-      (await owner.query("select count(*)::int as n from pg_locks where pid = $1 and locktype = 'advisory'", [appPid])).rows[0].n as number;
+    // a unit lock is an exclusive advisory lock; the venue lock a hold takes first is a shared one
+    const advisory = async (mode: "ExclusiveLock" | "ShareLock"): Promise<number> =>
+      (await owner.query("select count(*)::int as n from pg_locks where pid = $1 and locktype = 'advisory' and mode = $2", [appPid, mode])).rows[0].n as number;
+    const locks = async (): Promise<string> => `unit${await advisory("ExclusiveLock")}:venue${await advisory("ShareLock")}`;
     const out = await hold(app, input(), {
       beforeBegin: async () => { seen.push(`beforeBegin:${await state()}`); },
       afterClaim: async () => { seen.push(`afterClaim:${await state()}`); },
-      beforeUnitLocks: async () => { seen.push(`beforeUnitLocks:${await unitLocks()}`); },
-      afterUnitLocks: async () => { seen.push(`afterUnitLocks:${await unitLocks()}`); },
+      beforeUnitLocks: async () => { seen.push(`beforeUnitLocks:${await locks()}`); },
+      afterUnitLocks: async () => { seen.push(`afterUnitLocks:${await locks()}`); },
       afterOverlapLocks: async () => { seen.push("afterOverlapLocks"); if (throws-- > 0) throw injected(); },
       beforeCommit: async () => { seen.push("beforeCommit"); },
     });
     expect(out.ok).toBe(true);
-    const attempt = ["beforeBegin:idle", "afterClaim:idle in transaction", "beforeUnitLocks:0", "afterUnitLocks:1", "afterOverlapLocks"];
+    const attempt = ["beforeBegin:idle", "afterClaim:idle in transaction", "beforeUnitLocks:unit0:venue1", "afterUnitLocks:unit1:venue1", "afterOverlapLocks"];
     expect(seen).toEqual([...attempt, ...attempt, "beforeCommit"]);
   });
 

@@ -204,8 +204,11 @@ describe("venue isolation", () => {
     });
   });
 
-  it("the seven trigger functions that read or write other tables run as the owner, with a pinned search path", async () => {
-    const names = ["trg_fit", "trg_capacity_guard", "trg_config_version", "trg_audit", "trg_sync_unit_rows", "trg_unit_row_insert_guard", "trg_membership"];
+  it("the nine trigger functions that read or write other tables run as the owner, with a pinned search path", async () => {
+    const names = [
+      "trg_fit", "trg_capacity_guard", "trg_config_version", "trg_audit", "trg_sync_unit_rows", "trg_unit_row_insert_guard", "trg_membership",
+      "trg_blackout_guard", "trg_blackout_write",
+    ];
     const r = await owner.query(
       `select proname, prosecdef, proconfig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where nspname = 'dastar' and proname = any ($1::text[])`,

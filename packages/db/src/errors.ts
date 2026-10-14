@@ -17,6 +17,7 @@ const BY_SQLSTATE: Record<string, DastarErrorCode> = {
   DA011: "combo_immutable",
   DA012: "capacity_conflict",
   DA013: "token_requires_held",
+  DA014: "blackout_conflict",
   "42501": "forbidden_write",
 };
 
