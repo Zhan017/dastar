@@ -29,6 +29,7 @@ export const STATUS_BY_CODE = {
   blackout: { status: 409 },
   token_requires_held: { status: 409 },
   capacity_conflict: { status: 409 },
+  blackout_conflict: { status: 409 },
   serialization_conflict: { status: 409, retryAfter: "0" },
   idempotency_mismatch: { status: 422 },
   party_does_not_fit: { status: 422 },
@@ -67,6 +68,7 @@ const DETAIL_BY_CODE: Partial<Record<DastarErrorCode, string>> = {
   overlap_set_too_large: "too many overlapping reservations to examine; retry",
   duration_out_of_range: "the duration must be between 5 minutes and 12 hours",
   combo_too_large: "a combination has between 2 and 6 units",
+  blackout_conflict: "a live reservation overlaps the blackout's range; cancel it first",
 };
 
 export function problemFor(code: DastarErrorCode, detail?: string, extensions: Record<string, unknown> = {}): ApiProblem {

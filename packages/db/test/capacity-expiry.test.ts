@@ -88,10 +88,14 @@ describe("capacity edit versus confirmation near expiry (invariant 4)", () => {
     const p = pause();
     const pC = confirm(A, { reservationId: out.receipt.reservationId, actor: "key:A", traceId: "c3", venueId: seed.venue }, { afterUnitLocks: p.hook });
     await p.reached;
-    const locks = await owner.query(
-      "select count(*)::int as n from pg_locks l join pg_stat_activity a on a.pid = l.pid where a.datname = current_database() and a.application_name = 'A' and l.locktype = 'advisory' and l.granted",
-    );
-    expect(locks.rows[0].n).toBe(2);
+    // a unit lock is an exclusive advisory lock; the venue lock a confirmation takes first is a shared one
+    const held = async (mode: "ExclusiveLock" | "ShareLock"): Promise<number> =>
+      (await owner.query(
+        "select count(*)::int as n from pg_locks l join pg_stat_activity a on a.pid = l.pid where a.datname = current_database() and a.application_name = 'A' and l.locktype = 'advisory' and l.granted and l.mode = $1",
+        [mode],
+      )).rows[0].n as number;
+    expect(await held("ExclusiveLock")).toBe(2);
+    expect(await held("ShareLock")).toBe(1);
     p.release();
     expect((await pC).status).toBe("confirmed");
   });

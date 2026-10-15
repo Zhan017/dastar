@@ -2,7 +2,7 @@ import type { ClientBase } from "pg";
 import { createHash } from "node:crypto";
 import { DastarError, STORED_OUTCOMES, mapPgError, asDastarError } from "../errors.js";
 import { setContext, setActor } from "../context.js";
-import { sortUnitIds, LOCK_UNIT_SQL } from "../units.js";
+import { sortUnitIds, LOCK_UNIT_SQL, LOCK_VENUE_SHARED_SQL } from "../units.js";
 import { enqueue, reservationPayload } from "../outbox.js";
 import { BOUNDS, canonicalHoldRequest, type HoldInput, type HoldOutcome } from "@dastar/core";
 
@@ -12,7 +12,7 @@ export type HoldHooks = {
   /** Before BEGIN, once per attempt. With the command's return it brackets one whole transaction as the client sees it. */
   beforeBegin?: () => Promise<void>;
   afterClaim?: () => Promise<void>;
-  /** After the assignment is resolved, before the first unit lock statement. With `afterUnitLocks` it brackets the lock statements alone. */
+  /** After the assignment is resolved and the venue lock is taken, before the first unit lock statement. With `afterUnitLocks` it brackets the unit lock statements alone. */
   beforeUnitLocks?: () => Promise<void>;
   afterUnitLocks?: () => Promise<void>;
   afterOverlapLocks?: () => Promise<void>;
@@ -86,13 +86,15 @@ async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, h
     }
     await hooks.afterClaim?.();
 
-    // step 4: resolve and sort units, take the unit locks in order, check the live-holds cap
+    // step 4: resolve and sort units, take the venue lock shared and then the unit locks in order, check the live-holds cap
     const resolved = await resolveAssignment(client, input);
     if (resolved.kind === "missing") {
       return await storeOutcome(client, input, hooks, { ok: false, error: { code: "party_does_not_fit", message: "assignment not found in venue" }, replayed: false });
     }
     if (!resolved.active) throw new DastarError("assignment_inactive", "assignment is deactivated");
     const units = resolved.units;
+    // a blackout write takes this lock exclusively, so it waits for this hold to commit, and a hold that starts behind it sees the blackout
+    await client.query(LOCK_VENUE_SHARED_SQL, [input.venueId]);
     await hooks.beforeUnitLocks?.();
     for (const u of units) await client.query(LOCK_UNIT_SQL, [u]);
     await hooks.afterUnitLocks?.();

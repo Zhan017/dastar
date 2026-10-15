@@ -178,7 +178,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
 | Retry handling | Stored hold outcomes scoped by venue, actor, and idempotency key, with a 24-hour retention policy; one retry on deadlock or serialization failure |
 | History | Trigger-written audit records, reservation versions, and transactional outbox writes |
-| Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, restricted roles, and row-level security that confines each transaction to the venue it declares |
+| Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, blackout guards under a venue-level lock, restricted roles, and row-level security that confines each transaction to the venue it declares |
 | Migrations | Ordered, checksummed files with lock timeouts; concurrent index builds with validated recovery |
 | Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; also importable into a host process |
@@ -212,7 +212,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
 
-The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the six decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
+The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
 
 ## Explore the code
 
