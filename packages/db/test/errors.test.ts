@@ -33,6 +33,8 @@ describe("mapPgError", () => {
       .toMatchObject({ name: "DastarError", code: "invalid_input", retryable: false, sqlstate: "23514", message: 'new row for relation "unit" violates check constraint "unit_capacity_order"', detail: "Failing row contains (x)." });
     // no constraint name at all is still a check violation
     expect(mapPgError({ code: "23514", message: "check" })).toMatchObject({ code: "invalid_input", sqlstate: "23514" });
+    // a NUL character in text is refused as invalid input, not reported as an internal error
+    expect(mapPgError({ code: "22021", message: 'invalid byte sequence for encoding "UTF8": 0x00' })).toMatchObject({ code: "invalid_input", retryable: false, sqlstate: "22021" });
     expect(mapPgError({ code: "23514", constraint: "duration_out_of_range", message: "d" })).toMatchObject({ code: "duration_out_of_range", sqlstate: "23514" });
     expect(mapPgError({ code: "23514", constraint: "combo_too_large", message: "c" })).toMatchObject({ code: "combo_too_large", sqlstate: "23514" });
     // other integrity violations are not check violations

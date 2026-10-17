@@ -10,5 +10,8 @@ export type { GetInput, ReservationView } from "./commands/get.js";
 export type { ListHoldsInput, HoldView } from "./commands/list-holds.js";
 export type { AdminContext, ForceOption, AdminOutcome, StrandedCode, Stranded } from "./commands/admin.js";
 export type { UnitView, ComboView, CreateUnitInput, UpdateUnitInput, CreateComboInput, UpdateComboInput } from "./commands/admin-units.js";
+export type {
+  ScheduleView, BlackoutView, CreateScheduleInput, UpdateScheduleInput, CreateBlackoutInput, UpdateBlackoutInput, ListBlackoutsInput,
+} from "./commands/admin-calendar.js";
 export type { AvailabilityInput, AvailabilityResult } from "./commands/availability.js";
 export { BOUNDS, restaurantHost, type RankingStrategy, type Slot } from "@dastar/core";

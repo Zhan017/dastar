@@ -14,6 +14,11 @@ import {
   listUnits, createUnit, updateUnit, listCombos, createCombo, updateCombo,
   type UnitView, type ComboView, type CreateUnitInput, type UpdateUnitInput, type CreateComboInput, type UpdateComboInput,
 } from "./commands/admin-units.js";
+import {
+  listSchedules, createSchedule, updateSchedule, listBlackouts, createBlackout, updateBlackout,
+  type ScheduleView, type BlackoutView, type CreateScheduleInput, type UpdateScheduleInput, type CreateBlackoutInput, type UpdateBlackoutInput,
+  type ListBlackoutsInput,
+} from "./commands/admin-calendar.js";
 
 export type DastarOptions = {
   /**
@@ -43,7 +48,8 @@ export type DastarOptions = {
 };
 
 export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue"
-  | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo";
+  | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo"
+  | "listSchedules" | "createSchedule" | "updateSchedule" | "listBlackouts" | "createBlackout" | "updateBlackout";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 /**
@@ -63,6 +69,18 @@ export interface DastarAdmin {
   createCombo(ctx: AdminContext, input: CreateComboInput): Promise<ComboView>;
   /** Deactivation strands the live reservations assigned to the combination. */
   updateCombo(ctx: AdminContext, input: UpdateComboInput): Promise<AdminOutcome<ComboView>>;
+  /** The venue's service periods, inactive ones included, by day, opening time, and id. */
+  listSchedules(venueId: string): Promise<ScheduleView[]>;
+  /** `closes_next_day` is computed from the times; a malformed field or a CHECK violation is `invalid_input`. */
+  createSchedule(ctx: AdminContext, input: CreateScheduleInput): Promise<ScheduleView>;
+  /** A schedule strands no reservation; `not_found` for a schedule of another venue. */
+  updateSchedule(ctx: AdminContext, input: UpdateScheduleInput): Promise<ScheduleView>;
+  /** Blackouts overlapping a window of at most 400 days, inactive ones included, at most 500 rows. */
+  listBlackouts(venueId: string, input: ListBlackoutsInput): Promise<BlackoutView[]>;
+  /** An active blackout strands the live reservations over its range. */
+  createBlackout(ctx: AdminContext, input: CreateBlackoutInput): Promise<AdminOutcome<BlackoutView>>;
+  /** Activating an inactive blackout strands the live reservations over its range; `not_found` for one of another venue. */
+  updateBlackout(ctx: AdminContext, input: UpdateBlackoutInput): Promise<AdminOutcome<BlackoutView>>;
 }
 
 export interface Dastar {
@@ -291,6 +309,12 @@ export function createDastar(opts: DastarOptions): Dastar {
       listCombos: (venueId) => run("listCombos", null, (c) => listCombos(c, venueId)),
       createCombo: (ctx, input) => run("createCombo", ctx.traceId, (c) => createCombo(c, ctx, input)),
       updateCombo: (ctx, input) => run("updateCombo", ctx.traceId, (c) => updateCombo(c, ctx, input)),
+      listSchedules: (venueId) => run("listSchedules", null, (c) => listSchedules(c, venueId)),
+      createSchedule: (ctx, input) => run("createSchedule", ctx.traceId, (c) => createSchedule(c, ctx, input)),
+      updateSchedule: (ctx, input) => run("updateSchedule", ctx.traceId, (c) => updateSchedule(c, ctx, input)),
+      listBlackouts: (venueId, input) => run("listBlackouts", null, (c) => listBlackouts(c, venueId, input)),
+      createBlackout: (ctx, input) => run("createBlackout", ctx.traceId, (c) => createBlackout(c, ctx, input)),
+      updateBlackout: (ctx, input) => run("updateBlackout", ctx.traceId, (c) => updateBlackout(c, ctx, input)),
     },
     close: async () => {
       const p = cancellerPromise;
