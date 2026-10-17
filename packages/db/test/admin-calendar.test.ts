@@ -248,6 +248,7 @@ describe("admin commands: schedules and blackouts", () => {
       ["durations that are null", { durationBySize: null }, false],
       ["no durations", { durationBySize: undefined }, false],
       ["durations with a NUL in a key", { durationBySize: { "2\u0000": 90 } }, false],
+      ["durations with an unpaired surrogate in a key", { durationBySize: { "\ud800": 90 } }, false],
       ["durations with no key", { durationBySize: {} }, true],
       ["a key of 0", { durationBySize: { "0": 60 } }, true],
       ["a key of 1000", { durationBySize: { "1000": 60 } }, true],
@@ -469,6 +470,32 @@ describe("admin commands: schedules and blackouts", () => {
       // by the real clock neither has started, so the same forced write cancels both
       const control = accepted(await createBlackout(app, ctx(S), { ...range, force: true }));
       expect(control.cancelled).toEqual([first, second].sort());
+      expect(await blackoutCount(S.venue)).toBe(1);
+    });
+
+    it("force refuses a seated party as in progress even when its start is still ahead, naming only it, cancels nothing, and stores nothing", async () => {
+      const S = await fresh();
+      const day = nextDay();
+      const seated = await seatedAt(S, at(day, 19), onUnit(S, 0));
+      const confirmed = await confirmedAt(S, at(day, 19), onUnit(S, 1));
+      // the seated party was seated before its start time: by the range it has not started
+      expect((await owner.query("select lower(during) > now() as ahead from dastar.reservation where id = $1", [seated])).rows[0].ahead).toBe(true);
+      expect(refused(await createBlackout(app, ctx(S), bo(day)))).toEqual(CONFLICT([seated, confirmed].sort()));
+      const forced = refused(await createBlackout(app, ctx(S), { ...bo(day), force: true }));
+      expect(forced).toEqual({
+        ok: false,
+        error: { code: "reservation_in_progress", message: "1 stranded reservation has already started; close it first" },
+        stranded: [seated],
+      });
+      await expectUntouched(S, seated, "seated");
+      await expectUntouched(S, confirmed, "confirmed");
+      expect(await blackoutCount(S.venue)).toBe(0);
+      expect(await cancelEventCount(S.venue)).toBe(0);
+
+      // once the party is completed, only the confirmed reservation is stranded, and force cancels it
+      await complete(app, { reservationId: seated, ...desk(S) });
+      const control = accepted(await createBlackout(app, ctx(S), { ...bo(day), force: true }));
+      expect(control.cancelled).toEqual([confirmed]);
       expect(await blackoutCount(S.venue)).toBe(1);
     });
 

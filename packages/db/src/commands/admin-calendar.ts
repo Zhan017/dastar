@@ -2,7 +2,7 @@ import type { ClientBase, QueryResultRow } from "pg";
 import { BOUNDS } from "@dastar/core";
 import { DastarError } from "../errors.js";
 import {
-  adminRead, adminTx, adminWrite, settleStranded, STRANDED_COLUMNS, STRANDED_TAIL, LIVE,
+  adminRead, adminTx, adminWrite, jsonText, settleStranded, STRANDED_COLUMNS, STRANDED_TAIL, LIVE,
   type AdminContext, type AdminOutcome, type ForceOption, type Stranded,
 } from "./admin.js";
 
@@ -64,10 +64,7 @@ function checkActive(v: unknown): boolean {
 /** The durations as JSON text; their keys and values are judged by the table's CHECK. */
 function durationsJson(v: unknown): string {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw invalid("duration_by_size must be an object of party sizes to minutes");
-  let json: string | undefined;
-  try { json = JSON.stringify(v); } catch { json = undefined; }
-  if (json === undefined || json.includes("\\u0000")) throw invalid("duration_by_size must be plain JSON without NUL characters");
-  return json;
+  return jsonText("duration_by_size", v, "duration_by_size must be plain JSON without NUL characters");
 }
 function checkReason(v: unknown): string {
   if (typeof v !== "string" || v.includes("\0")) throw invalid("reason must be text without NUL characters");

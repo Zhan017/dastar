@@ -3,7 +3,7 @@ import { BOUNDS } from "@dastar/core";
 import { DastarError } from "../errors.js";
 import { sortUnitIds } from "../units.js";
 import {
-  adminRead, adminTx, adminWrite, settleStranded, STRANDED_COLUMNS, STRANDED_TAIL, LIVE,
+  adminRead, adminTx, adminWrite, jsonText, settleStranded, STRANDED_COLUMNS, STRANDED_TAIL, LIVE,
   type AdminContext, type AdminOutcome, type ForceOption, type Stranded,
 } from "./admin.js";
 
@@ -45,12 +45,16 @@ export function listCombos(client: ClientBase, venueId: string): Promise<ComboVi
   });
 }
 
-/** A CHECK violation (capacity order, capacity below 1) surfaces as `invalid_input`. */
-export function createUnit(client: ClientBase, ctx: AdminContext, input: CreateUnitInput): Promise<UnitView> {
+/**
+ * A CHECK violation (capacity order, capacity below 1) surfaces as `invalid_input`, and so does a layout that is not a
+ * JSON object or that Postgres cannot store (see jsonText).
+ */
+export async function createUnit(client: ClientBase, ctx: AdminContext, input: CreateUnitInput): Promise<UnitView> {
+  const layout = input.layout === undefined ? "{}" : jsonText("layout", input.layout);
   return adminTx(client, ctx, async () => {
     const r = await client.query(
       `insert into dastar.unit (venue_id, label, capacity_min, capacity_max, layout) values ($1, $2, $3, $4, $5::jsonb) returning ${UNIT_COLUMNS}`,
-      [ctx.venueId, input.label, input.capacityMin, input.capacityMax, JSON.stringify(input.layout ?? {})],
+      [ctx.venueId, input.label, input.capacityMin, input.capacityMax, layout],
     );
     return unitView(r.rows[0]);
   });
@@ -61,15 +65,17 @@ export function createUnit(client: ClientBase, ctx: AdminContext, input: CreateU
  * strands the reservations assigned directly to the unit whose party falls outside it (the capacity guard's set; a
  * combination's capacities are its own); a deactivation strands every live reservation with an active unit row on the
  * unit, which includes those of combinations containing it. Both sets are read in one query, earliest start first.
+ * A layout is written only when the input has one, so a change of anything else keeps the stored jsonb as it is.
  */
-export function updateUnit(client: ClientBase, ctx: AdminContext, input: UpdateUnitInput): Promise<AdminOutcome<UnitView>> {
+export async function updateUnit(client: ClientBase, ctx: AdminContext, input: UpdateUnitInput): Promise<AdminOutcome<UnitView>> {
+  const layout = input.layout === undefined ? null : jsonText("layout", input.layout);
   return adminWrite(client, ctx, async () => {
     const found = await client.query(`select ${UNIT_COLUMNS} from dastar.unit where id = $1 and venue_id = $2`, [input.unitId, ctx.venueId]);
     if (found.rowCount === 0) throw new DastarError("not_found", "unit not found");
     const cur = unitView(found.rows[0]);
     const next = {
       label: input.label ?? cur.label, capacityMin: input.capacityMin ?? cur.capacityMin, capacityMax: input.capacityMax ?? cur.capacityMax,
-      layout: input.layout ?? cur.layout, active: input.active ?? cur.active,
+      active: input.active ?? cur.active,
     };
     if (next.capacityMin < 1 || next.capacityMax < next.capacityMin) {
       throw new DastarError("invalid_input", "capacity_min must be at least 1 and capacity_max at least capacity_min");
@@ -94,9 +100,9 @@ export function updateUnit(client: ClientBase, ctx: AdminContext, input: UpdateU
     if (!settled.ok) return settled;
 
     const upd = await client.query(
-      `update dastar.unit set label = $3, capacity_min = $4, capacity_max = $5, layout = $6::jsonb, active = $7
+      `update dastar.unit set label = $3, capacity_min = $4, capacity_max = $5, layout = coalesce($6::jsonb, layout), active = $7
         where id = $1 and venue_id = $2 returning ${UNIT_COLUMNS}`,
-      [input.unitId, ctx.venueId, next.label, next.capacityMin, next.capacityMax, JSON.stringify(next.layout), next.active],
+      [input.unitId, ctx.venueId, next.label, next.capacityMin, next.capacityMax, layout, next.active],
     );
     return { ok: true, value: unitView(upd.rows[0]), cancelled: settled.cancelled };
   });

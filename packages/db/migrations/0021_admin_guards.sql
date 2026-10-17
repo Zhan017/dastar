@@ -41,9 +41,11 @@ begin
     select capacity_min, capacity_max into cmin, cmax from dastar.unit_combo where id = new.assignment_id;
   end if;
   -- the same re-read for activity: a deactivation may have committed while this transaction waited. A combination is
-  -- usable when it is active and every member is an active unit of its venue. Only an insert is judged: a held
-  -- reservation cannot outlive a deactivation, which refuses while one is live.
-  if tg_op = 'INSERT' then
+  -- usable when it is active and every member is an active unit of its venue. An insert is judged, and so is the
+  -- confirmation of a hold: a confirmation is judged expired or not by its own start time, so it can follow a
+  -- deactivation that judged the same hold expired by a later clock and committed. Other updates keep their assignment
+  -- and are not judged: a live reservation cannot outlive a deactivation, which refuses while one is live.
+  if tg_op = 'INSERT' or (tg_op = 'UPDATE' and old.status = 'held' and new.status = 'confirmed') then
     if new.assignment_kind = 'unit' then
       select active into usable from dastar.unit where id = new.assignment_id;
     else

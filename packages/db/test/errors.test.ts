@@ -40,4 +40,23 @@ describe("mapPgError", () => {
     // other integrity violations are not check violations
     expect(mapPgError({ code: "23505", message: "unique" })).toBeNull();
   });
+
+  it("maps jsonb text Postgres cannot convert (22P05) to invalid_input", () => {
+    expect(mapPgError({ code: "22P05", message: "unsupported Unicode escape sequence", detail: "\\u0000 cannot be converted to text." }))
+      .toMatchObject({ name: "DastarError", code: "invalid_input", retryable: false, sqlstate: "22P05", message: "unsupported Unicode escape sequence", detail: "\\u0000 cannot be converted to text." });
+  });
+
+  it("maps a foreign key violation on a venue_id_fkey constraint to not_found, and a composite key or another violation code is not", () => {
+    // the key a hold's idempotency row has on the venue, and the same shape on any table that references the venue
+    for (const constraint of ["idempotency_venue_id_fkey", "unit_venue_id_fkey", "schedule_venue_id_fkey", "blackout_venue_id_fkey", "unit_combo_venue_id_fkey"]) {
+      expect(mapPgError({ code: "23503", constraint, message: "violates foreign key", detail: "Key (venue_id)=(x) is not present in table \"venue\"." }), constraint)
+        .toMatchObject({ name: "DastarError", code: "not_found", message: "venue not found", retryable: false, sqlstate: "23503", detail: "Key (venue_id)=(x) is not present in table \"venue\"." });
+    }
+    // a composite key names a row of another table, and the name does not end in _venue_id_fkey
+    expect(mapPgError({ code: "23503", constraint: "reservation_unit_venue_id_unit_id_fkey", message: "violates foreign key" })).toBeNull();
+    expect(mapPgError({ code: "23503", constraint: "reservation_unit_venue_id_reservation_id_fkey", message: "violates foreign key" })).toBeNull();
+    // no constraint name, and the same name under another SQLSTATE
+    expect(mapPgError({ code: "23503", message: "violates foreign key" })).toBeNull();
+    expect(mapPgError({ code: "23505", constraint: "unit_venue_id_fkey", message: "unique" })).toBeNull();
+  });
 });

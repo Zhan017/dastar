@@ -201,6 +201,21 @@ describe("admin commands: units and combinations", () => {
     });
   });
 
+  const LAYOUT_REFUSED = "layout must be a JSON object without NUL characters or unpaired surrogates";
+  /** Layouts Postgres cannot store, or that are not objects; the types refuse some of them, so each use casts. */
+  const BAD_LAYOUTS: [string, unknown][] = [
+    ["a NUL in a value", { note: "a\u0000b" }],
+    ["a NUL in a key", { "a\u0000b": 1 }],
+    ["a NUL in a nested value", { rows: [{ name: "x\u0000" }] }],
+    ["a lone high surrogate", { note: "\ud800" }],
+    ["a lone low surrogate", { note: "\udc00" }],
+    ["a lone surrogate in a key", { "\ud800": 1 }],
+    ["a high surrogate followed by a letter", { note: "\ud83dx" }],
+    ["an array", [1, 2]],
+    ["null", null],
+    ["a string", "text"],
+  ];
+
   describe("createUnit and listUnits", () => {
     it("createUnit returns the view, stores the row, and steps the config version once", async () => {
       const S = await fresh();
@@ -228,6 +243,24 @@ describe("admin commands: units and combinations", () => {
       expect(await configVersion(S.venue)).toBe(before);
       // control: the refused transactions were rolled back, so the connection takes the next create
       expect(await createUnit(app, ctx(S), { label: "after the refusals", capacityMin: 1, capacityMax: 2 })).toMatchObject({ label: "after the refusals" });
+    });
+
+    it("createUnit refuses a layout that is not an object, or holds a NUL or an unpaired surrogate, as invalid_input and writes nothing", async () => {
+      const S = await fresh();
+      const before = await configVersion(S.venue);
+      const units = await countRows("unit", S.venue);
+      for (const [label, layout] of BAD_LAYOUTS) {
+        await expect(createUnit(app, ctx(S), { label: `bad ${label}`, capacityMin: 1, capacityMax: 2, layout: layout as Record<string, unknown> }), label)
+          .rejects.toMatchObject({ name: "DastarError", code: "invalid_input", message: LAYOUT_REFUSED });
+      }
+      expect(await countRows("unit", S.venue)).toBe(units);
+      expect(await configVersion(S.venue)).toBe(before);
+
+      // controls: escape-looking text, a well-formed surrogate pair, and a nested object are stored as given
+      const layout = { note: "\\ud800 and \\u0000 are text", emoji: "\ud83d\ude00", nested: { rows: [1, 2] } };
+      const view = await createUnit(app, ctx(S), { label: "escapes", capacityMin: 1, capacityMax: 2, layout });
+      expect(view.layout).toEqual(layout);
+      expect((await unitRow(view.id)).layout).toEqual(layout);
     });
 
     it("listUnits returns every unit of the venue, inactive ones included, in label order, and no unit of another venue", async () => {
@@ -262,6 +295,44 @@ describe("admin commands: units and combinations", () => {
       await expectUntouched(S, seated, "seated");
       expect(await unitRow(unit)).toMatchObject({ label: "Window 2", layout: { side: "left" }, active: true });
       expect(await cancelEventCount(S.venue)).toBe(0);
+    });
+
+    it("updateUnit refuses a layout that is not an object, or holds a NUL or an unpaired surrogate, as invalid_input and writes nothing", async () => {
+      const S = await fresh(); const unit = S.units[0]!;
+      const before = await configVersion(S.venue);
+      const row = await unitRow(unit);
+      for (const [label, layout] of BAD_LAYOUTS) {
+        await expect(updateUnit(app, ctx(S), { unitId: unit, label: "Changed", layout: layout as Record<string, unknown> }), label)
+          .rejects.toMatchObject({ name: "DastarError", code: "invalid_input", message: LAYOUT_REFUSED });
+      }
+      expect(await unitRow(unit)).toEqual(row);
+      expect(await configVersion(S.venue)).toBe(before);
+      // control: the same update with a valid layout is applied
+      expect(accepted(await updateUnit(app, ctx(S), { unitId: unit, label: "Changed", layout: { ok: true } })).value).toMatchObject({ label: "Changed", layout: { ok: true } });
+    });
+
+    it("a change that does not name the layout keeps the stored jsonb byte for byte, numbers beyond a JavaScript double included", async () => {
+      const S = await fresh();
+      const raw = '{"n": 12345678901234567890, "x": 1.0}';
+      const unit = (await owner.query(
+        "insert into dastar.unit (venue_id, label, capacity_min, capacity_max, layout) values ($1, 'Raw', 1, 2, $2::jsonb) returning id",
+        [S.venue, raw],
+      )).rows[0].id as string;
+      const text = async (): Promise<string> => (await owner.query("select layout::text as t from dastar.unit where id = $1", [unit])).rows[0].t as string;
+      expect(await text()).toBe(raw);
+
+      const out = accepted(await updateUnit(app, ctx(S), { unitId: unit, label: "Renamed" }));
+      expect(out.value.label).toBe("Renamed");
+      expect(await text()).toBe(raw);
+      expect((await unitRow(unit)).label).toBe("Renamed");
+      // a deactivation and a capacity change leave it alone as well
+      accepted(await updateUnit(app, ctx(S), { unitId: unit, capacityMax: 3, active: false }));
+      expect(await text()).toBe(raw);
+      expect(await unitRow(unit)).toMatchObject({ capacity_max: 3, active: false });
+
+      // control: a layout in the input does replace it
+      accepted(await updateUnit(app, ctx(S), { unitId: unit, layout: { replaced: 1 } }));
+      expect(await text()).toBe('{"replaced": 1}');
     });
 
     it("a capacity range widened, or narrowed around the live parties, is applied", async () => {
@@ -447,6 +518,32 @@ describe("admin commands: units and combinations", () => {
       // by the real clock neither has started, so the same forced write cancels both
       const control = accepted(await updateUnit(app, ctx(S), { unitId: unit, active: false, force: true }));
       expect(control.cancelled).toEqual([first, second].sort());
+      expect((await unitRow(unit)).active).toBe(false);
+    });
+
+    it("force refuses a seated party as in progress even when its start is still ahead, naming only it, and cancels nothing", async () => {
+      const S = await fresh(); const unit = S.units[0]!;
+      const seated = await seatedAt(S, at(nextDay(), 19));
+      const confirmed = await confirmedAt(S, at(nextDay(), 19));
+      // the seated party was seated before its start time: by the range it has not started
+      expect((await owner.query("select lower(during) > now() as ahead from dastar.reservation where id = $1", [seated])).rows[0].ahead).toBe(true);
+      const plain = refused(await updateUnit(app, ctx(S), { unitId: unit, active: false }));
+      expect(plain.stranded).toEqual([seated, confirmed]);
+      const forced = refused(await updateUnit(app, ctx(S), { unitId: unit, active: false, force: true }));
+      expect(forced).toEqual({
+        ok: false,
+        error: { code: "reservation_in_progress", message: "1 stranded reservation has already started; close it first" },
+        stranded: [seated],
+      });
+      await expectUntouched(S, seated, "seated");
+      await expectUntouched(S, confirmed, "confirmed");
+      expect((await unitRow(unit)).active).toBe(true);
+      expect(await cancelEventCount(S.venue)).toBe(0);
+
+      // once the party is completed, only the confirmed reservation is stranded, and force cancels it
+      await complete(app, { reservationId: seated, ...desk(S) });
+      const control = accepted(await updateUnit(app, ctx(S), { unitId: unit, active: false, force: true }));
+      expect(control.cancelled).toEqual([confirmed]);
       expect((await unitRow(unit)).active).toBe(false);
     });
 

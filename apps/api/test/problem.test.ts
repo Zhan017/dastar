@@ -34,6 +34,20 @@ describe("problem details", () => {
     expect(problemBody(p, "t3")).toEqual({ type: "https://dastar.dev/errors/venue_scope_violation", title: "venue scope violation", status: 500, code: "venue_scope_violation", trace_id: "t3" });
   });
 
+  it("gives an invalid_input from Postgres the API's own detail, and keeps the message of one a command wrote", () => {
+    const fromDatabase = fromUnknown(new DastarError("invalid_input", 'new row for relation "unit" violates check constraint "unit_capacity_order"', "Failing row contains (x).", false, "23514"));
+    expect(fromDatabase).toMatchObject({ status: 422, code: "invalid_input", message: "the input breaks a rule of the stored configuration" });
+    expect(problemBody(fromDatabase, "t4")).toEqual({ type: "https://dastar.dev/errors/invalid_input", title: "invalid input", status: 422, code: "invalid_input", detail: "the input breaks a rule of the stored configuration", trace_id: "t4" });
+    // the same for the other SQLSTATEs that map to invalid_input
+    expect(fromUnknown(new DastarError("invalid_input", 'invalid byte sequence for encoding "UTF8": 0x00', undefined, false, "22021"))).toMatchObject({ message: "the input breaks a rule of the stored configuration" });
+    expect(fromUnknown(new DastarError("invalid_input", "unsupported Unicode escape sequence", undefined, false, "22P05"))).toMatchObject({ message: "the input breaks a rule of the stored configuration" });
+    // written by a command: no SQLSTATE, the message passes through
+    const fromCommand = fromUnknown(new DastarError("invalid_input", "capacity_min must be at least 1 and capacity_max at least capacity_min"));
+    expect(fromCommand).toMatchObject({ status: 422, code: "invalid_input", message: "capacity_min must be at least 1 and capacity_max at least capacity_min" });
+    // only invalid_input is replaced: another code from Postgres keeps its message
+    expect(fromUnknown(new DastarError("party_does_not_fit", "party of 9 does not fit", undefined, false, "DA003"))).toMatchObject({ message: "party of 9 does not fit" });
+  });
+
   it("converts unknown failures", () => {
     expect(fromUnknown(new DastarError("version_conflict", "v"))).toMatchObject({ status: 409, code: "version_conflict" });
     const own = new ApiProblem(401, "unauthorized");

@@ -382,6 +382,50 @@ describe("admin guards", () => {
     });
   });
 
+  describe("fit check on the confirmation of a hold (DA015)", () => {
+    /** A deactivation by the owner on a clock an hour ahead, by which a hold placed now is expired and the guard lets it through. */
+    async function deactivateByLaterClock(deactivate: () => Promise<QueryResult>): Promise<void> {
+      await setClock(owner, new Date(Date.now() + 3_600_000).toISOString());
+      try {
+        expect((await deactivate()).rowCount).toBe(1);
+      } finally {
+        await setClock(owner, null);
+      }
+    }
+
+    it("a hold whose unit a later clock deactivated is refused assignment_inactive when confirmed on the real clock, and stays held", async () => {
+      const S = await fresh(); const unit = S.units[0]!;
+      const id = await place(S, at(nextDay(), 19));
+      // control: the hold is live by the real clock, so the same deactivation is refused
+      expect(await refusal(setUnitActive(owner, S, unit, false))).toMatchObject(unitInUse(unit, id));
+      await deactivateByLaterClock(() => setUnitActive(owner, S, unit, false));
+      expect(await activeOf("unit", unit)).toBe(false);
+      expect(await storedStatus(id)).toBe("held");
+
+      const refused = await refusal(confirm(app, { reservationId: id, ...ctx(S) }));
+      expect(refused).toMatchObject({ name: "DastarError", code: "assignment_inactive", sqlstate: "DA015", message: `assignment ${unit} is not active` });
+      expect(await storedStatus(id)).toBe("held");
+
+      // reactivating the unit lets the same hold be confirmed
+      expect((await setUnitActive(owner, S, unit, true)).rowCount).toBe(1);
+      expect(await confirm(app, { reservationId: id, ...ctx(S) })).toMatchObject({ reservationId: id, status: "confirmed" });
+    });
+
+    it("a hold on a combination whose member unit a later clock deactivated is refused assignment_inactive when confirmed, and stays held", async () => {
+      const S = await fresh(); const combo = S.combos[0]!;
+      const id = await place(S, at(nextDay(), 19), COMBO(S));
+      const member = combo.units[0]!;
+      expect(await refusal(setUnitActive(owner, S, member, false))).toMatchObject(unitInUse(member, id));
+      await deactivateByLaterClock(() => setUnitActive(owner, S, member, false));
+      expect(await activeOf("unit", member)).toBe(false);
+      expect(await activeOf("unit_combo", combo.id)).toBe(true);
+
+      const refused = await refusal(confirm(app, { reservationId: id, ...ctx(S) }));
+      expect(refused).toMatchObject({ name: "DastarError", code: "assignment_inactive", sqlstate: "DA015", message: `assignment ${combo.id} is not active` });
+      expect(await storedStatus(id)).toBe("held");
+    });
+  });
+
   describe("venue time zone (DA017)", () => {
     const newId = async (): Promise<string> => (await owner.query("select uuidv7() as id")).rows[0].id as string;
     /** A venue written by `c`, bound to its own id as an engine command binds it. */
@@ -544,6 +588,37 @@ describe("admin guards", () => {
         await W.query("rollback").catch(() => undefined);
       }
       expect(await activeOf("unit_combo", combo)).toBe(true);
+      expect(await advisoryHeld("ag-H", "ExclusiveLock") + await advisoryHeld("ag-W", "ExclusiveLock")).toBe(0);
+      expect(await deadlockCountStable(owner)).toBe(before);
+    });
+
+    it("(d) a confirmation queues on the unit lock behind a deactivation on a later clock that judged its hold expired, then is refused assignment_inactive and the hold stays held", async () => {
+      const before = await deadlockCountStable(owner);
+      const S = await fresh(); const unit = S.units[0]!;
+      const id = await place(S, at(nextDay(), 19));
+      let pConfirm: Promise<Outcome<unknown>> | undefined;
+      await setClock(W, new Date(Date.now() + 3_600_000).toISOString());
+      try {
+        await W.query("begin");
+        await W.query("select set_config('dastar.venue_id', $1, true)", [S.venue]);
+        // by W's clock the hold is expired, so the guard lets the deactivation through and keeps the unit lock
+        expect((await W.query("update dastar.unit set active = false where id = $1", [unit])).rowCount).toBe(1);
+        expect(await advisoryHeld("ag-W", "ExclusiveLock")).toBe(1);
+        // the confirmation runs on the real clock, by which the hold is live
+        pConfirm = outcome(confirm(H, { reservationId: id, ...ctx(S) }));
+        await waitForBackend(owner, "ag-H", { type: "Lock", event: "advisory" });
+        expect(await storedStatus(id)).toBe("held");
+        await W.query("commit");
+      } catch (e) {
+        await W.query("rollback").catch(() => undefined);
+        if (pConfirm) await pConfirm;
+        throw e;
+      } finally {
+        await setClock(W, null);
+      }
+      expect(await pConfirm).toMatchObject({ ok: false, error: { name: "DastarError", code: "assignment_inactive", sqlstate: "DA015", message: `assignment ${unit} is not active` } });
+      expect(await storedStatus(id)).toBe("held");
+      expect(await activeOf("unit", unit)).toBe(false);
       expect(await advisoryHeld("ag-H", "ExclusiveLock") + await advisoryHeld("ag-W", "ExclusiveLock")).toBe(0);
       expect(await deadlockCountStable(owner)).toBe(before);
     });

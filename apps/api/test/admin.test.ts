@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
@@ -374,7 +375,8 @@ describe("admin routes", () => {
       const before = await snapshot(C.venue);
       const nul = await call("POST", `${b}/units`, admin, { label: "a\u0000b", capacity_min: 1, capacity_max: 2 });
       expect(nul.status).toBe(422);
-      expect(await json(nul)).toMatchObject({ code: "invalid_input", status: 422 });
+      // Postgres refused the label, so the detail is the API's sentence, not the database's
+      expect(await json(nul)).toMatchObject({ code: "invalid_input", status: 422, detail: "the input breaks a rule of the stored configuration" });
       // the seed's first unit holds 1 to 4; a minimum of 5 alone is above the stored maximum
       const crossed = await call("PATCH", `${b}/units/${C.units[0]}`, admin, { capacity_min: 5 });
       expect(crossed.status).toBe(422);
@@ -407,6 +409,66 @@ describe("admin routes", () => {
         }
       }
       expect(await snapshot(other.venue)).toEqual(before);
+    });
+  });
+
+  describe("a venue that does not exist, and a layout the database cannot store", () => {
+    const UNIT_BODY = { label: "Booth", capacity_min: 1, capacity_max: 2 };
+    const SCHEDULE_BODY = { day_of_week: 2, opens: "17:00", closes: "23:00", duration_by_size: { "2": 90 } };
+    const BLACKOUT_BODY = { starts_at: "2070-02-01T10:00:00Z", ends_at: "2070-02-01T12:00:00Z", reason: "Event" };
+    const rowsOf = (venue: string): Promise<number> => count(
+      `select (select count(*) from dastar.unit where venue_id = $1) + (select count(*) from dastar.unit_combo where venue_id = $1)
+            + (select count(*) from dastar.schedule where venue_id = $1) + (select count(*) from dastar.blackout where venue_id = $1) as n`, [venue]).then(Number);
+
+    it("a create under a venue id that does not exist is 404 for a unit, a schedule, and a blackout and 422 assignment_mismatch for a combination, for a key scoped to all venues, and stores nothing", async () => {
+      const venue = randomUUID();
+      const b = base(venue);
+      const [u1, u2] = [randomUUID(), randomUUID()];
+      const comboBody = { label: "Pair", unit_ids: [u1, u2], capacity_min: 3, capacity_max: 4 };
+      const cases: [string, string, Json, number, string][] = [
+        ["unit", `${b}/units`, UNIT_BODY, 404, "not_found"],
+        ["schedule", `${b}/schedules`, SCHEDULE_BODY, 404, "not_found"],
+        ["blackout", `${b}/blackouts`, BLACKOUT_BODY, 404, "not_found"],
+        ["combination", `${b}/combos`, comboBody, 422, "assignment_mismatch"],
+      ];
+      for (const [name, path, body, status, code] of cases) {
+        const r = await call("POST", path, admin, body);
+        expect(r.status, name).toBe(status);
+        expect(await json(r), name).toMatchObject({ code, status });
+      }
+      expect(await rowsOf(venue)).toBe(0);
+
+      // controls: the same bodies under a venue that exists are created, so the refusals above were the venue's absence
+      const S = await fresh();
+      const real = base(S.venue);
+      expect((await call("POST", `${real}/units`, admin, UNIT_BODY)).status).toBe(201);
+      expect((await call("POST", `${real}/schedules`, admin, SCHEDULE_BODY)).status).toBe(201);
+      expect((await call("POST", `${real}/blackouts`, admin, BLACKOUT_BODY)).status).toBe(201);
+      expect((await call("POST", `${real}/combos`, admin, { ...comboBody, unit_ids: [S.units[4], S.units[5]] })).status).toBe(201);
+    });
+
+    it("a NUL or an unpaired surrogate in a layout is 422 invalid_input with the command's sentence on create and on change, and nothing is written", async () => {
+      const S = await fresh();
+      const b = base(S.venue);
+      const sentence = "layout must be a JSON object without NUL characters or unpaired surrogates";
+      const before = await snapshot(S.venue);
+      // sent as JSON text, so each escape reaches the server as written
+      const text = (layout: string): string => `{"label":"Booth","capacity_min":1,"capacity_max":2,"layout":${layout}}`;
+      const send = (method: string, path: string, body: string) =>
+        api.app.request(path, { method, headers: { ...bearer(admin.key), "content-type": "application/json" }, body });
+      for (const [name, layout] of [["a NUL", '{"note":"a\\u0000b"}'], ["a NUL in a key", '{"a\\u0000b":1}'], ["a lone surrogate", '{"note":"\\ud800"}']] as const) {
+        const created = await send("POST", `${b}/units`, text(layout));
+        expect(created.status, `create with ${name}`).toBe(422);
+        expect(await json(created), `create with ${name}`).toMatchObject({ code: "invalid_input", status: 422, detail: sentence });
+        const changed = await send("PATCH", `${b}/units/${S.units[0]}`, `{"layout":${layout}}`);
+        expect(changed.status, `change with ${name}`).toBe(422);
+        expect(await json(changed), `change with ${name}`).toMatchObject({ code: "invalid_input", status: 422, detail: sentence });
+      }
+      expect(await snapshot(S.venue)).toEqual(before);
+      // control: a layout with escaped text that is not a NUL or a surrogate is stored
+      const ok = await send("POST", `${b}/units`, text('{"note":"\\\\u0000 is text"}'));
+      expect(ok.status).toBe(201);
+      expect((await json<{ unit: UnitJson }>(ok)).unit.layout).toEqual({ note: "\\u0000 is text" });
     });
   });
 

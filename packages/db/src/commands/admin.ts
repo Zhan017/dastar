@@ -1,6 +1,6 @@
 import type { ClientBase } from "pg";
 import { BOUNDS } from "@dastar/core";
-import { asDastarError } from "../errors.js";
+import { DastarError, asDastarError } from "../errors.js";
 import { setContext, bindVenue } from "../context.js";
 import { enqueue, reservationPayload } from "../outbox.js";
 import { LOCK_VENUE_EXCLUSIVE_SQL } from "../units.js";
@@ -12,13 +12,31 @@ export type StrandedCode = "capacity_conflict" | "assignment_in_use" | "blackout
 export type AdminOutcome<T> =
   | { ok: true; value: T; cancelled: string[] }
   | { ok: false; error: { code: StrandedCode; message: string }; stranded: string[] };
-/** A stranded reservation: live by effective status, and whether its range has started by database time. */
+/** A stranded reservation: live by effective status, and whether it is seated or its range has started by database time. */
 export type Stranded = { id: string; started: boolean };
 
 /** The columns a stranded query selects; every one orders by start and reads at most BOUNDS.forceCancellations + 1 rows. */
-export const STRANDED_COLUMNS = "r.id, lower(r.during) <= dastar.dastar_now() as started";
+export const STRANDED_COLUMNS = "r.id, (r.status = 'seated' or lower(r.during) <= dastar.dastar_now()) as started";
 export const STRANDED_TAIL = `order by lower(r.during), r.id limit ${BOUNDS.forceCancellations + 1}`;
 export const LIVE = "dastar.effective_status(r.status, r.hold_expires_at) in ('held', 'confirmed', 'seated')";
+
+// Escaped backslashes and well-formed surrogate pairs are consumed first, so what remains of a `\u` escape is a NUL or a
+// surrogate with no partner, which jsonb refuses.
+const JSON_VALID_ESCAPES = /\\\\|\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}/g;
+const JSON_REFUSED_ESCAPE = /\\u(?:0000|[dD][89a-fA-F][0-9a-fA-F]{2})/;
+
+/**
+ * A plain JSON object as text for a jsonb parameter. Anything else is `invalid_input`: an array, null, a value
+ * JSON.stringify refuses (a cycle, a bigint), and a NUL character or an unpaired surrogate in any string or key.
+ * `message` replaces the default sentence.
+ */
+export function jsonText(name: string, value: unknown, message = `${name} must be a JSON object without NUL characters or unpaired surrogates`): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new DastarError("invalid_input", message);
+  let json: string | undefined;
+  try { json = JSON.stringify(value); } catch { json = undefined; }
+  if (json === undefined || JSON_REFUSED_ESCAPE.test(json.replace(JSON_VALID_ESCAPES, ""))) throw new DastarError("invalid_input", message);
+  return json;
+}
 
 /**
  * One admin write in its own transaction: the context set, the venue lock taken exclusively before anything else.

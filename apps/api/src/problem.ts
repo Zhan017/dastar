@@ -77,6 +77,8 @@ const DETAIL_BY_CODE: Partial<Record<DastarErrorCode, string>> = {
   combo_too_large: "a combination has between 2 and 6 units",
 };
 
+const STORED_RULE_DETAIL = "the input breaks a rule of the stored configuration";
+
 export function problemFor(code: DastarErrorCode, detail?: string, extensions: Record<string, unknown> = {}): ApiProblem {
   const m: Mapping = STATUS_BY_CODE[code];
   return new ApiProblem(m.status, code, DETAIL_BY_CODE[code] ?? detail, m.retryAfter === undefined ? {} : { "Retry-After": m.retryAfter }, extensions);
@@ -84,7 +86,8 @@ export function problemFor(code: DastarErrorCode, detail?: string, extensions: R
 
 export function fromUnknown(e: unknown): ApiProblem {
   if (e instanceof ApiProblem) return e;
-  if (e instanceof DastarError) return problemFor(e.code, e.message);
+  // an invalid_input that carries a SQLSTATE came from Postgres, whose sentence names a column or constraint; one a command wrote has none
+  if (e instanceof DastarError) return problemFor(e.code, e.code === "invalid_input" && e.sqlstate !== undefined ? STORED_RULE_DETAIL : e.message);
   // the framework's own rejections: unsupported media type, malformed or missing JSON, oversized body
   if (e instanceof HTTPException && e.status < 500) return new ApiProblem(400, "validation", e.message);
   return new ApiProblem(500, "internal");

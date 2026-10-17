@@ -35,10 +35,12 @@ export function mapPgError(e: unknown): DastarError | null {
     // any other CHECK: capacity order, schedule shape, blackout bounds
     return new DastarError("invalid_input", pe.message ?? "", pe.detail, false, pe.code);
   }
-  // text Postgres cannot store, such as a NUL character in a label or a reason
-  if (pe.code === "22021") return new DastarError("invalid_input", pe.message ?? "", pe.detail, false, pe.code);
-  // the first statement of a hold claims an idempotency row that references the venue
-  if (pe.code === "23503" && pe.constraint === "idempotency_venue_id_fkey") return new DastarError("not_found", "venue not found", pe.detail, false, pe.code);
+  // text Postgres cannot store, such as a NUL character in a label or a reason, and jsonb text it cannot convert, such as `\u0000`
+  if (pe.code === "22021" || pe.code === "22P05") return new DastarError("invalid_input", pe.message ?? "", pe.detail, false, pe.code);
+  // a write whose row names a venue that does not exist: the first statement of a hold claims an idempotency row, and an
+  // admin write inserts a row of its own. Only the single-column key on the venue; a composite key such as
+  // reservation_unit_venue_id_unit_id_fkey names another row, not the venue.
+  if (pe.code === "23503" && pe.constraint?.endsWith("_venue_id_fkey")) return new DastarError("not_found", "venue not found", pe.detail, false, pe.code);
   // Postgres's English text names the policy; under a translated lc_messages the violation reads forbidden_write, still a refusal
   if (pe.code === "42501" && pe.message?.includes("row-level security")) return new DastarError("venue_scope_violation", pe.message, pe.detail, false, pe.code);
   const code = BY_SQLSTATE[pe.code];
