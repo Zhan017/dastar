@@ -9,6 +9,11 @@ import { getReservation, findReservationVenue, type GetInput, type ReservationVi
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
 import { availability, SnapshotCache, type AvailabilityInput, type AvailabilityResult } from "./commands/availability.js";
+import type { AdminContext, AdminOutcome } from "./commands/admin.js";
+import {
+  listUnits, createUnit, updateUnit, listCombos, createCombo, updateCombo,
+  type UnitView, type ComboView, type CreateUnitInput, type UpdateUnitInput, type CreateComboInput, type UpdateComboInput,
+} from "./commands/admin-units.js";
 
 export type DastarOptions = {
   /**
@@ -37,8 +42,28 @@ export type DastarOptions = {
   onAcquire?: (info: AcquireInfo) => void;
 };
 
-export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue";
+export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue"
+  | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
+
+/**
+ * Configuration writes of one venue. Each takes the venue lock exclusively before anything else, so no hold or
+ * confirmation of the venue runs beside it. A write that would strand live reservations returns an outcome that
+ * names them and writes nothing, or, with `force`, cancels them (with an outbox event each) in the same transaction.
+ */
+export interface DastarAdmin {
+  /** The venue's units, inactive ones included, in label order. */
+  listUnits(venueId: string): Promise<UnitView[]>;
+  createUnit(ctx: AdminContext, input: CreateUnitInput): Promise<UnitView>;
+  /** Capacity narrowing and deactivation strand live reservations; `not_found` for a unit of another venue. */
+  updateUnit(ctx: AdminContext, input: UpdateUnitInput): Promise<AdminOutcome<UnitView>>;
+  /** The venue's combinations, inactive ones included, in label order. */
+  listCombos(venueId: string): Promise<ComboView[]>;
+  /** `assignment_mismatch` unless the members are 2 to 6 distinct units of the venue. */
+  createCombo(ctx: AdminContext, input: CreateComboInput): Promise<ComboView>;
+  /** Deactivation strands the live reservations assigned to the combination. */
+  updateCombo(ctx: AdminContext, input: UpdateComboInput): Promise<AdminOutcome<ComboView>>;
+}
 
 export interface Dastar {
   hold(input: HoldInput, hooks?: HoldHooks): Promise<HoldOutcome>;
@@ -58,6 +83,7 @@ export interface Dastar {
   /** Bookable starts for a party in a window; advisory, a hold is still the judge. */
   availability(input: AvailabilityInput): Promise<AvailabilityResult>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
+  admin: DastarAdmin;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
 }
@@ -258,6 +284,14 @@ export function createDastar(opts: DastarOptions): Dastar {
     listHolds: (input) => run("listHolds", null, (c) => listHolds(c, input)),
     availability: (input) => run("availability", null, (c) => availability(c, input, snapshots)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
+    admin: {
+      listUnits: (venueId) => run("listUnits", null, (c) => listUnits(c, venueId)),
+      createUnit: (ctx, input) => run("createUnit", ctx.traceId, (c) => createUnit(c, ctx, input)),
+      updateUnit: (ctx, input) => run("updateUnit", ctx.traceId, (c) => updateUnit(c, ctx, input)),
+      listCombos: (venueId) => run("listCombos", null, (c) => listCombos(c, venueId)),
+      createCombo: (ctx, input) => run("createCombo", ctx.traceId, (c) => createCombo(c, ctx, input)),
+      updateCombo: (ctx, input) => run("updateCombo", ctx.traceId, (c) => updateCombo(c, ctx, input)),
+    },
     close: async () => {
       const p = cancellerPromise;
       cancellerPromise = null;
