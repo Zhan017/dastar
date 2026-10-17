@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Client, ClientBase, QueryResultRow } from "pg";
-import type { RankingStrategy } from "@dastar/core";
+import { BOUNDS, type RankingStrategy } from "@dastar/core";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, type Seed } from "./helpers/seed.js";
@@ -344,6 +344,31 @@ describe("availability", () => {
     });
   });
 
+  describe("the candidate order a ranking strategy receives", () => {
+    it("is by label then id, whatever the order the rows were inserted in, with and without a cache", async () => {
+      const day = nextDay();
+      const V = await utcVenue();
+      await addSchedule(V.venue, day);
+      // inserted after T1 to T6, so insertion order alone would put it last of the fitting units
+      const added = (await owner.query("insert into dastar.unit(venue_id, label, capacity_min, capacity_max) values ($1, 'A0', 1, 4) returning id", [V.venue])).rows[0].id as string;
+      await occupy(V, day, [0]);
+      const seen: string[][] = [];
+      const first: RankingStrategy = { name: "first", choose: (free) => { seen.push(free.map((c) => c.label)); return free[0] ?? null; } };
+      const cache = new SnapshotCache();
+      const expected = grid(minutes(17), minutes(21), 15);
+      for (const [name, c] of [["cold cache", cache], ["warm cache", cache], ["no cache", undefined]] as const) {
+        seen.length = 0;
+        const r = await offer(V, day, 3, { ranking: first }, c);
+        // T1 is busy; a party of 3 fits T2 to T4 and A0
+        expect(starts(r), name).toEqual(expected);
+        expect(seen.length, name).toBe(expected.length);
+        expect(seen.every((labels) => labels.join() === "A0,T2,T3,T4"), name).toBe(true);
+        expect(onUnit(r, added), name).toBe(true);
+      }
+      expect(cache.size).toBe(1);
+    });
+  });
+
   describe("the window, the clock, and the limit", () => {
     it("starts before the database clock are dropped, a start at the clock is kept", async () => {
       const day = nextDay();
@@ -425,6 +450,19 @@ describe("availability", () => {
       expect(all.truncated).toBe(false);
     });
 
+    it("a limit that is not a finite number is the default limit, not no limit", async () => {
+      const day = nextDay();
+      const V = await utcVenue({ slotMinutes: 5 });
+      // 10:00 to 22:00 with 90 minutes for a party of 2: 127 grid starts, above the default of 100
+      await addSchedule(V.venue, day, { opens: "10:00", closes: "22:00" });
+      const byDefault = await offer(V, day, 2);
+      expect(byDefault.slots).toHaveLength(BOUNDS.availabilityResults.default);
+      expect(byDefault.truncated).toBe(true);
+      for (const limit of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        expect(await offer(V, day, 2, { limit }), `limit ${limit}`).toEqual(byDefault);
+      }
+    });
+
     it("every returned slot is held unchanged: its start, duration, and assignment, under the schedule policy", async () => {
       const day = nextDay();
       const V = await utcVenue();
@@ -440,6 +478,94 @@ describe("availability", () => {
           if (out.ok) await cancel(app, { reservationId: out.receipt.reservationId, ...ctx(V), reason: "guest" });
         }
       }
+    });
+  });
+
+  describe("query bounds", () => {
+    /**
+     * A UTC venue with one candidate, T5 (capacity 1 to 2, a party of 2), every other unit deactivated so no combination is usable,
+     * and one period of the weekday of `day`; durations are 720 minutes, so a gap of 720 reaches the padding the bounds allow for.
+     */
+    async function lone(day: number, period: { opens: string; closes: string; gap: number }): Promise<Seed> {
+      const V = await utcVenue({ slotMinutes: 60 });
+      await owner.query("update dastar.unit set active = false where venue_id = $1 and id <> $2", [V.venue, V.units[4]]);
+      await addSchedule(V.venue, day, { ...period, nextDay: true, durations: '{"2":720}' });
+      return V;
+    }
+    /** A hold on T5 of `minutesLong` from `startsAt`, outside any schedule. */
+    const holdT5 = (V: Seed, startsAt: string, minutesLong: number): Promise<string> =>
+      place(V, startsAt, { partySize: 2, durationMinutes: minutesLong, assignment: unit(V, 4) });
+
+    it("occupancy is read from 12 hours before the window: a hold ending a minute into the start's padding blocks it", async () => {
+      // a 24-hour period from D 00:00 with 720 minutes: its first start is D 00:00, whose padded range [D-12h, D+24h) takes a gap of 720 on both sides
+      const day = nextDay();
+      const blocked = await lone(day, { opens: "00:00", closes: "00:00", gap: 720 });
+      // [D-13h, D-12h+1min) overlaps the padded range by one minute and ends well before the 01:00 start's padding begins (D-11h)
+      await holdT5(blocked, at(day - 1, 11), 61);
+      const withHold = await offer(blocked, day, 2);
+      expect(starts(withHold)).not.toContain("00:00");
+      expect(starts(withHold)).toContain("01:00");
+      const controlDay = nextDay();
+      const control = await lone(controlDay, { opens: "00:00", closes: "00:00", gap: 720 });
+      expect(starts(await offer(control, controlDay, 2))).toContain("00:00");
+    });
+
+    it("occupancy is read to 24 hours after the window: a hold starting a minute before the end of the padding blocks the start", async () => {
+      // the period D 23:00 to D+1 11:00 holds one start, D 23:00, booked [D 23:00, D+1 11:00); a gap of 720 pads it to [D 11:00, D+1 23:00)
+      const day = nextDay();
+      const blocked = await lone(day, { opens: "23:00", closes: "11:00", gap: 720 });
+      await holdT5(blocked, at(day + 1, 22, 59), 60); // [D+1 22:59, D+1 23:59) overlaps the padding by a minute; a bound of to + 12h (D+1 12:00) would miss it
+      expect(starts(await offer(blocked, day, 2))).toEqual([]);
+      const controlDay = nextDay();
+      const control = await lone(controlDay, { opens: "23:00", closes: "11:00", gap: 720 });
+      expect(starts(await offer(control, controlDay, 2))).toEqual(["23:00"]);
+    });
+
+    it("closures are read to 12 hours after the window: a blackout that begins after it and overlaps the booking drops the start", async () => {
+      // the same period with no gap: booked [D 23:00, D+1 11:00); the blackout [D+1 10:59, D+1 11:30) overlaps the end of the booking and begins after the window
+      const day = nextDay();
+      const closed = await lone(day, { opens: "23:00", closes: "11:00", gap: 0 });
+      await addBlackout(closed.venue, rangeLiteral(at(day + 1, 10, 59), 31));
+      expect(starts(await offer(closed, day, 2))).toEqual([]);
+      const controlDay = nextDay();
+      const control = await lone(controlDay, { opens: "23:00", closes: "11:00", gap: 0 });
+      expect(starts(await offer(control, controlDay, 2))).toEqual(["23:00"]);
+    });
+  });
+
+  describe("across a change of the clocks, end to end", () => {
+    /** The seed's venue in Berlin, hourly slots, and one Saturday period from 22:00 to 04:00 the next day, 60 minutes for a party of 2. */
+    async function berlinNight(): Promise<Seed> {
+      const V = await seedVenue(owner);
+      await owner.query("update dastar.venue set max_live_holds_per_actor = 100, slot_minutes = 60 where id = $1", [V.venue]);
+      await owner.query(
+        `insert into dastar.schedule(venue_id, day_of_week, opens, closes, closes_next_day, duration_by_size, gap_minutes)
+         values ($1, 6, '22:00', '04:00', true, '{"2":60}'::jsonb, 0)`,
+        [V.venue],
+      );
+      return V;
+    }
+    async function offeredAndHeld(from: string, to: string): Promise<{ starts: string[]; held: unknown }> {
+      const V = await berlinNight();
+      const r = await availability(app, { venueId: V.venue, partySize: 2, from, to });
+      const last = r.slots[r.slots.length - 1]!;
+      const held = await hold(app, holdInput(V, last.startsAt, { durationMinutes: last.durationMinutes, assignment: last.assignment, enforceSchedule: true }));
+      return { starts: r.slots.map((s) => s.startsAt), held };
+    }
+
+    it("the spring night offers five starts, 21:00Z to 01:00Z, and the last is held under the schedule policy", async () => {
+      const out = await offeredAndHeld("2061-03-26T00:00:00Z", "2061-03-27T12:00:00Z");
+      expect(out.starts).toEqual(["2061-03-26T21:00:00.000Z", "2061-03-26T22:00:00.000Z", "2061-03-26T23:00:00.000Z", "2061-03-27T00:00:00.000Z", "2061-03-27T01:00:00.000Z"]);
+      expect(out.held).toMatchObject({ ok: true });
+    });
+
+    it("the autumn night offers seven starts, 20:00Z to 02:00Z, and the last is held under the schedule policy", async () => {
+      const out = await offeredAndHeld("2061-10-29T00:00:00Z", "2061-10-30T12:00:00Z");
+      expect(out.starts).toEqual([
+        "2061-10-29T20:00:00.000Z", "2061-10-29T21:00:00.000Z", "2061-10-29T22:00:00.000Z", "2061-10-29T23:00:00.000Z",
+        "2061-10-30T00:00:00.000Z", "2061-10-30T01:00:00.000Z", "2061-10-30T02:00:00.000Z",
+      ]);
+      expect(out.held).toMatchObject({ ok: true });
     });
   });
 

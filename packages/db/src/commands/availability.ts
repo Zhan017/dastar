@@ -35,8 +35,8 @@ export const CLOSURES_SQL = `select lower(during) as starts_at, upper(during) as
   from dastar.blackout where venue_id = $1 and active and during && tstzrange($2::timestamptz, $3::timestamptz)`;
 
 const VENUE_SQL = "select slot_minutes, availability_window_days, config_version, dastar.dastar_now() as now from dastar.venue where id = $1";
-const UNITS_SQL = "select id, label, capacity_min, capacity_max, active from dastar.unit where venue_id = $1";
-const COMBOS_SQL = "select id, label, unit_ids, capacity_min, capacity_max, active from dastar.unit_combo where venue_id = $1";
+const UNITS_SQL = "select id, label, capacity_min, capacity_max, active from dastar.unit where venue_id = $1 order by label, id";
+const COMBOS_SQL = "select id, label, unit_ids, capacity_min, capacity_max, active from dastar.unit_combo where venue_id = $1 order by label, id";
 
 type Snapshot = { units: UnitSnapshot[]; combos: ComboSnapshot[] };
 
@@ -73,7 +73,8 @@ const HOUR = 3_600_000;
 export async function availability(client: ClientBase, input: AvailabilityInput, cache?: SnapshotCache): Promise<AvailabilityResult> {
   const from = new Date(input.from);
   const to = new Date(input.to);
-  const limit = Math.min(Math.max(1, Math.trunc(input.limit ?? BOUNDS.availabilityResults.default)), BOUNDS.availabilityResults.max);
+  const requested = typeof input.limit === "number" && Number.isFinite(input.limit) ? input.limit : BOUNDS.availabilityResults.default;
+  const limit = Math.min(Math.max(1, Math.trunc(requested)), BOUNDS.availabilityResults.max);
   await client.query("begin isolation level repeatable read read only");
   try {
     await bindVenue(client, input.venueId);

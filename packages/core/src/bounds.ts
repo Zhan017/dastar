@@ -1,6 +1,6 @@
 /**
  * The workload bounds of the system design, section 6.5. The database enforces the ones it can with CHECK
- * constraints, and the hold command the policy checks; these values are what both enforce, stated once.
+ * constraints, and the commands the policy checks; these values are what both enforce, stated once.
  */
 export const BOUNDS = {
   /** Units in a combination; `combo_too_large` outside it. */
@@ -13,7 +13,7 @@ export const BOUNDS = {
   holdTtlSeconds: { min: 60, max: 3_600 },
   /** A venue's live-holds cap per actor; `too_many_live_holds` above it. */
   liveHoldsPerActor: { default: 5, max: 100 },
-  /** Slots one availability request returns; `truncated` says more exist. */
+  /** Slots one availability request returns at most. */
   availabilityResults: { default: 100, max: 500 },
   /** Grid starts one availability request examines before it stops with `truncated`. */
   availabilityStartsExamined: 10_000,

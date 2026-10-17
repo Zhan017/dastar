@@ -40,6 +40,13 @@ describe("slotStarts", () => {
     expect(starts.every((s, k) => k === 0 || s.getTime() - starts[k - 1]!.getTime() === 15 * MINUTE)).toBe(true);
   });
 
+  it("throws a RangeError for a slot length that is zero, negative, or not a number, instead of looping", () => {
+    const period = { startsAt: at(2060, 6, 1, 17), endsAt: at(2060, 6, 1, 23) };
+    for (const slotMinutes of [0, -15, Number.NaN]) {
+      expect(() => slotStarts(period, slotMinutes, 90), `slotMinutes ${slotMinutes}`).toThrow(RangeError);
+    }
+  });
+
   it("offers nothing when the period is shorter than the duration", () => {
     expect(slotStarts({ startsAt: at(2060, 6, 1, 17), endsAt: at(2060, 6, 1, 18) }, 15, 90)).toEqual([]);
   });

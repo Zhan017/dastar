@@ -14,7 +14,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
       params: IdParam,
       body: { required: true, content: { "application/json": { schema: AvailabilityBodySchema } } },
     },
-    responses: { 200: { description: "The bookable slots in start order, and whether more exist", content: { "application/json": { schema: AvailabilityResponseSchema } } }, ...problemResponses },
+    responses: { 200: { description: "The bookable slots in start order, and whether the list was cut short", content: { "application/json": { schema: AvailabilityResponseSchema } } }, ...problemResponses },
   });
 
   app.openapi(route, async (c) => {

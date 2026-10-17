@@ -36,8 +36,9 @@ export function durationFor(durationBySize: Record<string, number>, partySize: n
   return best;
 }
 
-/** Starts on the slot grid from the period's opening whose booking ends by its close. */
+/** Starts on the slot grid from the period's opening whose booking ends by its close; a RangeError unless the grid step is positive. */
 export function slotStarts(period: { startsAt: Date; endsAt: Date }, slotMinutes: number, durationMinutes: number): Date[] {
+  if (!(slotMinutes > 0)) throw new RangeError("slotMinutes must be a positive number of minutes");
   const out: Date[] = [];
   const last = period.endsAt.getTime() - durationMinutes * MINUTE;
   for (let t = period.startsAt.getTime(); t <= last; t += slotMinutes * MINUTE) out.push(new Date(t));

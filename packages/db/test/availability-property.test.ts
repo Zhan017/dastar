@@ -65,6 +65,8 @@ describe("availability against a model", () => {
     let scenariosWithSlots = 0;
     let droppedTotal = 0;
     let granted = 0;
+    let preplacedGranted = 0;
+    let occupancyRefused = 0;
     let holdSeq = 0;
 
     for (let k = 0; k < SCENARIOS; k++) {
@@ -138,11 +140,12 @@ describe("availability against a model", () => {
         for (let h = int(0, 6); h > 0; h--) {
           const target = pick(targets);
           holdSeq += 1;
-          await hold(app, {
+          const placed = await hold(app, {
             venueId: venue, actor: `key:prop${holdSeq}`, traceId: `prop-t${holdSeq}`, idempotencyKey: `prop-k${holdSeq}`,
             partySize: int(target.min, Math.min(target.max, 6)), startsAt: iso(15 * int(32, 88)), durationMinutes: pick([60, 90, 120, 150]),
             assignment: { kind: target.kind, id: target.id },
           });
+          if (placed.ok) preplacedGranted += 1;
         }
       }
 
@@ -247,6 +250,7 @@ describe("availability against a model", () => {
               .map((c) => c.unit_ids),
           ];
           if (bookable.some((needed) => needed.every((u) => freeOver(u, lo, hi)))) modelStarts.add(iso(start));
+          else if (bookable.length > 0) occupancyRefused += 1;
         }
       }
       expect([...starts].sort(), `${where}, party ${party}: offered starts`).toEqual([...modelStarts].sort());
@@ -277,5 +281,7 @@ describe("availability against a model", () => {
     expect(scenariosWithSlots, "scenarios with at least one offered slot").toBeGreaterThanOrEqual(SCENARIOS / 2);
     expect(droppedTotal, "grid starts refused by a hold, a blackout, an inactive unit, or a gap").toBeGreaterThan(0);
     expect(granted, "slots held and cancelled").toBeGreaterThan(0);
+    expect(preplacedGranted, "pre-placed holds that were granted").toBeGreaterThan(0);
+    expect(occupancyRefused, "open starts with a bookable candidate, refused by occupancy alone").toBeGreaterThan(0);
   }, 300_000);
 });
