@@ -15,7 +15,7 @@ What `dastar_app` cannot do:
 - Change a reservation's assignment, party size, range, venue, or version. The update grant on `reservation` covers `status`, `cancel_reason`, `confirm_token_hash`, `external_ref`, and `updated_at` only.
 - Confirm an expired hold, or set a confirm token on anything but a live hold.
 - Reserve or confirm inside an active blackout, or activate a blackout over a live reservation.
-- Reserve an inactive unit or combination, or a combination over an inactive unit, or deactivate one that a live reservation uses.
+- Reserve, or confirm a hold on, an inactive unit or combination or a combination over an inactive unit, or deactivate one that a live reservation uses.
 - Move the clock. `dastar.dastar_now()` is `now()` in every migrated database. The test suite installs an override in its own template database only, and `dastar_app` cannot replace functions.
 - Attach a trigger function to a table of its own. Postgres checks EXECUTE when a trigger is created, not when it fires, so EXECUTE on the schema's functions is revoked from PUBLIC; the trigger functions are granted to no role, the helper functions to the application, worker, and reporting roles, and the venue lookups to the application role alone.
 - Prove trust through a session setting. Custom settings such as `dastar.actor` are user-settable, so nothing treats one as evidence of origin.
