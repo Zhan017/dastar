@@ -177,7 +177,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 
 | Area | Implemented |
 |---|---|
-| Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, the workload bounds, and availability as pure functions, each checked against the schema by the engine's tests |
+| Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, and the workload bounds, each checked against the schema by the engine's tests, and availability as pure functions over instants |
 | Inventory | Venues, units with capacity ranges, fixed unit combinations, weekly service periods, and blackouts |
 | Availability | Bookable starts for a party in a window, from service periods in the venue's time zone, blackouts, and live occupancy, ranked smallest fit first; each slot is exactly what a hold accepts |
 | Reservations | Hold, confirm, seat, complete, cancel, batch expiry, token minting, reads, and a listing of an actor's live holds, behind one pool-owned API |

@@ -229,7 +229,7 @@ flowchart TB
   mcp --> agent
 ```
 
-**core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is three pure functions: candidate slots from a schedule, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. Time zone math is Postgres's (D48): the database computes service periods as instants, and the availability functions take instants.
+**core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is pure functions over instants: candidate slots from service periods, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default, and one pass that combines them. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. Time zone math is Postgres's (D48): the database computes service periods as instants, and the availability functions take instants.
 
 **db.** Migrations and runner. Commands, one transaction each, returning a receipt, with a retry classifier for deadlock and serialization errors. Idempotency stores actor, key, payload hash, and the exact response. Snapshot and occupancy queries. Outbox claim and ack. SQLSTATE mapper. A secretbox helper for encrypting confirm tokens and webhook secrets at rest with a key from the environment. Every command sets `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` as transaction-local settings at the start; from M2 the venue setting is what row-level security keys on, so a transaction that forgets it reads nothing and inserts nothing.
 
@@ -530,7 +530,7 @@ receipt: { reservation_id, status, version, audit_id, trace_id }
 | GET | /health/live, /health/ready | none | M1 | Ready means database reachable and migrations applied |
 | GET | /openapi.json | none | M1 | Docs UI in M2 |
 | POST | /v1/reservations/:id/seat, /complete | seat | M2 | |
-| POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to, limit?. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold; `truncated` says more exist |
+| POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to, limit?. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold; `truncated` says the list was cut short |
 | GET | /v1/venues/:id/floor-plan | read | M2 | Units with current occupancy |
 | GET | /v1/venues/:id/holds | read | M2 | Live holds belonging to the calling actor, so a client can find and release holds it lost track of |
 | CRUD | /admin/venues/:id/{units,combos,schedules,blackouts,webhooks,keys} | admin | M2, webhooks M4 | Reject-or-force on stranded bookings; force is bounded to future reservations and batched |
@@ -651,7 +651,7 @@ Input: venue, party size, a window `[from, to)` no longer than `availability_win
 3. Occupancy: active `reservation_unit` ranges through the occupancy view, excluding rows whose reservation's effective status is expired, so an unswept hold does not hide a free slot; the next hold's overlap pass clears it. Completed reservations keep active rows and block, as the exclusion constraint does.
 4. Candidate starts: for each period, in opening and then schedule order, the duration of the smallest `duration_by_size` key at or above the party, and starts on the `slot_minutes` grid from the opening whose booking ends by the close; a start belongs to the first period that admits it. Starts outside `[from, to)`, before the database clock, or whose booking overlaps an active blackout are dropped.
 5. Fitting assignments: active units whose range includes the party, then active combos whose range includes it and whose member units are all active. An assignment is free when none of its units is occupied over the booking padded by the period's gap on both sides.
-6. Rank via `RankingStrategy`. Default `restaurantHost`: smallest fitting capacity first, a single unit before a combo, then the unit that breaks the fewest free combos (a combo containing it that is entirely free over the same padded range), then label and id. One assignment per start. Greedy and one pass; the work is bounded by the window, a result limit (100, at most 500), and 10,000 examined starts, and `truncated` says when either stopped it, so the same inputs give the same answer.
+6. Rank via `RankingStrategy`. Default `restaurantHost`: smallest fitting capacity first, a single unit before a combo, then the unit that breaks the fewest free combos (a combo containing it that is entirely free over the same padded range), then label and id. One assignment per start. Greedy and one pass. The grid of starts grows with the window and the venue's schedules; the work per start is bounded by a result limit (100, at most 500) and 10,000 examined starts, and `truncated` says when either cut the list short. Units and combos are read in label order, so the same inputs give the same answer.
 
 Each returned slot carries the exact `{ starts_at, duration_minutes, assignment }` that hold accepts. The result is advisory; the hold is the judge. v0.2 benchmarks compute-on-request versus precomputed per venue-day candidate slots minus live occupancy.
 
@@ -697,7 +697,7 @@ Hosted sandbox with free keys, gated. If and only if the M1 launch produces sign
 
 | Layer | Tool | What it proves |
 |---|---|---|
-| Unit, core | Vitest | Pure functions, state table, slot math, DST across spring gap and autumn overlap, midnight-crossing periods |
+| Unit, core | Vitest | Pure functions, state table, slot math; DST across spring gap and autumn overlap and midnight-crossing periods are db tests, because Postgres converts local times (D48) |
 | Migrations | Vitest and testcontainers | From zero, checksums, lock timeout retry, advisory lock, grants for each role |
 | Integration, db | Vitest, fresh database per test file by cloning a migrated template | Commands, SQLSTATE mapping, retry classifier, test clock, idempotency scope and purge |
 | Attack suite | Raw SQL via pg as `dastar_app` | Each boundary-A invariant refuses violation with the expected SQLSTATE: overlapping insert, expired confirm, illegal transition, oversize party, audit update, delete, truncate, and direct insert, unit-row flip and delete, forged internal setting, edited expiry, edited combo members, cross-venue unit; DDL is denied |
