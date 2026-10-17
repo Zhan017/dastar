@@ -8,3 +8,5 @@ export type { StatusInput, StatusHooks } from "./commands/seat.js";
 export type { MintInput } from "./commands/mint-token.js";
 export type { GetInput, ReservationView } from "./commands/get.js";
 export type { ListHoldsInput, HoldView } from "./commands/list-holds.js";
+export type { AvailabilityInput, AvailabilityResult } from "./commands/availability.js";
+export { BOUNDS, restaurantHost, type RankingStrategy, type Slot } from "@dastar/core";

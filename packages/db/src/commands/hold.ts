@@ -4,6 +4,7 @@ import { DastarError, STORED_OUTCOMES, mapPgError, asDastarError } from "../erro
 import { setContext, setActor } from "../context.js";
 import { sortUnitIds, LOCK_UNIT_SQL, LOCK_VENUE_SHARED_SQL } from "../units.js";
 import { enqueue, reservationPayload } from "../outbox.js";
+import { PERIODS_SQL } from "./availability.js";
 import { BOUNDS, canonicalHoldRequest, type HoldInput, type HoldOutcome } from "@dastar/core";
 
 export type { Assignment, HoldInput, Receipt, HoldOutcome } from "@dastar/core";
@@ -85,6 +86,9 @@ async function attemptHold(client: ClientBase, input: HoldInput, hash: Buffer, h
       return { ...row.response, replayed: true };
     }
     await hooks.afterClaim?.();
+
+    // policy: a range outside the venue's service periods, when it has any, is refused before any lock; not stored, so the claim rolls back
+    if (input.enforceSchedule) await checkSchedule(client, input);
 
     // step 4: resolve and sort units, take the venue lock shared and then the unit locks in order, check the live-holds cap
     const resolved = await resolveAssignment(client, input);
@@ -185,6 +189,16 @@ async function storeOutcome(client: ClientBase, input: HoldInput, hooks: HoldHoo
   await hooks.beforeCommit?.();
   await client.query("commit");
   return outcome;
+}
+
+async function checkSchedule(client: ClientBase, input: HoldInput): Promise<void> {
+  const hours = await client.query("select exists (select 1 from dastar.schedule where venue_id = $1 and active) as has", [input.venueId]);
+  if (!hours.rows[0].has) return;
+  const start = new Date(input.startsAt);
+  const end = new Date(start.getTime() + input.durationMinutes * 60_000);
+  const periods = await client.query(PERIODS_SQL, [input.venueId, start.toISOString(), end.toISOString()]);
+  const inside = periods.rows.some((p) => new Date(p.starts_at).getTime() <= start.getTime() && end.getTime() <= new Date(p.ends_at).getTime());
+  if (!inside) throw new DastarError("outside_schedule", "the requested time is outside the venue's service periods");
 }
 
 async function resolveAssignment(client: ClientBase, input: HoldInput): Promise<{ kind: "missing" } | { kind: "found"; units: string[]; active: boolean }> {
