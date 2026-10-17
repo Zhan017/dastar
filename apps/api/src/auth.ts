@@ -7,9 +7,8 @@ import { ApiProblem } from "./problem.js";
 import { readLimits, withClient } from "./db.js";
 
 /**
- * What a key may do. `admin` is reserved for the venue and inventory routes of M2 (admin CRUD, design
- * section 16): a key can carry it today, and no route accepts it, so it grants nothing yet and implies none
- * of the others.
+ * What a key may do. `admin` grants the admin routes of its venues (units, combinations, schedules, and blackouts,
+ * including forced changes) and implies none of the others.
  */
 export type Capability = "hold" | "confirm" | "cancel" | "seat" | "read" | "admin";
 

@@ -3,6 +3,8 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { bodyLimit } from "hono/body-limit";
 import type { Deps, Env, LogEntry } from "./env.js";
 import { ApiProblem, fromUnknown, problemBody } from "./problem.js";
+import { register as registerAdminCalendar } from "./routes/admin-calendar.js";
+import { register as registerAdminUnits } from "./routes/admin-units.js";
 import { register as registerAvailability } from "./routes/availability.js";
 import { register as registerHealth } from "./routes/health.js";
 import { register as registerHolds } from "./routes/holds.js";
@@ -51,6 +53,8 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
   registerHolds(app, deps);
   registerAvailability(app, deps);
   registerReservations(app, deps);
+  registerAdminUnits(app, deps);
+  registerAdminCalendar(app, deps);
   app.doc("/openapi.json", { openapi: "3.0.0", info: { title: "Dastar reference API", version: "0.1.0" } });
   return app;
 }
