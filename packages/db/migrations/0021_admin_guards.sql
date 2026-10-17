@@ -109,14 +109,16 @@ begin
   return new;
 end $$;
 
--- t49 on venue: a time zone Postgres does not know is refused (DA017); it reads no table, so it runs with the caller's rights.
+-- t49 on venue: a venue's time zone is a name in Postgres's time zone database (DA017 otherwise). `at time zone` alone
+-- would also accept a POSIX-style rule, so a typo with a trailing digit would pass as a fixed offset; the name must match
+-- exactly. It reads only a system view, so it runs with the caller's rights.
 create function dastar.trg_venue_timezone() returns trigger
 language plpgsql set search_path = pg_catalog, dastar, pg_temp as $$
 begin
-  perform now() at time zone new.timezone;
+  if not exists (select 1 from pg_catalog.pg_timezone_names z where z.name = new.timezone) then
+    raise exception 'unknown time zone %', new.timezone using errcode = 'DA017', hint = 'invalid_timezone';
+  end if;
   return new;
-exception when invalid_parameter_value then
-  raise exception 'unknown time zone %', new.timezone using errcode = 'DA017', hint = 'invalid_timezone';
 end $$;
 
 create trigger t44_unit_active_guard before update of active on dastar.unit

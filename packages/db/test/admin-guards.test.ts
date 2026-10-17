@@ -404,6 +404,12 @@ describe("admin guards", () => {
         expect(mapPgError(refused)).toMatchObject({ code: "invalid_timezone", retryable: false, sqlstate: "DA017" });
         expect((await owner.query("select count(*)::int as n from dastar.venue where id = $1 or name = 'tz-refused'", [id])).rows[0].n).toBe(0);
 
+        // a misspelt name with a trailing digit would read as a POSIX offset rule to `at time zone`; only exact names pass
+        for (const zone of ["Europe/Berln2", "UTC+5", "utc"]) {
+          const refusedName = await refusal(writeBound(client, id, "insert into dastar.venue(id, name, timezone) values ($1, 'tz-refused', $2)", [id, zone]));
+          expect(refusedName, zone).toMatchObject({ code: "DA017", message: `unknown time zone ${zone}` });
+        }
+
         const venue = await insertVenue(client, "tz-update", "UTC");
         const refusedUpdate = await refusal(setZone(client, venue, "Not/AZone"));
         expect(refusedUpdate).toMatchObject({ code: "DA017", message: "unknown time zone Not/AZone", hint: "invalid_timezone" });
