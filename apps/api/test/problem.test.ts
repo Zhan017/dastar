@@ -6,8 +6,8 @@ import { ApiProblem, STATUS_BY_CODE, problemFor, fromUnknown, problemBody } from
 describe("problem details", () => {
   it("maps every engine error code to a status", () => {
     const byStatus = (s: number) => Object.entries(STATUS_BY_CODE).filter(([, m]) => m.status === s).map(([c]) => c).sort();
-    expect(byStatus(409)).toEqual(["blackout", "blackout_conflict", "capacity_conflict", "hold_conflict", "hold_expired", "invalid_transition", "serialization_conflict", "token_requires_held", "version_conflict"]);
-    expect(byStatus(422)).toEqual(["assignment_inactive", "assignment_mismatch", "combo_too_large", "duration_out_of_range", "idempotency_mismatch", "outside_schedule", "party_does_not_fit", "range_mismatch", "window_too_large"]);
+    expect(byStatus(409)).toEqual(["assignment_in_use", "blackout", "blackout_conflict", "capacity_conflict", "hold_conflict", "hold_expired", "invalid_transition", "reservation_in_progress", "serialization_conflict", "token_requires_held", "version_conflict"]);
+    expect(byStatus(422)).toEqual(["assignment_inactive", "assignment_mismatch", "combo_too_large", "duration_out_of_range", "force_too_large", "idempotency_mismatch", "invalid_input", "invalid_timezone", "outside_schedule", "party_does_not_fit", "range_mismatch", "window_too_large"]);
     expect(byStatus(403)).toEqual(["forbidden", "forbidden_write"]);
     expect(byStatus(404)).toEqual(["not_found"]);
     expect(byStatus(429)).toEqual(["too_many_live_holds"]);

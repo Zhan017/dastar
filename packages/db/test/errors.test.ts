@@ -18,4 +18,24 @@ describe("mapPgError", () => {
     expect(STORED_OUTCOMES.has("blackout")).toBe(true);
     expect(STORED_OUTCOMES.has("blackout_conflict")).toBe(false);
   });
+
+  it("maps the admin guards: DA015 to assignment_inactive, DA016 to assignment_in_use, DA017 to invalid_timezone", () => {
+    expect(mapPgError({ code: "DA015", message: "assignment a is not active", detail: "reservation=r" }))
+      .toMatchObject({ name: "DastarError", code: "assignment_inactive", retryable: false, sqlstate: "DA015", detail: "reservation=r" });
+    expect(mapPgError({ code: "DA016", message: "unit u has a live reservation", detail: "reservation=r" }))
+      .toMatchObject({ name: "DastarError", code: "assignment_in_use", retryable: false, sqlstate: "DA016", detail: "reservation=r" });
+    expect(mapPgError({ code: "DA017", message: "unknown time zone Mars/Olympus" }))
+      .toMatchObject({ name: "DastarError", code: "invalid_timezone", retryable: false, sqlstate: "DA017", message: "unknown time zone Mars/Olympus" });
+  });
+
+  it("maps a check violation to invalid_input unless the constraint has its own code, and passes the message and detail through", () => {
+    expect(mapPgError({ code: "23514", constraint: "unit_capacity_order", message: 'new row for relation "unit" violates check constraint "unit_capacity_order"', detail: "Failing row contains (x)." }))
+      .toMatchObject({ name: "DastarError", code: "invalid_input", retryable: false, sqlstate: "23514", message: 'new row for relation "unit" violates check constraint "unit_capacity_order"', detail: "Failing row contains (x)." });
+    // no constraint name at all is still a check violation
+    expect(mapPgError({ code: "23514", message: "check" })).toMatchObject({ code: "invalid_input", sqlstate: "23514" });
+    expect(mapPgError({ code: "23514", constraint: "duration_out_of_range", message: "d" })).toMatchObject({ code: "duration_out_of_range", sqlstate: "23514" });
+    expect(mapPgError({ code: "23514", constraint: "combo_too_large", message: "c" })).toMatchObject({ code: "combo_too_large", sqlstate: "23514" });
+    // other integrity violations are not check violations
+    expect(mapPgError({ code: "23505", message: "unique" })).toBeNull();
+  });
 });
