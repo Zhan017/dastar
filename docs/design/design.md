@@ -73,6 +73,7 @@ Target readers of the repo: engineers deciding whether to trust the engine, and 
 | D45 | Connection ownership | Commands run only through a handle built from a host-supplied pool; each checks out a client, runs, and releases it after settlement, with an acquire timeout, a deadline with backend cancellation, and discard of any connection whose state is uncertain. No host transactions | A transaction-state guard on caller-supplied clients; composing inside host transactions with savepoints | A command's `begin` and `commit` on a client inside a host transaction would commit or discard the host's work; the retry in hold cannot run inside a host transaction |
 | D46 | Query layer | `pg` directly with hand-written SQL | Kysely (D5) | Every statement is already hand-written; a query builder would add a layer without removing any |
 | D47 | Nontransactional migrations | A `transaction: no` file is exactly one concurrent index statement in canonical spelling; the runner validates any existing index of that name by table, definition, and validity before recording, dropping, or applying | Free-form nontransactional files; removing the mode | A failed concurrent build leaves an invalid index and a re-run must neither trust a name match nor rebuild a finished index |
+| D48 | Time zone math | Postgres converts local times: service periods are computed per request in SQL with the venue's zone, and core's availability functions take instants. A local time in a spring gap takes the offset before the transition; an ambiguous autumn time takes the offset after it | A Temporal-compatible library in core (deferred in section 18); hand-written `Intl` offset math | The database that stores and judges every range is the only time zone authority, core keeps no runtime dependency, and the gap and overlap rules are Postgres's, pinned by tests |
 | D29 | Partitioning | Deferred with named trigger conditions: audit_log past tens of millions of rows, or vacuum duration visible in monitoring. Outbox is bounded by retention | Partition audit_log and outbox now | Partition keys in every unique constraint and ongoing partition upkeep are real costs; point lookups do not degrade with size; the named bottleneck is GiST churn, which partitioning does not touch |
 
 ---
@@ -228,7 +229,7 @@ flowchart TB
   mcp --> agent
 ```
 
-**core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is three pure functions: candidate slots from a schedule, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. Time zone math through a small Temporal-compatible library chosen by bundle size in M2.
+**core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is pure functions over instants: candidate slots from service periods, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default, and one pass that combines them. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. Time zone math is Postgres's (D48): the database computes service periods as instants, and the availability functions take instants.
 
 **db.** Migrations and runner. Commands, one transaction each, returning a receipt, with a retry classifier for deadlock and serialization errors. Idempotency stores actor, key, payload hash, and the exact response. Snapshot and occupancy queries. Outbox claim and ack. SQLSTATE mapper. A secretbox helper for encrypting confirm tokens and webhook secrets at rest with a key from the environment. Every command sets `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` as transaction-local settings at the start; from M2 the venue setting is what row-level security keys on, so a transaction that forgets it reads nothing and inserts nothing.
 
@@ -417,6 +418,7 @@ Bounds a request may not exceed, enforced where the database can and rejected at
 | Overlap lock set per hold | 64 reservation rows | Counted in step 5 of 10.1 before any row lock is taken | 503 `overlap_set_too_large` with Retry-After, retryable; a metric fires, since a healthy system never approaches it: for a future request the set is live conflicts plus unswept dead holds |
 | Live holds per actor | 5, venue config | Policy check in the hold command | 429 `too_many_live_holds` |
 | Availability window | 14 days, venue config | Policy check | 422 `window_too_large` |
+| Availability results | 100 per request, at most 500; 10,000 grid starts examined | Policy in the availability command | `truncated: true` |
 | Units per venue | 200, soft | Not enforced | Documented in LIMITATIONS.md as the initial target scale |
 
 Provisional workload target, for the prototype's go or refine decision. Labeled provisional: the numbers exist so a benchmark can support a decision, not because they are known to be achievable.
@@ -528,7 +530,7 @@ receipt: { reservation_id, status, version, audit_id, trace_id }
 | GET | /health/live, /health/ready | none | M1 | Ready means database reachable and migrations applied |
 | GET | /openapi.json | none | M1 | Docs UI in M2 |
 | POST | /v1/reservations/:id/seat, /complete | seat | M2 | |
-| POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold |
+| POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to, limit?. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold; `truncated` says the list was cut short |
 | GET | /v1/venues/:id/floor-plan | read | M2 | Units with current occupancy |
 | GET | /v1/venues/:id/holds | read | M2 | Live holds belonging to the calling actor, so a client can find and release holds it lost track of |
 | CRUD | /admin/venues/:id/{units,combos,schedules,blackouts,webhooks,keys} | admin | M2, webhooks M4 | Reject-or-force on stranded bookings; force is bounded to future reservations and batched |
@@ -539,9 +541,9 @@ receipt: { reservation_id, status, version, audit_id, trace_id }
 | POST | /v1/sessions/:id/audit | read | M3 | Body: the agent's user-facing transcript, optionally with structured claims per turn. Returns the audit: claims, backed, unbacked with quotes and the receipts that were available |
 | GET | /v1/sessions/:id/audit | read | M3 | Last audit result, including async judge output when it lands |
 
-Hold is deliberately dumb: it receives an explicit assignment and range and lets the constraint decide. Availability is smart and stateless and may be stale; the constraint is the judge. Outside-schedule bookings are a policy check in the API (M2), not an invariant, because walk-ins and manual bookings are legitimate. The live-holds-per-actor cap is likewise a policy check, not an invariant.
+Hold is deliberately dumb: it receives an explicit assignment and range and lets the constraint decide. Availability is smart and stateless and may be stale; the constraint is the judge. Outside-schedule bookings are a policy check in the API, not an invariant, because walk-ins and manual bookings are legitimate: the reference API's hold refuses a range that no service period of the venue contains, when the venue has any (`outside_schedule`), after the idempotency claim and without storing the refusal; a hold through the engine is checked only when its caller asks. The live-holds-per-actor cap is likewise a policy check, not an invariant.
 
-HTTP mapping: hold_conflict, hold_expired, invalid_transition, version_conflict, serialization_conflict, blackout 409; idempotency_mismatch, party_does_not_fit 422; validation 400; unauthorized 401; forbidden 403; not_found 404; rate_limited 429 with Retry-After; database unavailable 503 with Retry-After.
+HTTP mapping: hold_conflict, hold_expired, invalid_transition, version_conflict, serialization_conflict, blackout 409; idempotency_mismatch, party_does_not_fit, window_too_large, outside_schedule 422; validation 400; unauthorized 401; forbidden 403; not_found 404; rate_limited 429 with Retry-After; database unavailable 503 with Retry-After.
 
 ---
 
@@ -642,15 +644,16 @@ Graceful shutdown: on SIGTERM stop accepting, drain in-flight requests up to 10s
 
 ## 12. Availability engine, M2
 
-Input: venue, party size, window (capped by `availability_window_days`).
+Input: venue, party size, a window `[from, to)` no longer than `availability_window_days` (422 `window_too_large`), and an optional result limit. One read-only repeatable-read transaction bound to the venue.
 
-1. Static snapshot: units, combos, schedules, blackouts, config. Cached in-process in a bounded LRU keyed by `(venue_id, config_version)`.
-2. Occupancy: active `reservation_unit` ranges overlapping the window, read live via the `(venue_id, during)` gist index, excluding rows whose reservation's effective status is expired, so an unswept hold does not hide a free slot; the next hold's overlap pass clears it.
-3. Candidate slots from schedule periods, `slot_minutes`, duration for the party size, and gap. Local time converted with the venue's zone. Periods with `closes_next_day` extend past midnight. Slots in blackouts are dropped.
-4. Fitting assignments: single units with `capacity_min <= party <= capacity_max`, then combos. Drop any whose members overlap occupancy.
-5. Rank via `RankingStrategy`. Default `restaurantHost`: smallest fitting capacity first, single unit before combo, then penalize units that belong to combos still needed for larger parties later in the same service period. Greedy, one pass, timeboxed, noted as a bin-packing boundary in the ADR.
+1. Snapshot: the venue's settings and config version, then its units and combos from a per-handle bounded cache keyed by `(venue_id, config_version)` (D17), loaded on a miss in the same transaction, so an entry always matches its version. Service periods and blackouts are read live for the window: periods depend on the window, and a venue's blackouts accumulate while the window read stays small.
+2. Service periods: computed in SQL with the venue's zone (D48), from the day before the window's first local date, so an overnight period begun the previous evening is included. A `closes_next_day` period ends on the next local date.
+3. Occupancy: active `reservation_unit` ranges through the occupancy view, excluding rows whose reservation's effective status is expired, so an unswept hold does not hide a free slot; the next hold's overlap pass clears it. Completed reservations keep active rows and block, as the exclusion constraint does.
+4. Candidate starts: for each period, in opening and then schedule order, the duration of the smallest `duration_by_size` key at or above the party, and starts on the `slot_minutes` grid from the opening whose booking ends by the close; a start belongs to the first period that admits it. Starts outside `[from, to)`, before the database clock, or whose booking overlaps an active blackout are dropped.
+5. Fitting assignments: active units whose range includes the party, then active combos whose range includes it and whose member units are all active. An assignment is free when none of its units is occupied over the booking padded by the period's gap on both sides.
+6. Rank via `RankingStrategy`. Default `restaurantHost`: smallest fitting capacity first, a single unit before a combo, then the unit that breaks the fewest free combos (a combo containing it that is entirely free over the same padded range), then label and id. One assignment per start. Greedy and one pass. The grid of starts grows with the window and the venue's schedules; the work per start is bounded by a result limit (100, at most 500) and 10,000 examined starts, and `truncated` says when either cut the list short. Units and combos are read in label order, so the same inputs give the same answer.
 
-Each returned slot carries the exact `{ starts_at, duration_minutes, assignment }` that hold accepts. v0.2 benchmarks compute-on-request versus precomputed per venue-day candidate slots minus live occupancy.
+Each returned slot carries the exact `{ starts_at, duration_minutes, assignment }` that hold accepts. The result is advisory; the hold is the judge. v0.2 benchmarks compute-on-request versus precomputed per venue-day candidate slots minus live occupancy.
 
 ---
 
@@ -694,7 +697,7 @@ Hosted sandbox with free keys, gated. If and only if the M1 launch produces sign
 
 | Layer | Tool | What it proves |
 |---|---|---|
-| Unit, core | Vitest | Pure functions, state table, slot math, DST across spring gap and autumn overlap, midnight-crossing periods |
+| Unit, core | Vitest | Pure functions, state table, slot math; DST across spring gap and autumn overlap and midnight-crossing periods are db tests, because Postgres converts local times (D48) |
 | Migrations | Vitest and testcontainers | From zero, checksums, lock timeout retry, advisory lock, grants for each role |
 | Integration, db | Vitest, fresh database per test file by cloning a migrated template | Commands, SQLSTATE mapping, retry classifier, test clock, idempotency scope and purge |
 | Attack suite | Raw SQL via pg as `dastar_app` | Each boundary-A invariant refuses violation with the expected SQLSTATE: overlapping insert, expired confirm, illegal transition, oversize party, audit update, delete, truncate, and direct insert, unit-row flip and delete, forged internal setting, edited expiry, edited combo members, cross-venue unit; DDL is denied |
@@ -765,7 +768,7 @@ Evaluator: E1 clone and race in sixty seconds (M1); E2 invariants table with the
 
 ## 18. Deferred decisions
 
-- M2: in-process cache vs precomputed table (benchmark both); exact ranking rules; special hours on a date; the time zone library.
+- M2: in-process cache vs precomputed table (benchmark both); special hours on a date. Resolved: the time zone library (none, D48) and the exact ranking rules (section 12).
 - M3: provider and model choices; judge model; final structured reply shape.
 - M4: retry schedule tuning; dead-letter thresholds; alert threshold tuning.
 - M5: seeded venue layout; whether the listen-notify wake-up is worth its dedicated connection.

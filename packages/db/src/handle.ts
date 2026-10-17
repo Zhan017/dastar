@@ -8,6 +8,7 @@ import { mintConfirmToken, type MintInput } from "./commands/mint-token.js";
 import { getReservation, findReservationVenue, type GetInput, type ReservationView } from "./commands/get.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
+import { availability, SnapshotCache, type AvailabilityInput, type AvailabilityResult } from "./commands/availability.js";
 
 export type DastarOptions = {
   /**
@@ -36,7 +37,7 @@ export type DastarOptions = {
   onAcquire?: (info: AcquireInfo) => void;
 };
 
-export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "expireDue";
+export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 export interface Dastar {
@@ -54,6 +55,8 @@ export interface Dastar {
   findReservationVenue(reservationId: string): Promise<string | null>;
   /** The live holds the actor owns in the venue, soonest expiry first. */
   listHolds(input: ListHoldsInput): Promise<HoldView[]>;
+  /** Bookable starts for a party in a window; advisory, a hold is still the judge. */
+  availability(input: AvailabilityInput): Promise<AvailabilityResult>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
@@ -79,6 +82,7 @@ export function createDastar(opts: DastarOptions): Dastar {
   const deadlineMs = opts.deadlineMs ?? 12_000;
   const cancelGraceMs = opts.cancelGraceMs ?? 2_000;
   let cancellerPromise: Promise<Client> | null = null;
+  const snapshots = new SnapshotCache(64);
 
   /** All callers share one canceller connection; the connecting promise is memoized so concurrent deadlines cannot open two. */
   function canceller(url: string): Promise<Client> {
@@ -252,6 +256,7 @@ export function createDastar(opts: DastarOptions): Dastar {
     getReservation: (input) => run("getReservation", null, (c) => getReservation(c, input)),
     findReservationVenue: (reservationId) => run("findReservationVenue", null, (c) => findReservationVenue(c, reservationId)),
     listHolds: (input) => run("listHolds", null, (c) => listHolds(c, input)),
+    availability: (input) => run("availability", null, (c) => availability(c, input, snapshots)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
     close: async () => {
       const p = cancellerPromise;

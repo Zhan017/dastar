@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import type { Receipt } from "@dastar/db";
+import { BOUNDS, type Receipt } from "@dastar/db";
 
 export const ProblemSchema = z.object({
   type: z.string(), title: z.string(), status: z.number().int(), code: z.string(),
@@ -60,3 +60,18 @@ export const HoldListSchema = z.object({
     hold_expires_at: z.string(), version: z.number().int(), external_ref: z.string().nullable(),
   })),
 }).openapi("HoldList");
+
+export const AvailabilityBodySchema = z.object({
+  party_size: z.number().int().min(1).max(10_000),
+  from: z.iso.datetime({ offset: true }),
+  to: z.iso.datetime({ offset: true }),
+  limit: z.number().int().min(1).max(BOUNDS.availabilityResults.max).optional(),
+}).refine((b) => Date.parse(b.from) < Date.parse(b.to), { message: "from must be before to", path: ["to"] }).openapi("AvailabilityRequest");
+
+export const AvailabilityResponseSchema = z.object({
+  slots: z.array(z.object({
+    starts_at: z.string(), duration_minutes: z.number().int(),
+    assignment: z.object({ kind: z.enum(["unit", "combo"]), id: z.string() }),
+  })),
+  truncated: z.boolean(),
+}).openapi("Availability");

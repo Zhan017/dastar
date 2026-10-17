@@ -70,7 +70,7 @@ pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --
 
 ## Run the reference API
 
-A small HTTP server over the same engine: eight routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
+A small HTTP server over the same engine: nine routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
 
 ```bash
 pnpm seed:demo --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
@@ -87,6 +87,8 @@ curl -s -X POST localhost:8080/v1/venues/0199a000-0000-7000-8000-000000000001/ho
 ```
 
 The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, and `/health/ready` reports whether the database is reachable and migrated.
+
+`POST /v1/venues/{id}/availability` with `party_size`, `from`, and `to` answers which starts a party can book: slots inside the venue's service periods, each carrying the `starts_at`, `duration_minutes`, and `assignment` a hold accepts. The demo venue has no service periods, so it offers no slots and takes holds at any time; once a venue has a schedule, the API refuses holds outside it with `outside_schedule`.
 
 ## Measure it
 
@@ -153,10 +155,13 @@ pool.on("error", (err) => console.error("pool error", err));
 
 const dastar = createDastar({ pool, cancellerConnectionString: process.env.DATABASE_URL });
 
+// starts inside the venue's service periods, smallest fitting table first; each slot is exactly what a hold accepts
+const { slots } = await dastar.availability({ venueId, partySize: 4, from: "2030-06-07T15:00:00Z", to: "2030-06-07T21:00:00Z" });
+const slot = slots[0]!; // { startsAt, durationMinutes, assignment }
+
 const held = await dastar.hold({
   venueId, actor: "key:web", traceId: "req-1", idempotencyKey: "guest-42-friday",
-  partySize: 4, startsAt: "2030-06-07T19:00:00Z", durationMinutes: 90,
-  assignment: { kind: "unit", id: tableId },
+  partySize: 4, ...slot,
 });
 
 if (held.ok) {
@@ -172,8 +177,9 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 
 | Area | Implemented |
 |---|---|
-| Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, and the workload bounds, each checked against the schema by the engine's tests |
-| Inventory | Venues, units with capacity ranges, and fixed unit combinations |
+| Domain | `@dastar/core`, with no database dependency: error codes, the reservation state table, hold input and receipt types, and the workload bounds, each checked against the schema by the engine's tests, and availability as pure functions over instants |
+| Inventory | Venues, units with capacity ranges, fixed unit combinations, weekly service periods, and blackouts |
+| Availability | Bookable starts for a party in a window, from service periods in the venue's time zone, blackouts, and live occupancy, ranked smallest fit first; each slot is exactly what a hold accepts |
 | Reservations | Hold, confirm, seat, complete, cancel, batch expiry, token minting, reads, and a listing of an actor's live holds, behind one pool-owned API |
 | Connections | Acquire timeout, command deadline with bounded cancellation, and discard of any connection whose state is uncertain |
 | Retry handling | Stored hold outcomes scoped by venue, actor, and idempotency key, with a 24-hour retention policy; one retry on deadlock or serialization failure |
@@ -183,7 +189,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
-| Reference API | Eight v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
+| Reference API | Nine v1 routes, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and the retention job are still planned.
 
@@ -206,7 +212,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 ## Next
 
 1. **Complete the engine release:** run the contention and recovery measurements on target hardware.
-2. **Add availability:** schedules, blackouts, and assignment ranking.
+2. **Add administration:** routes for units, combinations, schedules, and blackouts, with reject-or-force on stranded bookings, and the retention job.
 3. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
 4. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 
