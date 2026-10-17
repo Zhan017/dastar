@@ -218,3 +218,88 @@ describe("GET /v1/venues/{id}/holds", () => {
     expect((await listed(lister, seed.venue)).map((h) => h.id)).toEqual([a.id, b.id]);
   });
 });
+
+describe("POST /v1/venues/{id}/holds against service periods", () => {
+  let conn: Conn; let owner: Client; let api: ReturnType<typeof makeApi>; let n = 0; let dayN = 0;
+  const DURATIONS = '{"2":90,"4":120}';
+
+  beforeAll(async () => {
+    conn = await cloneDatabase("api_holds_schedule_test");
+    owner = await connect(conn.owner);
+    api = makeApi(conn);
+  });
+  afterAll(async () => { await api.close(); await owner.end(); await dropDatabase("api_holds_schedule_test"); });
+
+  /** A fresh day of January 2063 for each scenario; a scenario also gets a venue and a key of its own. */
+  const nextDay = (): number => ++dayN;
+  const at = (day: number, hour: number, minute = 0): string => new Date(Date.UTC(2063, 0, day, hour, minute)).toISOString();
+  const isoDow = (day: number): number => new Date(Date.UTC(2063, 0, day)).getUTCDay() || 7;
+
+  async function utcVenue(): Promise<Seed> {
+    const seed = await seedVenue(owner);
+    await owner.query("update dastar.venue set timezone = 'UTC' where id = $1", [seed.venue]);
+    return seed;
+  }
+  async function addSchedule(venue: string, day: number, opens: string, closes: string, active = true): Promise<void> {
+    await owner.query(
+      `insert into dastar.schedule(venue_id, day_of_week, opens, closes, closes_next_day, duration_by_size, gap_minutes, active)
+       values ($1, $2, $3::time, $4::time, false, $5::jsonb, 0, $6)`,
+      [venue, isoDow(day), opens, closes, DURATIONS, active],
+    );
+  }
+  const keyFor = () => createKey(api.pool, { label: `schedule ${++n}`, capabilities: ["hold"] });
+  const send = (seed: Seed, key: { key: string }, idem: string, startsAt: string, over: Record<string, unknown> = {}) =>
+    api.app.request(`/v1/venues/${seed.venue}/holds`, jsonInit("POST",
+      { party_size: 2, starts_at: startsAt, duration_minutes: 60, assignment: { kind: "unit", id: seed.units[0] }, ...over },
+      { ...bearer(key.key), "idempotency-key": idem }));
+  const stored = async (seed: Seed, idem: string): Promise<number> =>
+    (await owner.query("select count(*)::int as n from dastar.idempotency where venue_id = $1 and key = $2", [seed.venue, idem])).rows[0].n as number;
+
+  it("refuses a range outside the venue's service periods with 422 outside_schedule and accepts one inside", async () => {
+    const day = nextDay();
+    const V = await utcVenue();
+    await addSchedule(V.venue, day, "17:00", "23:00");
+    const key = await keyFor();
+
+    const early = await send(V, key, "s1-early", at(day, 3));
+    expect(early.status).toBe(422);
+    expect(early.headers.get("content-type")).toBe("application/problem+json");
+    expect(await early.json()).toMatchObject({ code: "outside_schedule", status: 422, type: "https://dastar.dev/errors/outside_schedule" });
+    // a range that begins before the opening, one that runs past the close, and a day with no period are refused as well
+    expect(await (await send(V, key, "s1-before", at(day, 16, 30))).json()).toMatchObject({ code: "outside_schedule" });
+    expect(await (await send(V, key, "s1-past", at(day, 22, 30))).json()).toMatchObject({ code: "outside_schedule" });
+    expect(await (await send(V, key, "s1-other-day", at(day + 1, 18))).json()).toMatchObject({ code: "outside_schedule" });
+
+    const inside = await send(V, key, "s1-inside", at(day, 18));
+    expect(inside.status).toBe(201);
+    expect(await inside.json()).toMatchObject({ receipt: { status: "held" }, replayed: false });
+    // a range that fills the period exactly is inside it
+    const whole = await send(V, key, "s1-whole", at(day, 17), { duration_minutes: 360, assignment: { kind: "unit", id: V.units[1] } });
+    expect(whole.status).toBe(201);
+  });
+
+  it("stores nothing for a refusal: the same key and payload hold once a period covers the range", async () => {
+    const day = nextDay();
+    const V = await utcVenue();
+    await addSchedule(V.venue, day, "17:00", "23:00");
+    const key = await keyFor();
+    const refused = await send(V, key, "s2", at(day, 3));
+    expect(refused.status).toBe(422);
+    expect(await stored(V, "s2")).toBe(0);
+    await addSchedule(V.venue, day, "00:00", "06:00");
+    const held = await send(V, key, "s2", at(day, 3));
+    expect(held.status).toBe(201);
+    expect(await held.json()).toMatchObject({ receipt: { status: "held" }, replayed: false });
+    expect(await stored(V, "s2")).toBe(1);
+  });
+
+  it("a venue with no active service period takes a hold at any hour", async () => {
+    const day = nextDay();
+    const none = await utcVenue();
+    const key = await keyFor();
+    expect((await send(none, key, "s3-none", at(day, 3))).status).toBe(201);
+    const inactive = await utcVenue();
+    await addSchedule(inactive.venue, day, "17:00", "23:00", false);
+    expect((await send(inactive, key, "s3-inactive", at(day, 3))).status).toBe(201);
+  });
+});

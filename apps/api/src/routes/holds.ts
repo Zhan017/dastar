@@ -8,7 +8,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   const route = createRoute({
     method: "post",
     path: "/v1/venues/{id}/holds",
-    summary: "Hold an explicit assignment for a time range. Returns a receipt, never a token.",
+    summary: "Hold an explicit assignment for a time range. Returns a receipt, never a token. Refused with 422 outside_schedule when the venue has service periods and the range is not inside one.",
     security: [{ Bearer: [] }],
     middleware: [requireCapability(deps, "hold")] as const,
     request: {
@@ -29,6 +29,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
       actor: `key:${key.id}`,
       traceId: c.get("traceId"),
       idempotencyKey: c.req.valid("header")["idempotency-key"],
+      enforceSchedule: true,
       partySize: body.party_size,
       startsAt: body.starts_at,
       durationMinutes: body.duration_minutes,

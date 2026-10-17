@@ -17,13 +17,15 @@ describe("OpenAPI document", () => {
   it("lists exactly the implemented routes", () => {
     expect(Object.keys(doc.paths).sort()).toEqual([
       "/health/live", "/health/ready", "/v1/reservations/{id}", "/v1/reservations/{id}/cancel", "/v1/reservations/{id}/complete",
-      "/v1/reservations/{id}/confirm", "/v1/reservations/{id}/confirm-token", "/v1/reservations/{id}/seat", "/v1/venues/{id}/holds",
+      "/v1/reservations/{id}/confirm", "/v1/reservations/{id}/confirm-token", "/v1/reservations/{id}/seat", "/v1/venues/{id}/availability",
+      "/v1/venues/{id}/holds",
     ]);
   });
 
   it("requires a bearer key on every v1 route, and makes it optional only on confirm", () => {
     expect(doc.paths["/v1/venues/{id}/holds"]!.post!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/v1/venues/{id}/holds"]!.get!.security).toEqual([{ Bearer: [] }]);
+    expect(doc.paths["/v1/venues/{id}/availability"]!.post!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/v1/reservations/{id}"]!.get!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/v1/reservations/{id}/cancel"]!.post!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/v1/reservations/{id}/seat"]!.post!.security).toEqual([{ Bearer: [] }]);
@@ -35,10 +37,10 @@ describe("OpenAPI document", () => {
 
   it("declares the problem responses and the shared schemas", () => {
     expect(Object.keys(doc.paths["/v1/venues/{id}/holds"]!.post!.responses).sort()).toEqual(["201", "400", "401", "403", "404", "409", "422", "429", "500", "503"]);
-    for (const op of [doc.paths["/v1/venues/{id}/holds"]!.get!, doc.paths["/v1/reservations/{id}/seat"]!.post!, doc.paths["/v1/reservations/{id}/complete"]!.post!]) {
+    for (const op of [doc.paths["/v1/venues/{id}/holds"]!.get!, doc.paths["/v1/venues/{id}/availability"]!.post!, doc.paths["/v1/reservations/{id}/seat"]!.post!, doc.paths["/v1/reservations/{id}/complete"]!.post!]) {
       expect(Object.keys(op.responses).sort()).toEqual(["200", "400", "401", "403", "404", "409", "422", "429", "500", "503"]);
     }
-    for (const name of ["Problem", "Receipt", "HoldRequest", "HoldResponse", "HoldList", "Reservation", "CancelRequest", "ConfirmRequest", "ConfirmTokenResponse", "StatusChangeRequest"]) {
+    for (const name of ["Problem", "Receipt", "HoldRequest", "HoldResponse", "HoldList", "AvailabilityRequest", "Availability", "Reservation", "CancelRequest", "ConfirmRequest", "ConfirmTokenResponse", "StatusChangeRequest"]) {
       expect(Object.keys(doc.components.schemas)).toContain(name);
     }
   });
