@@ -28,6 +28,10 @@ Invariant 10 sits behind boundary B ([SECURITY.md](SECURITY.md)): the caller dec
 
 Reads return `expired` for a stored `held` row whose expiry has passed by database time, whether or not the sweeper has reached it. The stored column catches up when the sweeper or a hold's overlap pass expires the row.
 
+## Availability
+
+Availability is advisory. It reads service periods, blackouts, and occupancy in one repeatable-read transaction and offers starts a hold would accept at that moment: the schedule's duration for the party, an assignment that fits it, no active blackout over the booking, and no occupied unit over the booking padded by the schedule's gap. A concurrent hold can take an offered slot first, and the exclusion constraint decides. `availability-property.test.ts` holds a sample of the offered slots of random venues, one at a time, expecting each to be granted, and compares the offered starts with a model written independently in the test. Refusing a hold outside the venue's service periods is a policy of the reference API (`outside_schedule`), not an invariant.
+
 ## Confirmation near expiry
 
 Postgres evaluates `now()` at transaction start. A confirmation that begins before a hold's expiry and then waits on a lock is judged by its start time, so it succeeds even if the wall clock passed the expiry during the wait. The wait can include the unit lock as well as the row lock. This is a bounded grace, not a defect. A capacity edit cannot exploit it: an edit and a confirmation on the same unit serialize on the unit lock, and whichever runs second sees the other's committed state, so the edit is refused or the confirmation is refused (`capacity-expiry.test.ts`). A blackout write judges a hold by its own clock, so it can admit a blackout over a hold that a confirmation begun before the expiry still sees as held. The confirmation therefore takes the venue lock shared and checks the blackouts under it, and whichever of the two runs second sees the other: the confirmation is refused (`blackout`), or the blackout write sees a confirmed reservation (`blackout_conflict`) (`schedules-blackouts.test.ts`).
