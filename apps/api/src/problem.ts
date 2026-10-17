@@ -38,6 +38,8 @@ export const STATUS_BY_CODE = {
   range_mismatch: { status: 422 },
   assignment_inactive: { status: 422 },
   assignment_mismatch: { status: 422 },
+  window_too_large: { status: 422 },
+  outside_schedule: { status: 422 },
   forbidden: { status: 403 },
   forbidden_write: { status: 403 },
   not_found: { status: 404 },

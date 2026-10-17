@@ -39,6 +39,12 @@ export type HoldInput = {
   durationMinutes: number;
   assignment: Assignment;
   externalRef?: string;
+  /**
+   * Refuse a range outside the venue's service periods (`outside_schedule`) when the venue has an active schedule.
+   * A policy, not part of the request: it is not in the idempotency hash. The reference API sets it; walk-ins and
+   * manual bookings through the engine leave it off.
+   */
+  enforceSchedule?: boolean;
 };
 
 export type Receipt = { reservationId: string; status: string; version: number; auditId: number; traceId: string };

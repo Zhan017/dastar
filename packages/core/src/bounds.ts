@@ -13,4 +13,8 @@ export const BOUNDS = {
   holdTtlSeconds: { min: 60, max: 3_600 },
   /** A venue's live-holds cap per actor; `too_many_live_holds` above it. */
   liveHoldsPerActor: { default: 5, max: 100 },
+  /** Slots one availability request returns; `truncated` says more exist. */
+  availabilityResults: { default: 100, max: 500 },
+  /** Grid starts one availability request examines before it stops with `truncated`. */
+  availabilityStartsExamined: 10_000,
 } as const;

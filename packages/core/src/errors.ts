@@ -5,7 +5,7 @@ export type DastarErrorCode =
   | "capacity_conflict" | "token_requires_held" | "forbidden_write" | "serialization_conflict"
   | "timeout" | "duration_out_of_range" | "combo_too_large" | "version_conflict" | "not_found"
   | "forbidden" | "too_many_live_holds" | "overlap_set_too_large" | "assignment_inactive"
-  | "pool_timeout" | "venue_scope_violation" | "blackout_conflict" | "internal";
+  | "pool_timeout" | "venue_scope_violation" | "blackout_conflict" | "window_too_large" | "outside_schedule" | "internal";
 
 export class DastarError extends Error {
   constructor(
