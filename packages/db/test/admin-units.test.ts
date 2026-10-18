@@ -372,21 +372,21 @@ describe("admin commands: units and combinations", () => {
     });
 
     for (const reason of [undefined, "renovation"]) {
-      it(`with force, a narrowing cancels exactly the stranded held, confirmed, and seated reservations ${reason ? `with the reason "${reason}"` : "with the default reason"}, and applies the range`, async () => {
+      it(`with force, a narrowing cancels exactly the stranded held and confirmed reservations ${reason ? `with the reason "${reason}"` : "with the default reason"}, and applies the range`, async () => {
+        // a seated party counts as started, so force never cancels it (the seated-party test below)
         const S = await fresh(); const unit = S.units[0]!;
         const held = await place(S, at(nextDay(), 19), { partySize: 4 });
         const conf = await confirmedAt(S, at(nextDay(), 19), { partySize: 4 });
-        const seated = await seatedAt(S, at(nextDay(), 19), { partySize: 4 });
         const kept = await place(S, at(nextDay(), 19), { partySize: 2 });
         const c = ctx(S);
 
         const out = accepted(await updateUnit(app, c, { unitId: unit, capacityMax: 3, force: true, ...(reason ? { cancelReason: reason } : {}) }));
-        expect(out.cancelled).toEqual([held, conf, seated].sort());
+        expect(out.cancelled).toEqual([held, conf].sort());
         expect(out.value).toMatchObject({ id: unit, capacityMin: 1, capacityMax: 3 });
-        for (const id of [held, conf, seated]) await expectCancelledByAdmin(S, id, reason ?? "venue change", c);
+        for (const id of [held, conf]) await expectCancelledByAdmin(S, id, reason ?? "venue change", c);
         await expectUntouched(S, kept, "held");
         expect(await unitRow(unit)).toMatchObject({ capacity_min: 1, capacity_max: 3 });
-        expect(await cancelEventCount(S.venue)).toBe(3);
+        expect(await cancelEventCount(S.venue)).toBe(2);
       });
     }
 

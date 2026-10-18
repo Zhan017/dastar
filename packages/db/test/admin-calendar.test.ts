@@ -418,22 +418,22 @@ describe("admin commands: schedules and blackouts", () => {
     });
 
     for (const reason of [undefined, "private event"]) {
-      it(`with force it cancels the stranded held, confirmed, and seated reservations ${reason ? `with the reason "${reason}"` : "with the default reason"}, stores the blackout, and then blocks holds in the range`, async () => {
+      it(`with force it cancels the stranded held and confirmed reservations ${reason ? `with the reason "${reason}"` : "with the default reason"}, stores the blackout, and then blocks holds in the range`, async () => {
+        // a seated party counts as started, so force never cancels it (the seated-party test below)
         const S = await fresh(); const O = await fresh(); const day = nextDay();
         const held = await place(S, at(day, 19), onUnit(S, 0));
         const conf = await confirmedAt(S, at(day, 19), onUnit(S, 1));
-        const seated = await seatedAt(S, at(day, 19), onUnit(S, 2));
         const kept = await place(S, at(day, 22, 30), onUnit(S, 3));
         const theirs = await place(O, at(day, 19));
         const c = ctx(S);
         const version = await configVersion(S.venue);
 
         const out = accepted(await createBlackout(app, c, bo(day, { force: true, ...(reason ? { cancelReason: reason } : {}) })));
-        expect(out.cancelled).toEqual([held, conf, seated].sort());
-        for (const id of [held, conf, seated]) await expectCancelledByAdmin(S, id, reason ?? "venue change", c);
+        expect(out.cancelled).toEqual([held, conf].sort());
+        for (const id of [held, conf]) await expectCancelledByAdmin(S, id, reason ?? "venue change", c);
         await expectUntouched(S, kept, "held");
         await expectUntouched(O, theirs, "held");
-        expect(await cancelEventCount(S.venue)).toBe(3);
+        expect(await cancelEventCount(S.venue)).toBe(2);
         expect(await cancelEventCount(O.venue)).toBe(0);
         expect(await blackoutRow(out.value.id)).toMatchObject({ venue_id: S.venue, active: true, reason: "private event" });
         expect(await blackoutCount(S.venue)).toBe(1);
