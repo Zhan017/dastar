@@ -17,7 +17,7 @@ describe("OpenAPI document", () => {
   it("lists exactly the implemented routes", () => {
     expect(Object.keys(doc.paths).sort()).toEqual([
       "/admin/venues/{id}/blackouts", "/admin/venues/{id}/blackouts/{blackoutId}", "/admin/venues/{id}/combos", "/admin/venues/{id}/combos/{comboId}",
-      "/admin/venues/{id}/schedules", "/admin/venues/{id}/schedules/{scheduleId}", "/admin/venues/{id}/units", "/admin/venues/{id}/units/{unitId}",
+      "/admin/venues/{id}/keys", "/admin/venues/{id}/keys/{keyId}/revoke", "/admin/venues/{id}/schedules", "/admin/venues/{id}/schedules/{scheduleId}", "/admin/venues/{id}/units", "/admin/venues/{id}/units/{unitId}",
       "/health/live", "/health/ready", "/v1/reservations/{id}", "/v1/reservations/{id}/cancel", "/v1/reservations/{id}/complete",
       "/v1/reservations/{id}/confirm", "/v1/reservations/{id}/confirm-token", "/v1/reservations/{id}/seat", "/v1/venues/{id}/availability",
       "/v1/venues/{id}/holds",
@@ -42,10 +42,11 @@ describe("OpenAPI document", () => {
       .filter(([path]) => path.startsWith("/admin/"))
       .flatMap(([path, item]) => Object.entries(item).map(([method, op]) => ({ name: `${method} ${path}`, op })));
     expect(operations.map((o) => o.name).sort()).toEqual([
-      "get /admin/venues/{id}/blackouts", "get /admin/venues/{id}/combos", "get /admin/venues/{id}/schedules", "get /admin/venues/{id}/units",
+      "get /admin/venues/{id}/blackouts", "get /admin/venues/{id}/combos", "get /admin/venues/{id}/keys", "get /admin/venues/{id}/schedules", "get /admin/venues/{id}/units",
       "patch /admin/venues/{id}/blackouts/{blackoutId}", "patch /admin/venues/{id}/combos/{comboId}", "patch /admin/venues/{id}/schedules/{scheduleId}",
       "patch /admin/venues/{id}/units/{unitId}",
-      "post /admin/venues/{id}/blackouts", "post /admin/venues/{id}/combos", "post /admin/venues/{id}/schedules", "post /admin/venues/{id}/units",
+      "post /admin/venues/{id}/blackouts", "post /admin/venues/{id}/combos", "post /admin/venues/{id}/keys", "post /admin/venues/{id}/keys/{keyId}/revoke",
+      "post /admin/venues/{id}/schedules", "post /admin/venues/{id}/units",
     ]);
     for (const { name, op } of operations) {
       expect(op.security, name).toEqual([{ Bearer: [] }]);
@@ -60,8 +61,36 @@ describe("OpenAPI document", () => {
     }
     for (const name of ["Problem", "Receipt", "HoldRequest", "HoldResponse", "HoldList", "AvailabilityRequest", "Availability", "Reservation", "CancelRequest", "ConfirmRequest", "ConfirmTokenResponse", "StatusChangeRequest",
       "CreateUnitRequest", "UpdateUnitRequest", "UnitList", "UnitResponse", "UnitChange", "CreateComboRequest", "UpdateComboRequest", "ComboList",
-      "CreateScheduleRequest", "UpdateScheduleRequest", "ScheduleList", "CreateBlackoutRequest", "UpdateBlackoutRequest", "BlackoutList", "BlackoutChange"]) {
+      "CreateScheduleRequest", "UpdateScheduleRequest", "ScheduleList", "CreateBlackoutRequest", "UpdateBlackoutRequest", "BlackoutList", "BlackoutChange",
+      "CreateKeyRequest", "Key", "KeyList", "KeyResponse", "KeyCreated"]) {
       expect(Object.keys(doc.components.schemas)).toContain(name);
     }
+  });
+
+  it("documents the secret in the 201 response of key creation and nowhere else", () => {
+    type Schema = { properties?: Record<string, { description?: string }>; required?: string[] };
+    const schemas = doc.components.schemas as Record<string, Schema>;
+    const created = doc.paths["/admin/venues/{id}/keys"]!.post!.responses["201"];
+    expect(JSON.stringify(created)).toContain("#/components/schemas/KeyCreated\"");
+    expect(Object.keys(schemas.KeyCreated!.properties!).sort()).toEqual(["key", "secret"]);
+    expect(schemas.KeyCreated!.required).toContain("secret");
+    expect(schemas.KeyCreated!.properties!.secret!.description).toMatch(/once/i);
+    // the key as listed and as revoked has no secret and no hash
+    expect(Object.keys(schemas.Key!.properties!).sort()).toEqual(["capabilities", "created_at", "id", "label", "revoked_at", "venue_ids"]);
+    const listed = doc.paths["/admin/venues/{id}/keys"]!.get!.responses["200"];
+    expect(JSON.stringify(listed)).toContain("#/components/schemas/KeyList\"");
+    const revoked = doc.paths["/admin/venues/{id}/keys/{keyId}/revoke"]!.post!.responses["200"];
+    expect(JSON.stringify(revoked)).toContain("#/components/schemas/KeyResponse\"");
+    expect(Object.keys(schemas.KeyList!.properties!)).toEqual(["keys"]);
+    expect(Object.keys(schemas.KeyResponse!.properties!)).toEqual(["key"]);
+  });
+
+  it("requires a bearer key on the key routes and declares the capability list on creation", () => {
+    for (const [path, method] of [["/admin/venues/{id}/keys", "get"], ["/admin/venues/{id}/keys", "post"], ["/admin/venues/{id}/keys/{keyId}/revoke", "post"]] as const) {
+      expect(doc.paths[path]![method]!.security, `${method} ${path}`).toEqual([{ Bearer: [] }]);
+    }
+    const body = doc.components.schemas.CreateKeyRequest as { properties: { capabilities: { items: { enum: string[] }; minItems: number; maxItems: number } } };
+    expect(body.properties.capabilities.items.enum).toEqual(["hold", "confirm", "cancel", "seat", "read", "admin"]);
+    expect(body.properties.capabilities).toMatchObject({ minItems: 1, maxItems: 6 });
   });
 });
