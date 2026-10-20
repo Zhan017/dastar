@@ -162,7 +162,7 @@ export const KeyListSchema = z.object({ keys: z.array(KeySchema) }).openapi("Key
 export const KeyResponseSchema = z.object({ key: KeySchema }).openapi("KeyResponse");
 export const KeyCreatedSchema = z.object({
   key: KeySchema,
-  secret: z.string().openapi({ description: "The key to present as a bearer credential. Shown in this response only; the service keeps its hash and cannot show it again." }),
+  secret: z.string().openapi({ description: "The key to present as a bearer credential. Shown once, in this response only; the service keeps its hash and cannot show it again." }),
 }).openapi("KeyCreated");
 export const BlackoutChangeSchema = z.object({ blackout: BlackoutSchema, cancelled: z.array(z.string()) }).openapi("BlackoutChange");
 
