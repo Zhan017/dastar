@@ -74,6 +74,8 @@ describe("admin key routes", () => {
       const res = await call("POST", keysPath(S.venue), admin, { label: "holder", capabilities: ["hold", "read"] });
       expect(res.status).toBe(201);
       expect(res.headers.get("content-type")).toContain("application/json");
+      // the body carries the secret, so no cache may keep it
+      expect(res.headers.get("cache-control")).toBe("no-store");
       const holder = await json<Created>(res);
       expect(holder.secret).toMatch(SECRET);
       expect(holder.key).toEqual({

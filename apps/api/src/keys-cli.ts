@@ -13,7 +13,8 @@ export async function runKeysCli(argv: string[], env: Record<string, string | un
   if (!url) throw new Error("DATABASE_URL is required");
   const capabilities = values.capabilities.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
   for (const c of capabilities) if (!(CAPABILITIES as readonly string[]).includes(c)) throw new Error(`unknown capability "${c}"`);
-  const venueIds = values.venues === undefined ? null : values.venues.split(",").map((s) => z.guid().parse(s.trim()).toLowerCase());
+  // a venue named twice is one venue: a key scoped to [V, V] would match no venue's key routes
+  const venueIds = values.venues === undefined ? null : [...new Set(values.venues.split(",").map((s) => z.guid().parse(s.trim()).toLowerCase()))];
   const pool = new Pool({ connectionString: url, max: 1 });
   pool.on("error", () => undefined);
   try {

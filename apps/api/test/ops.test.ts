@@ -169,6 +169,9 @@ describe("operations", () => {
     expect(r.status).toBe(201);
     await api.close();
     expect((await runKeysCli(["--label", "adm", "--capabilities", "admin"], { DATABASE_URL: conn.app })).key).toMatch(/^dsk_/);
+    // a venue named twice is stored once, so the key matches its venue's key routes
+    const twice = await runKeysCli(["--label", "twice", "--capabilities", "read", "--venues", `${seed.venue},${seed.venue.toUpperCase()}`], { DATABASE_URL: conn.app });
+    expect((await owner.query("select venue_ids from dastar.api_key where id = $1", [twice.id])).rows[0].venue_ids).toEqual([seed.venue]);
     await expect(runKeysCli(["--label", "bad", "--capabilities", "hold,root"], { DATABASE_URL: conn.app })).rejects.toThrow(/unknown capability/);
     await expect(runKeysCli(["--capabilities", "hold"], { DATABASE_URL: conn.app })).rejects.toThrow(/--label/);
   });

@@ -35,6 +35,8 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     assertVenueInScope(key, venueId);
     const body = c.req.valid("json");
     const created = await createVenueKey(deps, venueId, { label: body.label, capabilities: body.capabilities });
+    // the body carries the secret, which no cache may keep
+    c.header("Cache-Control", "no-store");
     return c.json({ key: toKey(created.key), secret: created.secret }, 201);
   });
 

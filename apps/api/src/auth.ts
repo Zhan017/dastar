@@ -8,7 +8,8 @@ import { readLimits, withClient } from "./db.js";
 
 /**
  * What a key may do. `admin` grants the admin routes of its venues (units, combinations, schedules, and blackouts,
- * including forced changes, and the keys of a venue that are scoped to that venue alone) and implies none of the others.
+ * including forced changes, and the keys scoped to one of those venues alone). It does not let the key itself use the
+ * other capabilities, but it can create a key for its venue with any of them, so on that venue it holds them all in effect.
  */
 export const CAPABILITIES = ["hold", "confirm", "cancel", "seat", "read", "admin"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
