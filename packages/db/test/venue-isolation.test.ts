@@ -204,10 +204,10 @@ describe("venue isolation", () => {
     });
   });
 
-  it("the nine trigger functions that read or write other tables run as the owner, with a pinned search path", async () => {
+  it("the eleven trigger functions that read or write other tables run as the owner, with a pinned search path", async () => {
     const names = [
       "trg_fit", "trg_capacity_guard", "trg_config_version", "trg_audit", "trg_sync_unit_rows", "trg_unit_row_insert_guard", "trg_membership",
-      "trg_blackout_guard", "trg_blackout_write",
+      "trg_blackout_guard", "trg_blackout_write", "trg_unit_active_guard", "trg_combo_active_guard",
     ];
     const r = await owner.query(
       `select proname, prosecdef, proconfig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -218,6 +218,16 @@ describe("venue isolation", () => {
     expect(r.rows.every((x) => x.prosecdef === true)).toBe(true);
     // the search path is pinned, so a schema earlier on a caller's path cannot shadow what the owner-run function reads
     for (const x of r.rows) expect(x.proconfig, x.proname).toContain("search_path=pg_catalog, dastar, pg_temp");
+  });
+
+  it("the time zone guard reads no table and runs with the caller's rights, with a pinned search path", async () => {
+    const r = await owner.query(
+      `select prosecdef, proconfig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where nspname = 'dastar' and proname = 'trg_venue_timezone'`,
+    );
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].prosecdef).toBe(false);
+    expect(r.rows[0].proconfig).toContain("search_path=pg_catalog, dastar, pg_temp");
   });
 
   it("no function in schema dastar is executable by PUBLIC", async () => {

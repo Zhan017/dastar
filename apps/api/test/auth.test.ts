@@ -63,7 +63,7 @@ describe("keys and authorization", () => {
     expect((await app.request(`/venues/${VENUE_A}/probe`, { headers: { authorization: `bearer ${scoped.key}` } })).status).toBe(200);
   });
 
-  it("admin is reserved: a key can carry it, and it implies no other capability", async () => {
+  it("admin implies no other capability: a key with admin alone is refused a route that needs another", async () => {
     const admin = await createKey(pool, { label: "admin", capabilities: ["admin"] });
     expect((await app.request(`/venues/${VENUE_A}/probe`, { headers: bearer(admin.key) })).status).toBe(403);
   });

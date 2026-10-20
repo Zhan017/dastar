@@ -134,7 +134,10 @@ describe("availability against a model", () => {
       const comboRows = (await owner.query("select id, unit_ids, capacity_min, capacity_max, active from dastar.unit_combo where venue_id = $1", [venue])).rows as RawCombo[];
       const targets = [
         ...unitRows.filter((u) => u.active).map((u) => ({ kind: "unit" as const, id: u.id, min: u.capacity_min, max: u.capacity_max })),
-        ...comboRows.filter((c) => c.active).map((c) => ({ kind: "combo" as const, id: c.id, min: c.capacity_min, max: c.capacity_max })),
+        // a hold refuses a combination over an inactive unit (invariant 12), so such a combination is not a target
+        ...comboRows
+          .filter((c) => c.active && c.unit_ids.every((m) => unitRows.some((u) => u.id === m && u.active)))
+          .map((c) => ({ kind: "combo" as const, id: c.id, min: c.capacity_min, max: c.capacity_max })),
       ];
       if (targets.length > 0) {
         for (let h = int(0, 6); h > 0; h--) {

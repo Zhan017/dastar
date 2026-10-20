@@ -30,6 +30,8 @@ export const STATUS_BY_CODE = {
   token_requires_held: { status: 409 },
   capacity_conflict: { status: 409 },
   blackout_conflict: { status: 409 },
+  assignment_in_use: { status: 409 },
+  reservation_in_progress: { status: 409 },
   serialization_conflict: { status: 409, retryAfter: "0" },
   idempotency_mismatch: { status: 422 },
   party_does_not_fit: { status: 422 },
@@ -40,6 +42,9 @@ export const STATUS_BY_CODE = {
   assignment_mismatch: { status: 422 },
   window_too_large: { status: 422 },
   outside_schedule: { status: 422 },
+  force_too_large: { status: 422 },
+  invalid_timezone: { status: 422 },
+  invalid_input: { status: 422 },
   forbidden: { status: 403 },
   forbidden_write: { status: 403 },
   not_found: { status: 404 },
@@ -70,8 +75,9 @@ const DETAIL_BY_CODE: Partial<Record<DastarErrorCode, string>> = {
   overlap_set_too_large: "too many overlapping reservations to examine; retry",
   duration_out_of_range: "the duration must be between 5 minutes and 12 hours",
   combo_too_large: "a combination has between 2 and 6 units",
-  blackout_conflict: "a live reservation overlaps the blackout's range; cancel it first",
 };
+
+const STORED_RULE_DETAIL = "the input breaks a rule of the stored configuration";
 
 export function problemFor(code: DastarErrorCode, detail?: string, extensions: Record<string, unknown> = {}): ApiProblem {
   const m: Mapping = STATUS_BY_CODE[code];
@@ -80,7 +86,8 @@ export function problemFor(code: DastarErrorCode, detail?: string, extensions: R
 
 export function fromUnknown(e: unknown): ApiProblem {
   if (e instanceof ApiProblem) return e;
-  if (e instanceof DastarError) return problemFor(e.code, e.message);
+  // an invalid_input that carries a SQLSTATE came from Postgres, whose sentence names a column or constraint; one a command wrote has none
+  if (e instanceof DastarError) return problemFor(e.code, e.code === "invalid_input" && e.sqlstate !== undefined ? STORED_RULE_DETAIL : e.message);
   // the framework's own rejections: unsupported media type, malformed or missing JSON, oversized body
   if (e instanceof HTTPException && e.status < 500) return new ApiProblem(400, "validation", e.message);
   return new ApiProblem(500, "internal");

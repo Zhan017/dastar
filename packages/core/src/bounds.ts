@@ -17,4 +17,8 @@ export const BOUNDS = {
   availabilityResults: { default: 100, max: 500 },
   /** Grid starts one availability request examines before it stops with `truncated`. */
   availabilityStartsExamined: 10_000,
+  /** Stranded reservations one forced admin write cancels; `force_too_large` above it. */
+  forceCancellations: 200,
+  /** An admin blackout listing: its window and its rows. */
+  blackoutListing: { windowDays: 400, rows: 500 },
 } as const;
