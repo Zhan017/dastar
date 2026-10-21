@@ -1,16 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { ApiKey, Deps, Env } from "./env.js";
 import { ApiProblem } from "./problem.js";
 import { readLimits, withClient } from "./db.js";
 
 /**
  * What a key may do. `admin` grants the admin routes of its venues (units, combinations, schedules, and blackouts,
- * including forced changes) and implies none of the others.
+ * including forced changes, and the keys scoped to one of those venues alone). It does not let the key itself use the
+ * other capabilities, but it can create a key for its venue with any of them, so on that venue it holds them all in effect.
  */
-export type Capability = "hold" | "confirm" | "cancel" | "seat" | "read" | "admin";
+export const CAPABILITIES = ["hold", "confirm", "cancel", "seat", "read", "admin"] as const;
+export type Capability = (typeof CAPABILITIES)[number];
 
 const KEY_RE = /^dsk_[A-Za-z0-9_-]{43}$/;
 const BEARER_RE = /^Bearer (\S+)$/i;
@@ -19,10 +21,14 @@ export function hashKey(presented: string): Buffer {
   return createHash("sha256").update(presented).digest();
 }
 
-/** The presented key is returned once and never stored; the table holds its SHA-256. */
-export async function createKey(pool: Pool, opts: { label: string; capabilities: string[]; venueIds?: string[] | null }): Promise<{ id: string; key: string }> {
+/**
+ * The presented key is returned once and never stored; the table holds its SHA-256. A client lets the insert
+ * run inside the caller's transaction.
+ */
+export async function createKey(db: Pool | PoolClient, opts: { label: string; capabilities: string[]; venueIds?: string[] | null }): Promise<{ id: string; key: string }> {
   const key = `dsk_${randomBytes(32).toString("base64url")}`;
-  const r = await pool.query(
+  // Pool and PoolClient each overload `query`, so a call on their union does not type-check
+  const r = await (db as PoolClient).query(
     "insert into dastar.api_key (label, key_hash, capabilities, venue_ids) values ($1, $2, $3::text[], $4::uuid[]) returning id",
     [opts.label, hashKey(key), opts.capabilities, opts.venueIds ?? null],
   );

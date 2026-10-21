@@ -1,4 +1,6 @@
 import { z } from "@hono/zod-openapi";
+import { CAPABILITIES } from "./auth.js";
+import type { KeyView } from "./keys.js";
 import { BOUNDS, type BlackoutView, type ComboView, type ForceOption, type Receipt, type ScheduleView, type UnitView } from "@dastar/db";
 
 export const ProblemSchema = z.object({
@@ -81,6 +83,7 @@ export const UnitParams = z.object({ id: pathGuid("id"), unitId: pathGuid("unitI
 export const ComboParams = z.object({ id: pathGuid("id"), comboId: pathGuid("comboId") });
 export const ScheduleParams = z.object({ id: pathGuid("id"), scheduleId: pathGuid("scheduleId") });
 export const BlackoutParams = z.object({ id: pathGuid("id"), blackoutId: pathGuid("blackoutId") });
+export const KeyParams = z.object({ id: pathGuid("id"), keyId: pathGuid("keyId") });
 
 /** The fields of a write that can strand live reservations: cancel them, with this reason, instead of refusing. */
 const forceFields = { force: z.boolean().optional(), cancel_reason: z.string().min(1).max(200).optional() };
@@ -137,6 +140,15 @@ export const ScheduleSchema = z.object({
 }).openapi("Schedule");
 export const BlackoutSchema = z.object({ id: z.string(), starts_at: z.string(), ends_at: z.string(), reason: z.string(), active: z.boolean() }).openapi("Blackout");
 
+export const CreateKeySchema = z.object({
+  label,
+  capabilities: z.array(z.enum(CAPABILITIES)).min(1).max(CAPABILITIES.length)
+    .refine((c) => new Set(c).size === c.length, { message: "capabilities must be distinct" }),
+}).openapi("CreateKeyRequest");
+export const KeySchema = z.object({
+  id: z.string(), label: z.string(), capabilities: z.array(z.string()), venue_ids: z.array(z.string()), created_at: z.string(), revoked_at: z.string().nullable(),
+}).openapi("Key");
+
 export const UnitListSchema = z.object({ units: z.array(UnitSchema) }).openapi("UnitList");
 export const UnitResponseSchema = z.object({ unit: UnitSchema }).openapi("UnitResponse");
 export const UnitChangeSchema = z.object({ unit: UnitSchema, cancelled: z.array(z.string()) }).openapi("UnitChange");
@@ -146,6 +158,12 @@ export const ComboChangeSchema = z.object({ combo: ComboSchema, cancelled: z.arr
 export const ScheduleListSchema = z.object({ schedules: z.array(ScheduleSchema) }).openapi("ScheduleList");
 export const ScheduleResponseSchema = z.object({ schedule: ScheduleSchema }).openapi("ScheduleResponse");
 export const BlackoutListSchema = z.object({ blackouts: z.array(BlackoutSchema) }).openapi("BlackoutList");
+export const KeyListSchema = z.object({ keys: z.array(KeySchema) }).openapi("KeyList");
+export const KeyResponseSchema = z.object({ key: KeySchema }).openapi("KeyResponse");
+export const KeyCreatedSchema = z.object({
+  key: KeySchema,
+  secret: z.string().openapi({ description: "The key to present as a bearer credential. Shown once, in this response only; the service keeps its hash and cannot show it again." }),
+}).openapi("KeyCreated");
 export const BlackoutChangeSchema = z.object({ blackout: BlackoutSchema, cancelled: z.array(z.string()) }).openapi("BlackoutChange");
 
 export const toUnit = (u: UnitView): z.infer<typeof UnitSchema> =>
@@ -158,3 +176,5 @@ export const toSchedule = (s: ScheduleView): z.infer<typeof ScheduleSchema> => (
 });
 export const toBlackout = (b: BlackoutView): z.infer<typeof BlackoutSchema> =>
   ({ id: b.id, starts_at: b.startsAt, ends_at: b.endsAt, reason: b.reason, active: b.active });
+export const toKey = (k: KeyView): z.infer<typeof KeySchema> =>
+  ({ id: k.id, label: k.label, capabilities: k.capabilities, venue_ids: k.venueIds, created_at: k.createdAt, revoked_at: k.revokedAt });

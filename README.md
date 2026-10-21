@@ -70,7 +70,7 @@ pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --
 
 ## Run the reference API
 
-A small HTTP server over the same engine: nine v1 routes, twelve admin routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
+A small HTTP server over the same engine: nine v1 routes, fifteen admin routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
 
 ```bash
 pnpm seed:demo --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
@@ -189,7 +189,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
-| Reference API | Nine v1 routes, twelve admin routes for units, combinations, schedules, and blackouts, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
+| Reference API | Nine v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery and the retention job are still planned.
 
@@ -212,7 +212,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 ## Next
 
 1. **Complete the engine release:** run the contention and recovery measurements on target hardware.
-2. **Finish administration:** key management through the API, and the retention job.
+2. **Finish M2:** the retention job, a typed client with a docs page, and model-based tests.
 3. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
 4. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 

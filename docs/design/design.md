@@ -536,7 +536,8 @@ receipt: { reservation_id, status, version, audit_id, trace_id }
 | POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to, limit?. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold; `truncated` says the list was cut short |
 | GET | /v1/venues/:id/floor-plan | read | M2 | Units with current occupancy |
 | GET | /v1/venues/:id/holds | read | M2 | Live holds belonging to the calling actor, so a client can find and release holds it lost track of |
-| GET, POST, PATCH | /admin/venues/:id/{units,combos,schedules,blackouts} | admin | M2 | Reject-or-force on stranded bookings (D49): a refusal is 409 or 422 with the stranded ids, a forced change returns the cancelled ids. Combination members and capacities are fixed (D34). Keys follow in M2, webhooks in M4 |
+| GET, POST, PATCH | /admin/venues/:id/{units,combos,schedules,blackouts} | admin | M2 | Reject-or-force on stranded bookings (D49): a refusal is 409 or 422 with the stranded ids, a forced change returns the cancelled ids. Combination members and capacities are fixed (D34). Webhooks in M4 |
+| GET, POST | /admin/venues/:id/keys, /admin/venues/:id/keys/:keyId/revoke | admin | M2 | Keys scoped to exactly the venue, with any of the six capabilities; the secret is returned once at creation; revoking is idempotent. Keys of several venues or all venues stay with the host (the CLI) |
 | POST | /admin/outbox/:id/replay | admin | M4 | Dead-letter replay |
 | POST | /demo/race | demo | M5 | Body: n <= 100. Advisory lock per venue |
 | POST | /demo/chat | demo | M3 | Agent turn |
