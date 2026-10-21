@@ -8,7 +8,7 @@ try {
   process.exit(2);
 }
 const running = startWorker(config);
-console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "sweeping", everyMs: config.sweep.everyMs, limit: config.sweep.limit }));
+console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "sweeping", everyMs: config.sweep.everyMs, limit: config.sweep.limit, retentionEveryMs: config.retention.everyMs, retentionLimit: config.retention.limit }));
 let stopping = false;
 const stop = (): void => {
   if (stopping) return;

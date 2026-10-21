@@ -8,6 +8,7 @@ import { mintConfirmToken, type MintInput } from "./commands/mint-token.js";
 import { getReservation, findReservationVenue, type GetInput, type ReservationView } from "./commands/get.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
+import { purgeRetained } from "./commands/retention.js";
 import { availability, SnapshotCache, type AvailabilityInput, type AvailabilityResult } from "./commands/availability.js";
 import type { AdminContext, AdminOutcome } from "./commands/admin.js";
 import {
@@ -22,7 +23,7 @@ import {
 
 export type DastarOptions = {
   /**
-   * Host-configured pool connected as dastar_app (commands) or dastar_worker (expireDue). Attach an `error`
+   * Host-configured pool connected as dastar_app (commands) or dastar_worker (expireDue, purgeRetained). Attach an `error`
    * listener to it: a client discarded by the handle can still emit a late error, which pg-pool re-emits on
    * the pool, and an unhandled pool error ends the process.
    */
@@ -47,7 +48,7 @@ export type DastarOptions = {
   onAcquire?: (info: AcquireInfo) => void;
 };
 
-export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue"
+export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue" | "purgeRetained"
   | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo"
   | "listSchedules" | "createSchedule" | "updateSchedule" | "listBlackouts" | "createBlackout" | "updateBlackout";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
@@ -101,6 +102,11 @@ export interface Dastar {
   /** Bookable starts for a party in a window; advisory, a hold is still the judge. */
   availability(input: AvailabilityInput): Promise<AvailabilityResult>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
+  /**
+   * One retention batch, `limit` rows at most from each table (default 500): idempotency rows past their purge time and
+   * outbox rows published more than seven days ago. Needs the worker role, like `expireDue`.
+   */
+  purgeRetained(opts?: { limit?: number }): Promise<{ idempotency: number; outbox: number }>;
   admin: DastarAdmin;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
@@ -302,6 +308,7 @@ export function createDastar(opts: DastarOptions): Dastar {
     listHolds: (input) => run("listHolds", null, (c) => listHolds(c, input)),
     availability: (input) => run("availability", null, (c) => availability(c, input, snapshots)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
+    purgeRetained: (o) => run("purgeRetained", null, (c) => purgeRetained(c, o)),
     admin: {
       listUnits: (venueId) => run("listUnits", null, (c) => listUnits(c, venueId)),
       createUnit: (ctx, input) => run("createUnit", ctx.traceId, (c) => createUnit(c, ctx, input)),
