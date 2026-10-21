@@ -28,10 +28,13 @@ export async function purgeRetained(client: ClientBase, opts: { limit?: number }
         where i.venue_id = due.venue_id and i.actor = due.actor and i.key = due.key`,
       [limit],
     );
+    // `published_at is not null` lets the planner use the partial index on published rows; `dead_lettered_at is null`
+    // keeps a dead-lettered row whatever its published_at says. The age is exact hours, not calendar days.
     const outbox = await client.query(
       `with done as (
          select id from dastar.outbox
-          where published_at is not null and published_at <= dastar.dastar_now() - make_interval(days => $2)
+          where published_at is not null and dead_lettered_at is null
+            and published_at <= dastar.dastar_now() - make_interval(hours => $2 * 24)
           order by published_at limit $1 for update skip locked)
        delete from dastar.outbox o using done where o.id = done.id`,
       [limit, PUBLISHED_OUTBOX_RETENTION_DAYS],

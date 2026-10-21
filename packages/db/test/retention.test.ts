@@ -41,14 +41,14 @@ describe("retention", () => {
   const keys = async (): Promise<string[]> =>
     (await owner.query("select key from dastar.idempotency order by key")).rows.map((r) => r.key as string);
 
-  type OutboxState = "published" | "unpublished" | "dead";
+  type OutboxState = "published" | "unpublished" | "dead" | "published and dead";
   /** An outbox row; a published one was published `ageMs` before the real clock. Returns its id. */
   async function event(state: OutboxState, ageMs = 0): Promise<number> {
     const r = await owner.query(
       `insert into dastar.outbox(venue_id, topic, payload, published_at, dead_lettered_at)
        values ($1, 'reservation.held', '{}'::jsonb,
-               case when $2::text = 'published' then now() - make_interval(secs => $3::float8) end,
-               case when $2::text = 'dead' then now() end)
+               case when $2::text in ('published', 'published and dead') then now() - make_interval(secs => $3::float8) end,
+               case when $2::text in ('dead', 'published and dead') then now() end)
        returning id`,
       [seed.venue, state, ageMs / 1000],
     );
@@ -150,8 +150,10 @@ describe("retention", () => {
       const recent = await event("published", 6 * DAY);
       const unpublished = await event("unpublished");
       const dead = await event("dead");
+      // a dead-lettered row stays even when it also carries an old published_at
+      const both = await event("published and dead", 8 * DAY);
       expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 1 });
-      expect(await outboxIds()).toEqual([recent, unpublished, dead]);
+      expect(await outboxIds()).toEqual([recent, unpublished, dead, both]);
       expect(await outboxIds()).not.toContain(old);
       expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0 });
       // the age is judged by the worker's clock: two days later the recent row is eight days old
@@ -168,7 +170,7 @@ describe("retention", () => {
       } finally {
         await setClock(worker, null);
       }
-      expect(await outboxIds()).toEqual([unpublished, dead]);
+      expect(await outboxIds()).toEqual([unpublished, dead, both]);
     });
 
     it("takes at most `limit` rows a batch, the oldest published first", async () => {
