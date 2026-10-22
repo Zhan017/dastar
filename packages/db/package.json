@@ -16,6 +16,7 @@
     "@testcontainers/postgresql": "^10.16.0",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
+    "fast-check": "^4.10.2",
     "typescript": "^5.7.2",
     "vitest": "^3.0.5"
   }
