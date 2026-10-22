@@ -91,7 +91,7 @@ class Hold implements Cmd {
       durationMinutes: h.durationMinutes, assignment: { kind: h.kind, id: h.assignmentId }, enforceSchedule: h.enforceSchedule,
     };
     const e = expectHold(m, h);
-    count(e.kind === "stored" || e.kind === "throws" ? `hold ${e.kind} ${e.code}` : `hold ${e.kind}`);
+    count(e.kind === "stored" || e.kind === "throws" ? `hold ${e.kind} ${e.code}${e.kind === "throws" && e.member ? " via a member" : ""}` : `hold ${e.kind}`);
     if (e.kind === "stored" || e.kind === "held") count("hold overlap expired", e.expire.length);
     const out = await attempt(() => hold(r.app, input));
     const where = this.toString();
@@ -136,13 +136,15 @@ abstract class OnReservation implements Cmd {
 }
 
 class Confirm extends OnReservation {
-  constructor(p: PickParams, readonly mode: "key" | "token" | "wrong") { super(p); }
+  constructor(p: PickParams, readonly mode: "key" | "token" | "wrong" | "stale") { super(p); }
   async run(m: Model, r: Real): Promise<void> {
     const res = this.target(m);
-    const token = this.mode === "key" ? null : this.mode === "token" ? (res.token ?? "no token was minted") : "a wrong token";
+    const token = this.mode === "key" ? null
+      : this.mode === "token" ? (res.token ?? "no token was minted")
+        : this.mode === "stale" ? (res.staleToken ?? "no token was replaced") : "a wrong token";
     const v = versionOf(res, this.p.version);
     const e = expectConfirm(m, res, token, v);
-    count(`confirm by ${token === null ? "key" : "token"} ${e.ok ? "ok" : e.code}`);
+    count(`confirm by ${this.mode} ${e.ok ? "ok" : e.code}`);
     const out = await attempt(() => confirm(r.app, {
       reservationId: res.id, actor: this.actor(), traceId: "model", venueId: m.venueId, ...withVersion(v), ...(token === null ? {} : { confirmToken: token }),
     }));
@@ -232,9 +234,14 @@ class Sweep implements Cmd {
   async run(m: Model, r: Real): Promise<void> {
     const want = expectSweep(m);
     count("sweep expired", want.length);
-    const out = await expireDue(r.worker, { limit: 1000 });
-    // the sweeper serves every venue; rows of earlier runs' venues may expire too
-    expect(out.expired.filter((id) => m.reservations.some((x) => x.id === id)).sort(), this.toString()).toEqual(want);
+    // the sweeper serves every venue and earlier runs' venues may have due rows too, so it runs until a batch comes back short
+    const expired: string[] = [];
+    let batch: string[];
+    do {
+      batch = (await expireDue(r.worker, { limit: 500 })).expired;
+      expired.push(...batch);
+    } while (batch.length === 500);
+    expect(expired.filter((id) => m.reservations.some((x) => x.id === id)).sort(), this.toString()).toEqual(want);
     applySweep(m, want);
     await verify(m, r.owner, this.toString());
   }
@@ -329,7 +336,7 @@ class ToggleBlackout implements Cmd {
     const b = pickOf(m.blackouts, this.pick)!;
     const e = expectBlackout(m, b.start, b.end, !b.active && this.active, this.force);
     const out = await attempt(() => updateBlackout(r.app, ctxOf(m), { blackoutId: b.id, active: this.active, force: this.force, cancelReason: "model change" }));
-    expectAdmin(out, e, "reactivated blackout", this.toString());
+    expectAdmin(out, e, !b.active && this.active ? "reactivated blackout" : "toggled blackout", this.toString());
     if (e.ok) {
       applyCancellations(m, e, ADMIN);
       b.active = this.active;
@@ -359,7 +366,7 @@ const holdArb = fc.record({
 /** Every command, weighted by repetition: holds most often, then the lifecycle, the clock, the sweeper, and admin writes. */
 export const COMMANDS: Arbitrary<Cmd>[] = [
   holdArb, holdArb, holdArb, holdArb, holdArb, holdArb, holdArb,
-  fc.tuple(pickParams, fc.constantFrom<"key" | "token" | "wrong">("key", "key", "token", "token", "wrong")).map(([p, mode]) => new Confirm(p, mode)),
+  fc.tuple(pickParams, fc.constantFrom<"key" | "token" | "wrong" | "stale">("key", "key", "token", "token", "wrong", "stale")).map(([p, mode]) => new Confirm(p, mode)),
   fc.tuple(pickParams, fc.constantFrom<"key" | "token" | "wrong">("key", "token")).map(([p, mode]) => new Confirm(p, mode)),
   pickParams.map((p) => new Mint(p)), pickParams.map((p) => new Mint(p)),
   pickParams.map((p) => new Cancel(p)), pickParams.map((p) => new Cancel(p)),

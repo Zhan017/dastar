@@ -65,9 +65,9 @@ export async function verify(m: Model, owner: Client, where: string): Promise<vo
   const config = await owner.query("select id, capacity_min, capacity_max, active from dastar.unit where venue_id = $1 order by id", [v]);
   expect(config.rows.map((u) => ({ id: u.id, min: u.capacity_min, max: u.capacity_max, active: u.active })), `${where}: units`)
     .toEqual([...m.units].sort((a, b) => (a.id < b.id ? -1 : 1)).map((u) => ({ id: u.id, min: u.min, max: u.max, active: u.active })));
-  const combos = await owner.query("select id, active from dastar.unit_combo where venue_id = $1 order by id", [v]);
-  expect(combos.rows.map((c) => ({ id: c.id, active: c.active })), `${where}: combinations`)
-    .toEqual([...m.combos].sort((a, b) => (a.id < b.id ? -1 : 1)).map((c) => ({ id: c.id, active: c.active })));
+  const combos = await owner.query("select id, unit_ids, capacity_min, capacity_max, active from dastar.unit_combo where venue_id = $1 order by id", [v]);
+  expect(combos.rows.map((c) => ({ id: c.id, members: [...(c.unit_ids as string[])].sort(), min: c.capacity_min, max: c.capacity_max, active: c.active })), `${where}: combinations`)
+    .toEqual([...m.combos].sort((a, b) => (a.id < b.id ? -1 : 1)).map((c) => ({ id: c.id, members: [...c.members].sort(), min: c.min, max: c.max, active: c.active })));
   const blackouts = await owner.query("select id, lower(during) as s, upper(during) as e, active from dastar.blackout where venue_id = $1 order by id", [v]);
   expect(blackouts.rows.map((b) => ({ id: b.id, start: ms(b.s), end: ms(b.e), active: b.active })), `${where}: blackouts`)
     .toEqual([...m.blackouts].sort((a, b) => (a.id < b.id ? -1 : 1)).map((b) => ({ id: b.id, start: b.start, end: b.end, active: b.active })));

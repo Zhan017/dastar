@@ -13,11 +13,12 @@ const MAX_COMMANDS = 50;
 /** With the default seed and size, each of these outcomes must come up, so the test cannot pass on a run that exercised too little. */
 const FLOORS = [
   "hold held", "hold replay", "hold mismatch", "hold overlap expired", "hold stored party_does_not_fit", "hold stored hold_conflict", "hold stored blackout",
-  "hold throws outside_schedule", "hold throws assignment_inactive", "hold throws too_many_live_holds",
-  "confirm by key ok", "confirm by token ok", "confirm by token forbidden", "confirm by key hold_expired", "confirm by key invalid_transition", "confirm by key version_conflict",
+  "hold throws outside_schedule", "hold throws assignment_inactive", "hold throws assignment_inactive via a member", "hold throws too_many_live_holds",
+  "confirm by key ok", "confirm by token ok", "confirm by wrong forbidden", "confirm by stale forbidden",
+  "confirm by key hold_expired", "confirm by key invalid_transition", "confirm by key version_conflict",
   "mint ok", "mint token_requires_held", "cancel ok", "cancel invalid_transition", "seat ok", "complete ok", "sweep expired",
   "unit capacity_conflict", "unit assignment_in_use", "unit forced", "unit reservation_in_progress", "combo assignment_in_use",
-  "blackout blackout_conflict", "blackout forced", "reactivated blackout applied",
+  "blackout blackout_conflict", "blackout forced", "reactivated blackout applied", "reactivated blackout blackout_conflict", "reactivated blackout forced",
 ];
 const DEFAULTS = process.env.DASTAR_MODEL_SEED === undefined && PATH === undefined && process.env.DASTAR_MODEL_RUNS === undefined;
 
@@ -116,7 +117,8 @@ describe("the engine against a reference model", () => {
       fc.asyncProperty(planArb, fc.commands(COMMANDS, { maxCommands: MAX_COMMANDS, size: "max" }), async (plan, cmds) => {
         await fc.asyncModelRun(() => setup(plan), cmds);
       }),
-      { seed: SEED, numRuns: RUNS, ...(PATH === undefined ? {} : { path: PATH }) },
+      // a failure's shrinking stops before the test's own timeout, so the seed and path are still reported
+      { seed: SEED, numRuns: RUNS, interruptAfterTimeLimit: 840_000, markInterruptAsFailure: true, ...(PATH === undefined ? {} : { path: PATH }) },
     );
     console.log(`model outcomes over ${runs} runs:\n${[...tally].sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `  ${k}: ${n}`).join("\n")}`);
     if (DEFAULTS) expect(FLOORS.filter((label) => !tally.has(label)), "outcomes the default run never produced").toEqual([]);

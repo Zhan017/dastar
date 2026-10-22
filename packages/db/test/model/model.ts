@@ -18,6 +18,8 @@ export type ModelReservation = {
   id: string; actor: string; kind: Kind; assignmentId: string; units: string[];
   party: number; start: number; end: number;
   status: Status; version: number; expiresAt: number; token: string | null;
+  /** The last token this reservation had that was replaced, used, or cleared; the test presents it to check it is refused. */
+  staleToken: string | null;
   audit: AuditEntry[]; outbox: OutboxEvent[];
 };
 
@@ -59,7 +61,10 @@ export const occupies = (r: ModelReservation): boolean => OCCUPYING.has(r.status
 const isDead = (r: ModelReservation, clock: number): boolean => r.status === "held" && r.expiresAt <= clock;
 
 const idemKey = (actor: string, key: string): string => `${actor}\u0000${key}`;
-/** The fields the engine's canonical hold request covers: neither the actor (part of the key) nor enforceSchedule. */
+/**
+ * The fields of the engine's canonical hold request that the test varies; it also covers the venue and the external
+ * reference, which stay fixed here. Neither the actor, which is part of the key, nor enforceSchedule is in it.
+ */
 export const canonicalPayload = (h: HoldRequest): string => JSON.stringify([h.kind, h.assignmentId, h.durationMinutes, h.party, h.start]);
 export const holdEnd = (h: HoldRequest): number => h.start + h.durationMinutes * MINUTE;
 
@@ -96,7 +101,7 @@ const blackoutOver = (m: Model, start: number, end: number): boolean => m.blacko
 export type HoldExpectation =
   | { kind: "replay"; outcome: unknown }
   | { kind: "mismatch" }
-  | { kind: "throws"; code: "outside_schedule" | "assignment_inactive" | "too_many_live_holds" }
+  | { kind: "throws"; code: "outside_schedule" | "assignment_inactive" | "too_many_live_holds"; member?: true }
   | { kind: "stored"; code: "party_does_not_fit" | "blackout" | "hold_conflict"; expire: string[] }
   | { kind: "held"; expire: string[]; units: string[] };
 
@@ -115,7 +120,7 @@ export function expectHold(m: Model, h: HoldRequest): HoldExpectation {
   const overlapping = m.reservations.filter((r) => occupies(r) && r.units.some((u) => units.includes(u)) && overlaps(r.start, r.end, h.start, end));
   const expire = overlapping.filter((r) => isDead(r, m.clock)).map((r) => r.id).sort();
   if (blackoutOver(m, h.start, end)) return { kind: "stored", code: "blackout", expire };
-  if (!usable(m, h.kind, h.assignmentId)) return { kind: "throws", code: "assignment_inactive" };
+  if (!usable(m, h.kind, h.assignmentId)) return { kind: "throws", code: "assignment_inactive", member: true };
   const cap = capacityOf(m, h.kind, h.assignmentId);
   if (h.party < cap.min || h.party > cap.max) return { kind: "stored", code: "party_does_not_fit", expire };
   if (overlapping.some((r) => !expire.includes(r.id))) return { kind: "stored", code: "hold_conflict", expire };
@@ -124,7 +129,7 @@ export function expectHold(m: Model, h: HoldRequest): HoldExpectation {
 
 function transition(r: ModelReservation, to: Status, actor: string, topic: string | null): void {
   r.audit.push({ action: `update:${r.status}>${to}`, actor });
-  if (r.status === "held") r.token = null;
+  if (r.status === "held" && r.token !== null) { r.staleToken = r.token; r.token = null; }
   r.status = to;
   r.version += 1;
   if (topic) r.outbox.push({ topic, status: to, version: r.version });
@@ -140,7 +145,7 @@ export function applyHold(m: Model, h: HoldRequest, e: HoldExpectation, outcome:
     m.reservations.push({
       id: newId, actor: h.actor, kind: h.kind, assignmentId: h.assignmentId, units: e.units,
       party: h.party, start: h.start, end: holdEnd(h),
-      status: "held", version: 1, expiresAt: m.clock + m.ttlMs, token: null,
+      status: "held", version: 1, expiresAt: m.clock + m.ttlMs, token: null, staleToken: null,
       audit: [{ action: "insert", actor: h.actor }], outbox: [{ topic: "reservation.held", status: "held", version: 1 }],
     });
   }
@@ -158,6 +163,8 @@ export function expectConfirm(m: Model, r: ModelReservation, token: string | nul
   if (expectedVersion !== undefined && expectedVersion !== r.version) return refuse("version_conflict");
   if (r.status !== "held") return refuse("invalid_transition");
   if (r.expiresAt <= m.clock) return refuse("hold_expired");
+  // unreachable in a sequential run: each writer refuses or force cancels a live hold first, and a dead one fails the
+  // expiry check above; kept in the triggers' order
   if (blackoutOver(m, r.start, r.end)) return refuse("blackout");
   if (!usable(m, r.kind, r.assignmentId)) return refuse("assignment_inactive");
   const cap = capacityOf(m, r.kind, r.assignmentId);
@@ -173,6 +180,7 @@ export function expectMint(m: Model, r: ModelReservation, expectedVersion?: numb
 }
 export function applyMint(r: ModelReservation, actor: string, token: string): void {
   r.audit.push({ action: "update:metadata", actor });
+  if (r.token !== null) r.staleToken = r.token;
   r.token = token;
   r.version += 1;
 }
