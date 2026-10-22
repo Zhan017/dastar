@@ -20,6 +20,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@dastar/client": "workspace:*",
     "@testcontainers/postgresql": "^10.16.0",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",

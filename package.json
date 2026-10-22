@@ -23,7 +23,7 @@
     "churn": "pnpm --filter @dastar/harness churn",
     "migrate-under-load": "pnpm --filter @dastar/harness migrate-under-load",
     "keys:create": "pnpm --filter @dastar/api keys:create",
-    "openapi": "pnpm --filter @dastar/api openapi",
+    "openapi": "pnpm --filter @dastar/api openapi && pnpm --filter @dastar/client generate",
     "api": "pnpm --filter @dastar/api start",
     "worker": "pnpm --filter @dastar/worker start"
   },
