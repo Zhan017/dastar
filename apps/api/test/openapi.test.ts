@@ -1,6 +1,16 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { cloneDatabase, dropDatabase, type Conn } from "../../../packages/db/test/helpers/db.js";
+import { openApiText } from "../src/openapi.js";
 import { makeApi } from "./helpers.js";
+
+const COMMITTED = new URL("../openapi.json", import.meta.url);
+
+describe("the committed document, apps/api/openapi.json", () => {
+  it("is what the routes generate, built without a database", () => {
+    expect(readFileSync(COMMITTED, "utf8"), "run pnpm openapi").toBe(openApiText());
+  });
+});
 
 type Operation = { security?: Record<string, string[]>[]; responses: Record<string, unknown> };
 type Doc = { paths: Record<string, Record<string, Operation>>; components: { schemas: Record<string, unknown> } };
@@ -13,6 +23,10 @@ describe("OpenAPI document", () => {
     doc = await (await api.app.request("/openapi.json")).json() as Doc;
   });
   afterAll(async () => { await api.close(); await dropDatabase("api_openapi_test"); });
+
+  it("is the committed document", () => {
+    expect(doc).toEqual(JSON.parse(readFileSync(COMMITTED, "utf8")));
+  });
 
   it("lists exactly the implemented routes", () => {
     expect(Object.keys(doc.paths).sort()).toEqual([

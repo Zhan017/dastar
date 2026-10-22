@@ -13,6 +13,9 @@ import { register as registerReservations } from "./routes/reservations.js";
 
 const TRACE_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 
+/** The document's header: `/openapi.json` and the committed apps/api/openapi.json are both built with it. */
+export const OPENAPI_CONFIG = { openapi: "3.0.0", info: { title: "Dastar reference API", version: "0.1.0" } };
+
 export function createApp(deps: Deps): OpenAPIHono<Env> {
   const log = deps.log ?? ((e: LogEntry): void => { console.log(JSON.stringify(e)); });
   const app = new OpenAPIHono<Env>({
@@ -57,6 +60,6 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
   registerAdminUnits(app, deps);
   registerAdminCalendar(app, deps);
   registerAdminKeys(app, deps);
-  app.doc("/openapi.json", { openapi: "3.0.0", info: { title: "Dastar reference API", version: "0.1.0" } });
+  app.doc("/openapi.json", OPENAPI_CONFIG);
   return app;
 }
