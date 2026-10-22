@@ -6,6 +6,8 @@ import { BOUNDS, type BlackoutView, type ComboView, type ForceOption, type Recei
 export const ProblemSchema = z.object({
   type: z.string(), title: z.string(), status: z.number().int(), code: z.string(),
   detail: z.string().optional(), trace_id: z.string(),
+  replayed: z.boolean().optional().openapi({ description: "On a hold's refusal: true when it is the stored outcome of an earlier request with the same idempotency key." }),
+  stranded: z.array(z.string()).optional().openapi({ description: "On a refused admin change: the ids of the live reservations it would strand, or, with force, of those that block it." }),
 }).openapi("Problem");
 
 const problemContent = { "application/problem+json": { schema: ProblemSchema } };

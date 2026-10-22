@@ -9,7 +9,7 @@ export type DastarClient = Client<paths>;
 export type DastarClientOptions = {
   /** Where the reference API listens, such as http://127.0.0.1:8080. */
   baseUrl: string;
-  /** An API key, sent as a bearer token on every request; without one, a client can still confirm with a token. */
+  /** An API key, sent as a bearer token on every request; without one, or with an empty one, a client can still confirm with a token. */
   key?: string | undefined;
   /** A fetch to use instead of the global one, such as an in-process app's request function. */
   fetch?: ClientOptions["fetch"];
@@ -19,7 +19,7 @@ export type DastarClientOptions = {
 export function createDastarClient(opts: DastarClientOptions): DastarClient {
   return createClient<paths>({
     baseUrl: opts.baseUrl,
-    ...(opts.key !== undefined ? { headers: { authorization: `Bearer ${opts.key}` } } : {}),
+    ...(opts.key !== undefined && opts.key !== "" ? { headers: { authorization: `Bearer ${opts.key}` } } : {}),
     ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
   });
 }

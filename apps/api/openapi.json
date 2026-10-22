@@ -32,6 +32,17 @@
           },
           "trace_id": {
             "type": "string"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "On a hold's refusal: true when it is the stored outcome of an earlier request with the same idempotency key."
+          },
+          "stranded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "On a refused admin change: the ids of the live reservations it would strand, or, with force, of those that block it."
           }
         },
         "required": [

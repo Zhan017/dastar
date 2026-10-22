@@ -24,7 +24,7 @@ describe("@dastar/client against the reference API", () => {
   });
   afterAll(async () => { await api.close(); await owner.end(); await dropDatabase("api_client_test"); });
 
-  it("books through the typed paths: a schedule, availability, a hold, a conflict, a token, a confirmation, a cancellation", async () => {
+  it("books through the typed paths: a schedule, availability, a hold, a conflict, a token, a confirmation, a refused deactivation, a cancellation", async () => {
     // 2064-01-07 is a Monday; the seed venue is in Berlin, where 17:00 to 23:00 is 16:00 to 22:00 UTC in January
     const schedule = await admin.POST("/admin/venues/{id}/schedules", {
       params: { path: { id: seed.venue } },
@@ -53,7 +53,7 @@ describe("@dastar/client against the reference API", () => {
     const taken = await agent.POST("/v1/venues/{id}/holds", { params: { path: { id: seed.venue }, header: { "idempotency-key": "client-2" } }, body: request });
     const problem: Problem | undefined = taken.error;
     expect(taken.response.status).toBe(409);
-    expect(problem).toMatchObject({ code: "hold_conflict", status: 409 });
+    expect(problem).toMatchObject({ code: "hold_conflict", status: 409, replayed: false });
 
     const read = await agent.GET("/v1/reservations/{id}", { params: { path: { id } } });
     expect(read.data).toMatchObject({ id, status: "held", party_size: 2 });
@@ -64,8 +64,24 @@ describe("@dastar/client against the reference API", () => {
     expect(confirmed.error).toBeUndefined();
     expect(confirmed.data?.receipt).toMatchObject({ reservation_id: id, status: "confirmed" });
 
+    // deactivating the held unit is refused, and the problem names the reservation it would strand
+    expect(slot.assignment.kind).toBe("unit");
+    const refused = await admin.PATCH("/admin/venues/{id}/units/{unitId}", { params: { path: { id: seed.venue, unitId: slot.assignment.id } }, body: { active: false } });
+    const stranded: string[] | undefined = refused.error?.stranded;
+    expect(refused.response.status).toBe(409);
+    expect(refused.error?.code).toBe("assignment_in_use");
+    expect(stranded).toEqual([id]);
+
     const cancelled = await agent.POST("/v1/reservations/{id}/cancel", { params: { path: { id } }, body: { reason: "plans changed" } });
     expect(cancelled.data?.receipt).toMatchObject({ reservation_id: id, status: "cancelled" });
+  });
+
+  it("an empty key sends no authorization header", async () => {
+    let seen: string | null | undefined;
+    const probe = createDastarClient({ baseUrl: "http://dastar.test", key: "", fetch: async (request) => { seen = request.headers.get("authorization"); return api.app.request(request); } });
+    const live = await probe.GET("/health/live");
+    expect(live.data).toEqual({ status: "live" });
+    expect(seen).toBeNull();
   });
 
   it("a client without a key is refused where a key is required", async () => {

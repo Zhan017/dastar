@@ -2934,6 +2934,10 @@ export interface components {
             code: string;
             detail?: string;
             trace_id: string;
+            /** @description On a hold's refusal: true when it is the stored outcome of an earlier request with the same idempotency key. */
+            replayed?: boolean;
+            /** @description On a refused admin change: the ids of the live reservations it would strand, or, with force, of those that block it. */
+            stranded?: string[];
         };
         HoldResponse: {
             receipt: components["schemas"]["Receipt"];
