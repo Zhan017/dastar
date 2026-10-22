@@ -234,7 +234,7 @@ flowchart TB
 
 **db.** Migrations and runner. Commands, one transaction each, returning a receipt, with a retry classifier for deadlock and serialization errors. Idempotency stores actor, key, payload hash, and the exact response. Snapshot and occupancy queries. Outbox claim and ack. SQLSTATE mapper. A secretbox helper for encrypting confirm tokens and webhook secrets at rest with a key from the environment. Every command sets `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` as transaction-local settings at the start; from M2 the venue setting is what row-level security keys on, so a transaction that forgets it reads nothing and inserts nothing.
 
-**api.** Routers for v1, admin, demo (flagged). Middleware: capability keys, per-key token buckets in memory, idempotency header handling, Problem Details, tracing with the trace id echoed in receipts, and log redaction so a confirm token never appears in a log line or span. OpenAPI from Zod; docs UI and drift check arrive in M2.
+**api.** Routers for v1, admin, demo (flagged). Middleware: capability keys, per-key token buckets in memory, idempotency header handling, Problem Details, tracing with the trace id echoed in receipts, and log redaction so a confirm token never appears in a log line or span. OpenAPI from Zod, committed as `apps/api/openapi.json`; Swagger UI at `/docs`; the typed client `@dastar/client` is generated from the committed document, and a test fails while the document or the client's types differ from what the routes generate.
 
 **worker.** Sweeper expires due holds through the same command path in small batches. Publisher signs, delivers with backoff, dead-letters. Retention purges idempotency rows past their purge time, published outbox rows older than seven days, and demo transcripts older than thirty days. Backup runs the nightly dump. Demo reset reseeds nightly when flagged.
 
@@ -531,7 +531,8 @@ receipt: { reservation_id, status, version, audit_id, trace_id }
 | POST | /v1/reservations/:id/cancel | cancel | M1 | Body: reason, expected_version? |
 | GET | /v1/reservations/:id | read | M1 | Returns `status` as effective status by database time (D43), `stored_status`, `hold_expires_at`, `version`, and history from audit_log |
 | GET | /health/live, /health/ready | none | M1 | Ready means database reachable and migrations applied |
-| GET | /openapi.json | none | M1 | Docs UI in M2 |
+| GET | /openapi.json | none | M1 | The committed document, `apps/api/openapi.json` |
+| GET | /docs | none | M2 | Swagger UI over /openapi.json, served from the installed package under a same-origin content security policy |
 | POST | /v1/reservations/:id/seat, /complete | seat | M2 | |
 | POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to, limit?. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold; `truncated` says the list was cut short |
 | GET | /v1/venues/:id/floor-plan | read | M2 | Units with current occupancy |
@@ -683,7 +684,7 @@ Postgres: `max_connections = 100`. Each api and worker process uses a pool of 16
 
 Secrets: one env file on the box, owner root, mode 0600, mounted into containers. Holds the database URLs, the encryption key for tokens and webhook secrets, the LLM key, and the Grafana token. Rotation procedure documented in the runbook. Nothing secret in the repo or images.
 
-CI: lint, typecheck, unit, integration on testcontainers, migrations from zero, attack suite as `dastar_app`, property tests, race at N=200 with the count posted on the PR, dependency-cruiser. M2 adds the four-surface drift check. Images to GHCR. Deploy job: SSH, `docker compose pull && up -d`. Renovate keeps dependencies current. Benchmarks on a rented instance per run, results into `BENCHMARKS.md`.
+CI: lint, typecheck, unit, integration on testcontainers, migrations from zero, attack suite as `dastar_app`, property tests, race at N=200 with the count posted on the PR, dependency-cruiser. M2 adds the drift check for two of the four surfaces, the OpenAPI document and the typed client, as tests in the suite; M3 adds the agent tools and the MCP server. Images to GHCR. Deploy job: SSH, `docker compose pull && up -d`. Renovate keeps dependencies current. Benchmarks on a rented instance per run, results into `BENCHMARKS.md`.
 
 Observability: api and worker export OTLP directly to Grafana Cloud. Public dashboards: race metrics; agent cost and hallucination rate. Alerts with a runbook entry each: oldest unpublished outbox age over 10 minutes, sweeper lag over 1 minute, 5xx rate over 1 percent for 5 minutes, LLM daily spend over cap, backup older than 36 hours. Logs redact confirm tokens and API keys. Uptime monitor with a README badge.
 
@@ -710,7 +711,7 @@ Hosted sandbox with free keys, gated. If and only if the M1 launch produces sign
 | Concurrency harness | `apps/harness` | Race: exactly one winner, rest hold_conflict, zero overlaps, retries counted. Naive mode: overlaps greater than zero on a throwaway database with the constraint dropped and the unit locks skipped. Mixed load of hold, confirm, cancel, capacity edits, token minting, and sweep with near-expiry holds: zero deadlocks, retries counted |
 | Chaos | Harness and Docker API | Kill Postgres mid-race then verify; kill API after commit then retry; kill worker mid-batch |
 | Two-connection interleavings | Vitest with two pg clients and controlled pauses | Confirm vs expiry; confirm vs confirm; hold vs a live overlapping reservation's in-flight cancel; the third-review interleaving (retained expiry lock vs fresh insert); the fourth-review interleaving (disjoint holds, shared expired combos); capacity edit vs hold; mint vs confirm; token consumed by confirm and cleared by cancel; concurrent same-key holds; effective status with the sweeper disabled; capacity edit vs confirm near expiry, both orders; confirm vs hold on one unit, both orders; a real two-connection deadlock exercising hold's retry |
-| API contract | OpenAPI snapshot, generated client compiles, drift check (M2) | One schema, four surfaces |
+| API contract | The committed OpenAPI document equals what the routes generate and what the server serves; the client's types equal what openapi-typescript generates from it; the client books through the app, and its types require the idempotency header | One schema, four surfaces: the document and the client in M2, the agent tools and the MCP server in M3 |
 | Agent evals | Golden set, cassettes on PR, live nightly, injection set, labeled judge set | Hallucination rate, guardrail and fallback rates, judge precision and recall |
 | Static | tsc strict, ESLint, dependency-cruiser, span and log attribute allowlists | Boundaries; no tokens or guest data in telemetry |
 | Benchmarks | Harness bench | Throughput vs contention, p99 for losers, what breaks first. Churn run: hours of hold and expire cycles with index bloat measured by pgstattuple |

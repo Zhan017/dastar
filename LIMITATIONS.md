@@ -21,5 +21,6 @@ Known costs and gaps, each with the decision or measurement behind it.
 - **Quantity inventory is out of scope.** Dastar models exclusive units, not pools of identical tickets.
 - **One API key is one actor.** The per-actor live-holds cap, at most 100 per venue, therefore applies to everything one key holds at a time. A caller that holds more than that at once needs several keys; the HTTP load run spreads its requests over 64.
 - **The reference API has no rate limiting.** The per-actor live-holds cap is the only built-in brake; put a limiter in front of it.
+- **The typed client is a workspace package.** `@dastar/client` is not published to npm. A project outside this repository copies the package or generates its own client from [`apps/api/openapi.json`](apps/api/openapi.json) with any OpenAPI generator.
 - **Key lookups and readiness are plain reads.** They wait a bounded time for a connection and have their own read deadline. A read past its deadline discards its connection without cancelling the backend; the role's statement timeout then ends the statement.
 - **Request bodies are limited to 64 KB**, and numeric inputs have ceilings; larger values are refused as validation errors.
