@@ -86,9 +86,27 @@ curl -s -X POST localhost:8080/v1/venues/0199a000-0000-7000-8000-000000000001/ho
   -d '{"party_size":2,"starts_at":"2030-06-07T19:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"0199a000-0000-7000-8000-000000000101"}}'
 ```
 
-The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, and `/health/ready` reports whether the database is reachable and migrated.
+The response carries a receipt and `hold_expires_at`, never a token. A key with `confirm` can confirm directly, or mint a single-use token at `/v1/reservations/{id}/confirm-token`; whoever holds that token confirms without a key. `GET /openapi.json` describes every route, `/docs` shows that document in Swagger UI, and `/health/ready` reports whether the database is reachable and migrated.
 
 `POST /v1/venues/{id}/availability` with `party_size`, `from`, and `to` answers which starts a party can book: slots inside the venue's service periods, each carrying the `starts_at`, `duration_minutes`, and `assignment` a hold accepts. The demo venue has no service periods, so it offers no slots and takes holds at any time; once a venue has a schedule, the API refuses holds outside it with `outside_schedule`.
+
+### The contract and the typed client
+
+[`apps/api/openapi.json`](apps/api/openapi.json) is the document the server serves, committed so that a change to it shows in review. [`@dastar/client`](packages/client) is generated from it: each call names a path as the document writes it, and the request, the response, and the Problem Details of each error are typed.
+
+```ts
+import { createDastarClient } from "@dastar/client";
+
+const dastar = createDastarClient({ baseUrl: "http://127.0.0.1:8080", key: process.env.KEY });
+const held = await dastar.POST("/v1/venues/{id}/holds", {
+  params: { path: { id: "0199a000-0000-7000-8000-000000000001" }, header: { "idempotency-key": "friday-1" } },
+  body: { party_size: 2, starts_at: "2030-06-07T19:00:00Z", duration_minutes: 90, assignment: { kind: "unit", id: "0199a000-0000-7000-8000-000000000101" } },
+});
+if (held.error) console.log(held.error.code); // hold_conflict, outside_schedule, ...
+else console.log(held.data.receipt.reservation_id);
+```
+
+After a change to a route or a schema, `pnpm openapi` regenerates the document and then the client's types; a test fails while either is out of date.
 
 ## Measure it
 
@@ -189,7 +207,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, and the connection contract |
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; retention every minute, 500 rows per batch, for idempotency rows past their 24-hour purge time and published outbox rows older than seven days; also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
-| Reference API | Nine v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, and an OpenAPI document |
+| Reference API | Nine v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, an OpenAPI document committed and checked against the routes, a Swagger UI page, and a typed TypeScript client generated from the document |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery is still planned.
 
@@ -212,7 +230,7 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 ## Next
 
 1. **Complete the engine release:** run the contention and recovery measurements on target hardware.
-2. **Finish M2:** a typed client with a docs page, and model-based tests.
+2. **Finish M2:** model-based tests.
 3. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
 4. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 
@@ -229,7 +247,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Raw-SQL attack tests](packages/db/test/attack.test.ts)
 - [Concurrency interleavings](packages/db/test/interleavings.test.ts) and [capacity edits versus confirmation](packages/db/test/capacity-expiry.test.ts)
 - [Race and naive harness](apps/harness)
-- [Reference API](apps/api)
+- [Reference API](apps/api), its [OpenAPI document](apps/api/openapi.json), and the [typed client](packages/client)
 - [Sweeper worker](packages/worker)
 - [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md), [Decisions](docs/adr/README.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
