@@ -7,6 +7,7 @@ import { register as registerAdminCalendar } from "./routes/admin-calendar.js";
 import { register as registerAdminKeys } from "./routes/admin-keys.js";
 import { register as registerAdminUnits } from "./routes/admin-units.js";
 import { register as registerAvailability } from "./routes/availability.js";
+import { register as registerDocs } from "./routes/docs.js";
 import { register as registerHealth } from "./routes/health.js";
 import { register as registerHolds } from "./routes/holds.js";
 import { register as registerReservations } from "./routes/reservations.js";
@@ -61,5 +62,6 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
   registerAdminCalendar(app, deps);
   registerAdminKeys(app, deps);
   app.doc("/openapi.json", OPENAPI_CONFIG);
+  registerDocs(app);
   return app;
 }
