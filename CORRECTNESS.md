@@ -64,4 +64,4 @@ A hold's foreign-key checks take only a key-share lock on the venue row, which t
 
 ## Guarantees and hypotheses
 
-Guarantees G1 to G4 and hypotheses H1 to H6 are defined in the system design, section 7.1. Their measured status is recorded in the results files under `docs/design/`.
+Guarantees G1 to G4 and hypotheses H1 to H6 are defined in the system design, section 7.1. [BENCHMARKS.md](BENCHMARKS.md) records the hypotheses' status on the target hardware class; earlier provisional runs are under `docs/design/`.

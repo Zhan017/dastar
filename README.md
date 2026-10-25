@@ -134,7 +134,7 @@ pnpm migrate-under-load --admin-url $OWNER --app-url $APP --worker-url $WORKER
 
 Every command exits 0 on a positive verdict, 1 on a negative verdict or an invalid run, 2 on a usage error, and 3 on `inconclusive`, which is not a pass. A percentile is printed only when enough samples lie beyond it; `n/a` means too few, never zero. A request that ended inside a phase is a lower bound on it, shown as `a..b` or `>=a`: it can break a limit and cannot meet one. `load`, `mixed`, `churn`, and `migrate-under-load` run the sweeper the design describes (every 5 seconds, 20 rows, repeated while rows remain) unless told otherwise, and every report records the sweeper it ran with. `mixed` shortens holds through the owner role to exercise expiry; its report labels that expiry as synthetic.
 
-Numbers from a laptop are provisional and are not compared with the design targets. [bench/README.md](bench/README.md) is the runbook for a run on the target hardware class.
+Numbers from a laptop are provisional and are not compared with the design targets. [bench/README.md](bench/README.md) is the runbook for a run on the target hardware class, and [BENCHMARKS.md](BENCHMARKS.md) records one.
 
 When you are done:
 
@@ -217,7 +217,7 @@ The [prototype report](docs/design/results-2026-09-10-prototype.md) records a pa
 
 The suites added since then cover the two findings that report left open. Commands own their connections, so a command can no longer commit or discard a host transaction. A capacity edit racing a confirmation near a hold's expiry is closed by lock order and a fit check on confirmation, with two-connection regression tests in both orders. They also cover a real two-connection deadlock that exercises the hold retry, confirmation racing holds, and the connection contract: timeouts, cancellation, and discarded connections.
 
-Those results cover the tested scenarios. Target-load throughput, pool exhaustion and recovery, sustained vacuum behavior, and migrations under load have harness commands but no published run on the target hardware class, so no number is claimed for them yet. A [provisional run](docs/design/results-2026-09-28-provisional.md) on a shared 4 vCPU machine found no engine problem and three harness and runbook problems to fix before that run. A [second provisional run](docs/design/results-2026-10-10-provisional.md) on a shared 16-thread server, with those fixes in place, found no engine problem and two more runbook problems. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
+Those results cover the tested scenarios. [BENCHMARKS.md](BENCHMARKS.md) records a run on a dedicated machine of the target class: at 50 holds per second for ten minutes, hold p99 was 25 ms over HTTP against a limit of 500 ms, every workload target in the design was met with zero deadlocks, and pool exhaustion and recovery, autovacuum under churn, and migrations under load all passed. Two earlier provisional runs on shared machines ([2026-09-28](docs/design/results-2026-09-28-provisional.md), [2026-10-10](docs/design/results-2026-10-10-provisional.md)) found no engine problem, and the harness and runbook problems they found were fixed before it. Per-unit advisory locks currently serialize requests for the same unit even when their dates do not overlap. [LIMITATIONS.md](LIMITATIONS.md) lists every known cost and gap.
 
 This is an early implementation for evaluation, not yet validated under production load.
 
@@ -229,9 +229,8 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Complete the engine release:** run the contention and recovery measurements on target hardware.
-2. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
-3. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
+1. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
+2. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 
 The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
 
