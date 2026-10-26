@@ -74,7 +74,7 @@ for mix in overlapping distinct_dates disjoint_units combos; do
   pnpm load --owner-url $OWNER --app-url $APP --worker-url $WORKER --blend $mix --steps 10,25,50,100 --step-seconds 120
 done
 
-pnpm migrate-under-load --admin-url $OWNER --app-url $APP --worker-url $WORKER --rate 200 --preload 200000
+pnpm migrate-under-load --admin-url $OWNER --app-url $APP --worker-url $WORKER --rate 500 --preload 200000
 ```
 
 `load --target http --target-hardware` refuses to start an API of its own: for a claim, the API must run in its own process, as the Compose file arranges. The harness and the database share the machine, as the target shape says. Watch `dispatch lag p99` in the `load` output: if the arrival dispatcher itself falls behind by more than a few milliseconds, the harness is competing for CPU, and the run should be repeated with the harness on a second machine, and the results should say which.
