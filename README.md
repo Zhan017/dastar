@@ -8,7 +8,7 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype.** The database core, a pool-owned TypeScript API, a reference HTTP API, a sweeper worker, a concurrency harness, and their tests are implemented and run in CI on Node.js 22 and 26. Availability search, agent tools, and a public demo are planned. The package is not yet published to npm.
+**Status: engine prototype.** The database core, a pool-owned TypeScript API, a reference HTTP API, a sweeper worker, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. Availability search, agent tools, and a public demo are planned. The package is not yet published to npm.
 
 [Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
