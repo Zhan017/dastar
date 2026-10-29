@@ -127,9 +127,9 @@ C4Context
 | Container | Tech | Responsibility |
 |---|---|---|
 | Library distribution | npm: `@dastar/core`, `@dastar/db`, `@dastar/worker`, `@dastar/agent-tools`, `@dastar/mcp` | What host apps embed |
-| API | Node 22, Hono, Zod | v1, admin, demo routes. Capability keys, per-key rate limits, idempotency, receipts, OTLP export. Exported as an app factory |
-| Worker | Node 22, same image | Sweeper, outbox publisher, retention (idempotency, outbox), backup trigger, demo reset |
-| Migrate | Node 22, one-shot, connects as `dastar_owner` | Applies SQL migrations then exits; API and worker wait on it |
+| API | Node 26, Hono, Zod | v1, admin, demo routes. Capability keys, per-key rate limits, idempotency, receipts, OTLP export. Exported as an app factory |
+| Worker | Node 26, same image | Sweeper, outbox publisher, retention (idempotency, outbox), backup trigger, demo reset |
+| Migrate | Node 26, one-shot, connects as `dastar_owner` | Applies SQL migrations then exits; API and worker wait on it |
 | Postgres | 18, btree_gist | Constraints, triggers, audit, outbox. The only state |
 | Demo web | React, Vite, static | Floor plan, chat, race button |
 | Caddy | Caddy 2 | TLS, static files, reverse proxy |
@@ -151,8 +151,8 @@ C4Container
     Container(lib, "Library distribution", "npm", "core, db, worker, agent-tools, mcp")
     Container(web, "Demo web", "React, static", "Floor plan, chat, race")
     Container(caddy, "Caddy", "Caddy 2", "TLS, static, proxy")
-    Container(api, "API", "Node 22, Hono", "v1, admin, demo. Receipts, keys, limits")
-    Container(worker, "Worker", "Node 22", "Sweeper, publisher, retention, backup, reset")
+    Container(api, "API", "Node 26, Hono", "v1, admin, demo. Receipts, keys, limits")
+    Container(worker, "Worker", "Node 26", "Sweeper, publisher, retention, backup, reset")
     Container(migrate, "Migrate", "one-shot, owner role", "SQL migrations")
     ContainerDb(pg, "Postgres", "18, btree_gist", "Constraints, triggers, audit, outbox")
     Container(harness, "Harness", "CLI", "Race, naive, chaos, crash, bench")

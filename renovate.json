@@ -7,6 +7,6 @@
   "packageRules": [
     { "matchUpdateTypes": ["minor", "patch"], "matchCurrentVersion": "!/^0/", "groupName": "non-major dependencies" },
     { "matchDatasources": ["docker"], "matchPackageNames": ["postgres"], "allowedVersions": "<19", "description": "the engine is verified on Postgres 18; a major moves only by hand" },
-    { "matchDatasources": ["docker"], "matchPackageNames": ["node"], "allowedVersions": "<23", "description": "the image tracks the oldest Node.js line CI verifies" }
+    { "matchDatasources": ["docker", "node-version"], "matchPackageNames": ["node"], "allowedVersions": "<27", "description": "the image and .nvmrc run the newest Node.js LTS line CI verifies; a major moves only by hand" }
   ]
 }

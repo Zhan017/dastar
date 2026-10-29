@@ -1,9 +1,10 @@
 # One image for the API, the worker, and the harness; each compose service picks its command.
-FROM node:22-slim
-# one corepack cache for the root build step and the node runtime user
-ENV COREPACK_HOME=/usr/local/share/corepack
-RUN corepack enable
+FROM node:26-slim
 WORKDIR /app
+# Node.js 25 and later ship without Corepack, so the image installs the pnpm that package.json's packageManager names
+COPY package.json ./
+RUN spec="$(node -p 'require("./package.json").packageManager')" \
+ && case "$spec" in pnpm@*) npm install -g "${spec%%+*}" ;; *) echo "packageManager names no pnpm version: $spec" >&2; exit 1 ;; esac
 COPY . .
 RUN pnpm install --frozen-lockfile && mkdir -p apps/harness/results && chown node apps/harness/results
 USER node
