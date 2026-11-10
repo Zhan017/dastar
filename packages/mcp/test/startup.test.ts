@@ -29,6 +29,14 @@ describe("readConfig", () => {
     expect(withPassword).toEqual({ ok: false, line: "DASTAR_URL must not include a user name or password" });
     expect(readConfig({ ...good, DASTAR_VENUE_ID: "venue-1" })).toEqual({ ok: false, line: "DASTAR_VENUE_ID must be a uuid" });
   });
+
+  it("trims every setting, and refuses a key that is not visible ASCII without repeating it", () => {
+    expect(readConfig({ DASTAR_URL: " http://127.0.0.1:8080 \n", DASTAR_KEY: " dsk_x\n", DASTAR_VENUE_ID: ` ${VENUE}\n` }))
+      .toEqual({ ok: true, config: { url: "http://127.0.0.1:8080", key: "dsk_x", venueId: VENUE } });
+    for (const key of ["dsk_a b", "dsk_a\nb", "dsk_a\u200bb"]) {
+      expect(readConfig({ ...good, DASTAR_KEY: key })).toEqual({ ok: false, line: "DASTAR_KEY must contain only visible ASCII characters" });
+    }
+  });
 });
 
 describe("checkCredential against the reference API", () => {
@@ -92,5 +100,12 @@ describe("checkCredential against the reference API", () => {
     const busy = async (): Promise<Response> => new Response(JSON.stringify({ code: "pool_timeout" }), { status: 503, headers: { "content-type": "application/problem+json" } });
     expect(await checkCredential(createDastarClient({ baseUrl: url, key: "dsk_x", fetch: busy }), { url, venueId: VENUE }))
       .toBe("checking the key failed: GET /v1/venues/{id}/holds answered HTTP 503 pool_timeout");
+  });
+
+  it("reports a web page that answers in place of the API", async () => {
+    const url = "http://127.0.0.1:9";
+    const page = async (): Promise<Response> => new Response("<!doctype html><title>Welcome</title>", { status: 200, headers: { "content-type": "text/html" } });
+    expect(await checkCredential(createDastarClient({ baseUrl: url, key: "dsk_x", fetch: page }), { url, venueId: VENUE }))
+      .toBe("checking the key failed: GET /v1/venues/{id}/holds answered with a body that is not JSON");
   });
 });

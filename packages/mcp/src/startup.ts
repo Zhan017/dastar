@@ -82,7 +82,9 @@ export async function checkCredential(client: DastarClient, target: CredentialTa
     try {
       reply = await probe.run(signal);
     } catch (error) {
-      return signal.aborted ? `no answer from ${origin} within ${timeoutMs / 1000} seconds` : unreachable(origin, error);
+      if (signal.aborted) return `no answer from ${origin} within ${timeoutMs / 1000} seconds`;
+      if (error instanceof SyntaxError) return `checking the key failed: ${probe.method} ${probe.path} answered with a body that is not JSON`;
+      return unreachable(origin, error);
     }
     const status = reply.response.status;
     if (status === probe.pass) continue;
