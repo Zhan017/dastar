@@ -106,7 +106,7 @@ if (held.error) console.log(held.error.code); // hold_conflict, outside_schedule
 else console.log(held.data.receipt.reservation_id);
 ```
 
-After a change to a route or a schema, `pnpm openapi` regenerates the document and then the client's types; a test fails while either is out of date.
+After a change to a route or a schema, `pnpm openapi` regenerates the document, then the client's types and the agent tools' inputs; a test fails while any of them is out of date.
 
 ### Agent tools and MCP
 
@@ -133,7 +133,18 @@ Then add it to the MCP client's configuration, with the path to this clone and t
 }
 ```
 
-The demo venue has no service periods, so `search_availability` finds nothing there while `hold` accepts any time; give the venue a schedule through the admin routes to search it.
+The demo venue has no service periods, so `search_availability` finds nothing there while `hold` accepts any time. To search it, create an admin key, put it in `ADMIN_KEY`, and add a service period for each day of the week, 17:00 to 23:00 in the venue's time zone, Asia/Almaty:
+
+```bash
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label admin --capabilities admin --venues 0199a000-0000-7000-8000-000000000001
+for day in 1 2 3 4 5 6 7; do
+  curl -s -X POST localhost:8080/admin/venues/0199a000-0000-7000-8000-000000000001/schedules \
+    -H "authorization: Bearer $ADMIN_KEY" -H "content-type: application/json" \
+    -d '{"day_of_week":'"$day"',"opens":"17:00","closes":"23:00","duration_by_size":{"2":90,"4":120,"8":150}}'
+done
+```
+
+A booking then lasts 90 minutes for up to two guests, 120 for up to four, and 150 for up to eight. From then on the API refuses holds outside these hours with `outside_schedule`.
 
 ## Measure it
 
