@@ -104,6 +104,28 @@ importers:
         specifier: ^3.0.5
         version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)(yaml@2.9.0)
 
+  packages/agent-tools:
+    dependencies:
+      '@dastar/client':
+        specifier: workspace:*
+        version: link:../client
+    devDependencies:
+      '@dastar/core':
+        specifier: workspace:*
+        version: link:../core
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.2
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.13
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)(yaml@2.9.0)
+
   packages/client:
     dependencies:
       openapi-fetch:

@@ -31,13 +31,27 @@ module.exports = {
       name: "api-on-the-engine-only",
       severity: "error",
       from: { path: pkg("api") },
-      to: { path: "^(packages|apps)/(worker|harness|client)/" },
+      to: { path: "^(packages|apps)/(worker|harness|client|agent-tools|mcp)/" },
     },
     {
       name: "client-knows-only-the-contract",
       comment: "@dastar/client is typed by the committed OpenAPI document alone, so it imports no other workspace package",
       severity: "error",
       from: { path: pkg("client") },
+      to: { path: "^(packages|apps)/(core|db|worker|api|harness)/" },
+    },
+    {
+      name: "agent-tools-knows-only-the-contract",
+      comment: "@dastar/agent-tools runs its tools over HTTP through the typed client, so it imports no other workspace package",
+      severity: "error",
+      from: { path: pkg("agent-tools") },
+      to: { path: "^(packages|apps)/(core|db|worker|api|harness|mcp)/" },
+    },
+    {
+      name: "mcp-on-the-tools",
+      comment: "@dastar/mcp serves the agent tools; of the workspace it imports only them and the typed client",
+      severity: "error",
+      from: { path: pkg("mcp") },
       to: { path: "^(packages|apps)/(core|db|worker|api|harness)/" },
     },
     {
