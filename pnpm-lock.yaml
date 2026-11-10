@@ -48,6 +48,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@dastar/agent-tools':
+        specifier: workspace:*
+        version: link:../../packages/agent-tools
       '@dastar/client':
         specifier: workspace:*
         version: link:../../packages/client
