@@ -53,6 +53,10 @@ Keys are 32 random bytes shown once at creation; the database stores their SHA-2
 
 The docs page at `/docs` needs no key and shows only what `/openapi.json` already publishes. It serves Swagger UI from the installed package, not from a CDN, under a content security policy that admits scripts, styles, and requests from the API's own origin only, and it makes no request to a third party. A key typed into its Authorize dialog stays in the page's memory and is sent only to the API.
 
+## Agent tools and MCP
+
+No agent tool reaches a confirm route: there is no confirm tool, hold responses carry no token, and a test fails if the tools' source names a confirm or token route. The MCP server checks its key before it serves: the key must read its venue and be refused both confirm-token minting and the venue's key listing, so a key that can confirm or administer stops it with exit code 1. Neither the key nor any user name or password in `DASTAR_URL` appears in its output. Over plain HTTP the key crosses the network in clear; use HTTPS for an API on another machine.
+
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting on this repository. If it is unavailable, open an issue stating only that you have a security report and how to reach you; do not put details in the public issue.

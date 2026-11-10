@@ -21,6 +21,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@dastar/agent-tools": "workspace:*",
     "@dastar/client": "workspace:*",
     "@testcontainers/postgresql": "^10.16.0",
     "@types/node": "^22.10.2",
