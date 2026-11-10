@@ -171,6 +171,21 @@ describe("other answers", () => {
     expect(api.seen[0]!.body).toMatchObject({ starts_at: "tomorrow" });
     expect(r).toMatchObject({ isError: true, structured: { code: "validation", status: 400 } });
   });
+
+  it("an answer without the expected body keeps the key and is a result, not a throw", async () => {
+    const api = fakeApi(new Response(null, { status: 204 }), json(201, { receipt: {} }), held(), json(200, { id: RES }));
+    const s = sessionOver(api);
+    const empty = await s.hold(REQUEST);
+    const partial = await s.hold(REQUEST);
+    const made = await s.hold(REQUEST);
+    const read = await s.getReservation({ reservation_id: RES });
+    expect(empty).toMatchObject({ isError: true, structured: { code: "transport_error" } });
+    expect(partial).toMatchObject({ isError: true, structured: { code: "transport_error", detail: "HTTP 201 without the expected body" } });
+    expect(firstLine(partial.text)).toBe("No answer from the venue's API: HTTP 201 without the expected body. Repeating the same request is safe.");
+    expect(made.isError).toBe(false);
+    expect(read).toMatchObject({ isError: true, structured: { code: "transport_error", detail: "HTTP 200 without the expected body" } });
+    expect(new Set(api.seen.slice(0, 3).map((x) => x.key)).size).toBe(1);
+  });
 });
 
 describe("cancel", () => {

@@ -89,6 +89,32 @@ const REFUSED: Outcome = { kind: "refused" };
 /** A reservation in one of these statuses holds nothing, so asking for the same hold again must start a new one. */
 const ENDED = new Set(["cancelled", "expired", "completed"]);
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+// A 2xx body is read only if it has the fields the session uses; one that lacks them is no answer.
+const isAvailability = (data: unknown): data is Schemas["Availability"] => isObject(data) && Array.isArray(data["slots"]);
+
+function isHoldResponse(data: unknown): data is Schemas["HoldResponse"] {
+  if (!isObject(data)) return false;
+  const receipt = data["receipt"];
+  return (
+    isObject(receipt) &&
+    typeof receipt["reservation_id"] === "string" &&
+    typeof receipt["status"] === "string" &&
+    typeof data["hold_expires_at"] === "string" &&
+    typeof data["replayed"] === "boolean"
+  );
+}
+
+function isReceiptResponse(data: unknown): data is Schemas["ReceiptResponse"] {
+  if (!isObject(data)) return false;
+  const receipt = data["receipt"];
+  return isObject(receipt) && typeof receipt["reservation_id"] === "string";
+}
+
+const isReservation = (data: unknown): data is Schemas["Reservation"] =>
+  isObject(data) && typeof data["id"] === "string" && typeof data["venue_id"] === "string" && typeof data["status"] === "string";
+
 /**
  * The four tools for one venue, run over HTTP through the typed client. A session remembers what it created, so
  * it cancels only that, and which idempotency key each hold request is on, so asking again is safe. No method throws.
@@ -102,14 +128,19 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
   const cancelledIds = new Set<string>();
   const entries = new Map<string, KeyEntry>();
 
-  /** Runs one request under its own deadline. A rejection is a timeout when the deadline passed, whatever error it carries. */
+  /**
+   * Runs one request under its own deadline. A rejection is a timeout when the deadline passed, whatever error it carries.
+   * A 2xx whose body `readable` does not accept is no answer, as the request may have taken effect.
+   */
   async function send<T>(
-    run: (signal: AbortSignal) => Promise<{ data?: T | undefined; error?: unknown; response: Response }>,
+    run: (signal: AbortSignal) => Promise<{ data?: unknown; error?: unknown; response: Response }>,
+    readable: (data: unknown) => data is T,
   ): Promise<Attempt<T>> {
     const signal = AbortSignal.timeout(timeoutMs);
     try {
       const { data, error, response } = await run(signal);
-      return data !== undefined ? { kind: "answer", data } : { kind: "refusal", problem: problemOf(response.status, error) };
+      if (!response.ok) return { kind: "refusal", problem: problemOf(response.status, error) };
+      return readable(data) ? { kind: "answer", data } : { kind: "silence", reason: `HTTP ${response.status} without the expected body` };
     } catch (error) {
       return { kind: "silence", reason: signal.aborted ? `no response within ${timeoutMs / 1000} seconds` : transportReason(error) };
     }
@@ -133,16 +164,13 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
     return fresh;
   }
 
-  async function readReservation(id: string): Promise<Schemas["Reservation"] | undefined> {
-    const attempt = await send<Schemas["Reservation"]>((signal) =>
-      client.GET("/v1/reservations/{id}", { params: { path: { id } }, signal }),
-    );
-    return attempt.kind === "answer" ? attempt.data : undefined;
-  }
+  const fetchReservation = (id: string): Promise<Attempt<Schemas["Reservation"]>> =>
+    send((signal) => client.GET("/v1/reservations/{id}", { params: { path: { id } }, signal }), isReservation);
 
   async function searchAvailability(args: SearchArgs): Promise<ToolResult> {
-    const attempt = await send<Schemas["Availability"]>((signal) =>
-      client.POST("/v1/venues/{id}/availability", { params: { path: { id: venueId } }, body: args, signal }),
+    const attempt = await send(
+      (signal) => client.POST("/v1/venues/{id}/availability", { params: { path: { id: venueId } }, body: args, signal }),
+      isAvailability,
     );
     return attempt.kind === "answer" ? foundSlots(attempt.data, args.party_size) : failure(attempt);
   }
@@ -151,12 +179,14 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
     const { body, intent } = normalizeHold(args);
     // Read or made before the first await, so concurrent calls for one request send one key.
     const entry = entryFor(intent);
-    const attempt = await send<Schemas["HoldResponse"]>((signal) =>
-      client.POST("/v1/venues/{id}/holds", {
-        params: { path: { id: venueId }, header: { "idempotency-key": entry.key } },
-        body,
-        signal,
-      }),
+    const attempt = await send(
+      (signal) =>
+        client.POST("/v1/venues/{id}/holds", {
+          params: { path: { id: venueId }, header: { "idempotency-key": entry.key } },
+          body,
+          signal,
+        }),
+      isHoldResponse,
     );
     if (attempt.kind === "silence") {
       entry.last = UNANSWERED;
@@ -175,7 +205,8 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
       return holdMade(made);
     }
     // A replay answers with the stored receipt; what the reservation is now takes a read.
-    const current = (await readReservation(id))?.status;
+    const read = await fetchReservation(id);
+    const current = read.kind === "answer" ? read.data.status : undefined;
     entry.last = { kind: "held", reservationId: id, status: current ?? made.receipt.status, expiresAt };
     return holdReplayed(made, current);
   }
@@ -183,12 +214,14 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
   async function cancel(args: CancelArgs): Promise<ToolResult> {
     const id = args.reservation_id.toLowerCase();
     if (!created.has(id)) return notCreatedInSession(args.reservation_id);
-    const attempt = await send<Schemas["ReceiptResponse"]>((signal) =>
-      client.POST("/v1/reservations/{id}/cancel", {
-        params: { path: { id } },
-        body: { reason: args.reason, ...(args.expected_version !== undefined ? { expected_version: args.expected_version } : {}) },
-        signal,
-      }),
+    const attempt = await send(
+      (signal) =>
+        client.POST("/v1/reservations/{id}/cancel", {
+          params: { path: { id } },
+          body: { reason: args.reason, ...(args.expected_version !== undefined ? { expected_version: args.expected_version } : {}) },
+          signal,
+        }),
+      isReceiptResponse,
     );
     if (attempt.kind !== "answer") return failure(attempt);
     cancelledIds.add(id);
@@ -197,9 +230,7 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
 
   async function getReservation(args: GetReservationArgs): Promise<ToolResult> {
     const id = args.reservation_id.toLowerCase();
-    const attempt = await send<Schemas["Reservation"]>((signal) =>
-      client.GET("/v1/reservations/{id}", { params: { path: { id } }, signal }),
-    );
+    const attempt = await fetchReservation(id);
     if (attempt.kind !== "answer") return failure(attempt);
     return attempt.data.venue_id.toLowerCase() === venueId ? reservationRead(attempt.data) : otherVenue();
   }
