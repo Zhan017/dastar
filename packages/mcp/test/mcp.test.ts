@@ -109,6 +109,7 @@ describe("dastar-mcp, the built server over stdio", () => {
       for (const args of [{ ...good, party_size: "two" }, { ...good, starts_at: "next tuesday" }, { ...good, assignment: { kind: "unit", id: "T1" } }, { ...good, party_size: undefined }]) {
         const r = await client.callTool({ name: "hold", arguments: args });
         expect(r.isError, JSON.stringify(args)).toBe(true);
+        expect(r.content, JSON.stringify(args)).toEqual([{ type: "text", text: expect.stringContaining("Input validation error: Invalid arguments for tool hold") }]);
       }
     } finally {
       await client.close();
