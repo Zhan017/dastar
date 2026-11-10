@@ -8,7 +8,7 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. Agent tools and a public demo are planned. The package is not yet published to npm.
+**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
 
 [Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
@@ -107,6 +107,33 @@ else console.log(held.data.receipt.reservation_id);
 ```
 
 After a change to a route or a schema, `pnpm openapi` regenerates the document and then the client's types; a test fails while either is out of date.
+
+### Agent tools and MCP
+
+[`@dastar/agent-tools`](packages/agent-tools) gives an agent four tools, `search_availability`, `hold`, `cancel`, and `get_reservation`, with inputs taken from the committed document, and runs them over HTTP for one venue. There is no confirm tool: a person confirms a hold through the venue. Each distinct hold request keeps its own idempotency key, so repeating it after a lost answer returns the same hold, and `cancel` refuses reservations the session did not create.
+
+[`@dastar/mcp`](packages/mcp) serves those tools to any MCP client over stdio. It takes a key that can read, hold, and cancel in one venue, and refuses to start with a key that can confirm or administer:
+
+```bash
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label mcp --capabilities read,hold,cancel --venues 0199a000-0000-7000-8000-000000000001
+pnpm --filter @dastar/mcp build
+```
+
+Then add it to the MCP client's configuration, with the path to this clone and the printed key:
+
+```json
+{
+  "mcpServers": {
+    "dastar": {
+      "command": "node",
+      "args": ["/path/to/dastar/packages/mcp/dist/dastar-mcp.js"],
+      "env": { "DASTAR_URL": "http://127.0.0.1:8080", "DASTAR_KEY": "dsk_...", "DASTAR_VENUE_ID": "0199a000-0000-7000-8000-000000000001" }
+    }
+  }
+}
+```
+
+The demo venue has no service periods, so `search_availability` finds nothing there while `hold` accepts any time; give the venue a schedule through the admin routes to search it.
 
 ## Measure it
 
@@ -208,6 +235,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; retention every minute, 500 rows per batch, for idempotency rows past their 24-hour purge time and published outbox rows older than seven days; also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
 | Reference API | Nine v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, an OpenAPI document committed and checked against the routes, a Swagger UI page, and a typed TypeScript client generated from the document |
+| Agent tools | Four tools, `search_availability`, `hold`, `cancel`, and `get_reservation`, with inputs from the committed document and no confirm tool; a session keeps one idempotency key per hold request and cancels only the reservations it created; an MCP server over stdio that refuses keys able to confirm or administer |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery is still planned.
 
@@ -229,10 +257,10 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Add agent integration:** hold-only tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
+1. **Finish agent integration:** a reference agent on the tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
 2. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 
-The intended agent workflow is **agents hold, humans confirm**. That integration is future work; the engine supplies the reservation and token primitives it will use.
+The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. The confirmation flow and the auditor are future work; the engine supplies the reservation and token primitives they will use.
 
 The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
 
@@ -246,6 +274,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Concurrency interleavings](packages/db/test/interleavings.test.ts) and [capacity edits versus confirmation](packages/db/test/capacity-expiry.test.ts)
 - [Race and naive harness](apps/harness)
 - [Reference API](apps/api), its [OpenAPI document](apps/api/openapi.json), and the [typed client](packages/client)
+- [Agent tools](packages/agent-tools) and the [MCP server](packages/mcp)
 - [Sweeper worker](packages/worker)
 - [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md), [Decisions](docs/adr/README.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)

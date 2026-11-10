@@ -179,7 +179,7 @@ C4Container
 
 ## 5. Components, C4 level 3
 
-**Dependency rule, enforced by dependency-cruiser in CI.** core imports nothing from the repo. db imports core. api, worker, agent-tools import db and core. mcp imports agent-tools. demo and harness sit on top.
+**Dependency rule, enforced by dependency-cruiser in CI.** core imports nothing from the repo. db imports core. api and worker import db and core. agent-tools imports only the typed client, and mcp imports agent-tools and the client. demo and harness sit on top.
 
 ```mermaid
 flowchart TB
@@ -223,11 +223,13 @@ flowchart TB
     sess["session store, persisted"]
   end
   mcp["@dastar/mcp"]
+  client["@dastar/client"]
   db --> core
   api --> db
   worker --> db
-  agent --> db
+  agent --> client
   mcp --> agent
+  mcp --> client
 ```
 
 **core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is pure functions over instants: candidate slots from service periods, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default, and one pass that combines them. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. Time zone math is Postgres's (D48): the database computes service periods as instants, and the availability functions take instants.
@@ -240,7 +242,7 @@ flowchart TB
 
 **agent-tools.** Tool definitions from the shared schemas, executed via a library binding or an HTTP binding, with tool-result strings length-capped and control characters stripped before they enter the model context. `LLMProvider` interface with an Anthropic adapter first, OpenAI-compatible second. Agent loop with a versioned prompt file whose hash goes on every span, forcing a structured reply. Inline guardrail: every declared claim must match a receipt in the session's tool log, or the reply regenerates at most twice, then falls back to a receipt-only message. Async auditor: a judge model scans stored turns for undeclared claims, and its precision and recall against a hand-labeled set are published beside the hallucination rate. Session store persisted in `dastar_agent`, holding encrypted confirm tokens so an API restart strands nothing. Evals: golden conversations, recorded cassettes on PR, live nightly under a spend cap, a basic prompt-injection set, and a report that writes `AUDIT.md`. Parser turns free text into a structured search request.
 
-**mcp.** stdio MCP server over the tool definitions; base URL plus a hold-only key by default.
+**mcp.** stdio MCP server over the tool definitions, bound to one venue by its configuration. It checks its key before serving and refuses one that can confirm or administer.
 
 ---
 
@@ -670,7 +672,7 @@ Each returned slot carries the exact `{ starts_at, duration_minutes, assignment 
 - Prompt files in the repo with a hash on every span. A prompt change without a passing eval does not merge.
 - Evals: golden conversation set in YAML with expected outcomes; cassettes record provider responses for deterministic PR runs; nightly live run under a spend cap; a basic prompt-injection set covering guest text, unit labels, and cancel reasons; hand-labeled turns for judge accuracy. The report writes `AUDIT.md` with conversations, claims, unbacked claims, guardrail firings and fallbacks, judge precision and recall, per model. Budget: at most two provider calls per turn in the request path.
 - Parser: free text to `{ party_size, window, preferences }`, the only LLM step in availability.
-- MCP server `@dastar/mcp`: stdio, the same four tools mirrored one to one, configured with base URL and key, hold-only by default. In 2026 this is how agent builders find and try a backend, so it ships in M3 alongside the audit endpoint, not after it.
+- MCP server `@dastar/mcp`: stdio, the same four tools mirrored one to one, configured with a base URL, a key, and one venue. It checks the key before serving and refuses one that can confirm or administer, so it is hold-only with nothing to switch off. A session's memory of its hold requests' idempotency keys and of the reservations it created lasts as long as its process. In 2026 this is how agent builders find and try a backend, so it ships in M3 alongside the audit endpoint, not after it.
 - Bring-your-own-agent audit: sessions, the session header, and the audit endpoint from section 10.7. The auditor code is the same one that audits the reference agent; the only new code is the session routes and the transcript intake.
 - Transcript scrubbing: before any turn is stored, reference or external, a pattern pass masks email addresses, phone numbers in common formats, and digit runs of eight or more. Names are not detected and the docs say so. The scrubber runs before the auditor, and claim matching is unaffected because claims carry reservation ids, statuses, and times.
 
@@ -711,7 +713,7 @@ Hosted sandbox with free keys, gated. If and only if the M1 launch produces sign
 | Concurrency harness | `apps/harness` | Race: exactly one winner, rest hold_conflict, zero overlaps, retries counted. Naive mode: overlaps greater than zero on a throwaway database with the constraint dropped and the unit locks skipped. Mixed load of hold, confirm, cancel, capacity edits, token minting, and sweep with near-expiry holds: zero deadlocks, retries counted |
 | Chaos | Harness and Docker API | Kill Postgres mid-race then verify; kill API after commit then retry; kill worker mid-batch |
 | Two-connection interleavings | Vitest with two pg clients and controlled pauses | Confirm vs expiry; confirm vs confirm; hold vs a live overlapping reservation's in-flight cancel; the third-review interleaving (retained expiry lock vs fresh insert); the fourth-review interleaving (disjoint holds, shared expired combos); capacity edit vs hold; mint vs confirm; token consumed by confirm and cleared by cancel; concurrent same-key holds; effective status with the sweeper disabled; capacity edit vs confirm near expiry, both orders; confirm vs hold on one unit, both orders; a real two-connection deadlock exercising hold's retry |
-| API contract | The committed OpenAPI document equals what the routes generate and what the server serves; the client's types equal what openapi-typescript generates from it; the client books through the app, and its types require the idempotency header | One schema, four surfaces: the document and the client in M2, the agent tools and the MCP server in M3 |
+| API contract | The committed OpenAPI document equals what the routes generate and what the server serves; the client's types equal what openapi-typescript generates from it; the client books through the app, and its types require the idempotency header; the agent tools' inputs equal the document's request schemas, and the built MCP server lists exactly those four tools with those inputs | One schema, four surfaces: the document and the client in M2, the agent tools and the MCP server in M3 |
 | Agent evals | Golden set, cassettes on PR, live nightly, injection set, labeled judge set | Hallucination rate, guardrail and fallback rates, judge precision and recall |
 | Static | tsc strict, ESLint, dependency-cruiser, span and log attribute allowlists | Boundaries; no tokens or guest data in telemetry |
 | Benchmarks | Harness bench | Throughput vs contention, p99 for losers, what breaks first. Churn run: hours of hold and expire cycles with index bloat measured by pgstattuple |
