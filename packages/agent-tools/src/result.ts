@@ -93,7 +93,8 @@ export function holdReplayed(created: Schemas["HoldResponse"], currentStatus: st
       created,
     );
   }
-  return result(false, `This hold was already made: reservation ${id} is ${currentStatus} now.`, { ...created, current_status: currentStatus });
+  const holdsNothing = currentStatus === "cancelled" || currentStatus === "expired" ? " It holds nothing; the same request again asks for a new hold." : "";
+  return result(false, `This hold was already made: reservation ${id} is ${currentStatus} now.${holdsNothing}`, { ...created, current_status: currentStatus });
 }
 
 export const cancelled = (answer: Schemas["ReceiptResponse"]): ToolResult =>

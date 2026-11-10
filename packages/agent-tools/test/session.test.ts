@@ -137,10 +137,21 @@ describe("hold keys", () => {
     const api = fakeApi(held(), held(RES, true), reservation("cancelled"), held(RES_B));
     const s = sessionOver(api);
     await s.hold(REQUEST);
-    await s.hold(REQUEST);
+    const replay = await s.hold(REQUEST);
     await s.hold(REQUEST);
     expect(api.seen[1]!.key).toBe(api.seen[0]!.key);
     expect(api.seen[3]!.key).not.toBe(api.seen[0]!.key);
+    expect(replay.isError).toBe(false);
+    expect(firstLine(replay.text)).toBe(`This hold was already made: reservation ${RES} is cancelled now. It holds nothing; the same request again asks for a new hold.`);
+  });
+
+  it("say a replay holds nothing when the reservation has expired", async () => {
+    const api = fakeApi(held(), held(RES, true), reservation("expired"));
+    const s = sessionOver(api);
+    await s.hold(REQUEST);
+    const replay = await s.hold(REQUEST);
+    expect(replay).toMatchObject({ isError: false, structured: { replayed: true, current_status: "expired" } });
+    expect(firstLine(replay.text)).toBe(`This hold was already made: reservation ${RES} is expired now. It holds nothing; the same request again asks for a new hold.`);
   });
 
   it("differ between intents, and two sessions never share a key", async () => {
