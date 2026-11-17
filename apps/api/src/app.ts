@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { bodyLimit } from "hono/body-limit";
 import type { Deps, Env, LogEntry } from "./env.js";
-import { ApiProblem, fromUnknown, problemBody } from "./problem.js";
+import { ApiProblem, bodyTooLarge, fromUnknown, problemBody } from "./problem.js";
 import { register as registerAdminCalendar } from "./routes/admin-calendar.js";
 import { register as registerAdminKeys } from "./routes/admin-keys.js";
 import { register as registerAdminUnits } from "./routes/admin-units.js";
+import { register as registerAudit } from "./routes/audit.js";
 import { register as registerAvailability } from "./routes/availability.js";
 import { register as registerDocs } from "./routes/docs.js";
 import { register as registerHealth } from "./routes/health.js";
@@ -14,6 +15,8 @@ import { register as registerReservations } from "./routes/reservations.js";
 import { register as registerSessions } from "./routes/sessions.js";
 
 const TRACE_RE = /^[A-Za-z0-9._:-]{1,100}$/;
+/** The transcript post, which takes a larger body than every other route. */
+const AUDIT_POST_PATH = /^\/v1\/sessions\/[^/]+\/audit$/;
 
 /** The document's header: `/openapi.json` and the committed apps/api/openapi.json are both built with it. */
 export const OPENAPI_CONFIG = { openapi: "3.0.0", info: { title: "Dastar reference API", version: "0.2.0" } };
@@ -42,8 +45,10 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
     });
   });
 
-  // the confirm route parses a body without any credential, so the bound applies to every route
-  app.use("*", bodyLimit({ maxSize: 64 * 1024, onError: () => { throw new ApiProblem(400, "validation", "request body too large"); } }));
+  // the confirm route parses a body without any credential, so the bound applies to every route. The one exemption is
+  // the audit post: that route checks the key before it reads a body, and applies its own 1 MiB bound.
+  const smallBody = bodyLimit({ maxSize: 64 * 1024, onError: bodyTooLarge });
+  app.use("*", (c, next) => (c.req.method === "POST" && AUDIT_POST_PATH.test(c.req.path) ? next() : smallBody(c, next)));
 
   app.onError((err, c) => {
     const p = fromUnknown(err);
@@ -60,6 +65,7 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
   registerAvailability(app, deps);
   registerReservations(app, deps);
   registerSessions(app, deps);
+  registerAudit(app, deps);
   registerAdminUnits(app, deps);
   registerAdminCalendar(app, deps);
   registerAdminKeys(app, deps);

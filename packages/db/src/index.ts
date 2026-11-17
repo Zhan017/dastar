@@ -21,3 +21,7 @@ export type {
 export type { AvailabilityInput, AvailabilityResult } from "./commands/availability.js";
 export { PUBLISHED_OUTBOX_RETENTION_DAYS, EXTERNAL_SESSION_RETENTION_DAYS, type RetentionBatch } from "./commands/retention.js";
 export { BOUNDS, restaurantHost, type RankingStrategy, type Slot } from "@dastar/core";
+export {
+  CLAIM_STATUSES, auditSession, scrubText,
+  type Claim, type AuditTurn, type AuditResult, type ClaimResult, type Observed, type UnbackedReason, type AuditReceipt, type LoggedCall, type AuditInput,
+} from "@dastar/core";

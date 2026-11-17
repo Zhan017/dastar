@@ -18,6 +18,11 @@ export class ApiProblem extends Error {
   }
 }
 
+/** The one answer for a body past a route's size bound: the global limit and the audit route's own limit both throw it. */
+export function bodyTooLarge(): never {
+  throw new ApiProblem(400, "validation", "request body too large");
+}
+
 type Mapping = { status: ProblemStatus; retryAfter?: string };
 
 /** Exhaustive by construction: a new engine error code fails the type check until it is mapped. */

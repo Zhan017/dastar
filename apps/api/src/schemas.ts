@@ -1,7 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import { CAPABILITIES } from "./auth.js";
 import type { KeyView } from "./keys.js";
-import { BOUNDS, type BlackoutView, type ComboView, type ForceOption, type Receipt, type ScheduleView, type UnitView } from "@dastar/db";
+import { BOUNDS, CLAIM_STATUSES, type BlackoutView, type ComboView, type ForceOption, type Receipt, type ScheduleView, type UnitView } from "@dastar/db";
 
 export const ProblemSchema = z.object({
   type: z.string(), title: z.string(), status: z.number().int(), code: z.string(),
@@ -196,3 +196,66 @@ export const toBlackout = (b: BlackoutView): z.infer<typeof BlackoutSchema> =>
   ({ id: b.id, starts_at: b.startsAt, ends_at: b.endsAt, reason: b.reason, active: b.active });
 export const toKey = (k: KeyView): z.infer<typeof KeySchema> =>
   ({ id: k.id, label: k.label, capabilities: k.capabilities, venue_ids: k.venueIds, created_at: k.createdAt, revoked_at: k.revokedAt });
+
+/** One thing an assistant turn said about a reservation. */
+export const ClaimSchema = z.object({
+  reservation_id: z.guid(),
+  status: z.enum(CLAIM_STATUSES),
+  starts_at: z.iso.datetime({ offset: true }).optional(),
+  party_size: z.number().int().min(1).max(999).optional(),
+  quote: z.string().min(1).max(500).optional().openapi({ description: "The words of the turn the claim rests on. Scrubbed of emails and numbers before it is stored." }),
+}).openapi("Claim");
+
+export const TranscriptTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  text: z.string().min(1).max(20_000).openapi({ description: "Scrubbed of emails and numbers before it is stored." }),
+  at: z.iso.datetime({ offset: true }).optional(),
+  claims: z.array(ClaimSchema).max(50).optional(),
+}).openapi("TranscriptTurn");
+
+const MAX_CLAIMED_RESERVATIONS = 1000;
+
+export const AuditRequestSchema = z.object({ turns: z.array(TranscriptTurnSchema).min(1).max(500) })
+  .superRefine((b, ctx) => {
+    b.turns.forEach((t, i) => {
+      if (t.role === "user" && t.claims !== undefined && t.claims.length > 0) {
+        ctx.addIssue({ code: "custom", message: "claims are allowed on assistant turns only", path: ["turns", i, "claims"] });
+      }
+    });
+  })
+  .refine((b) => b.turns.every((t) => t.at !== undefined) || b.turns.every((t) => t.at === undefined), {
+    message: "either every turn has at or none does", path: ["turns"],
+  })
+  .refine((b) => new Set(b.turns.flatMap((t) => (t.claims ?? []).map((c) => c.reservation_id.toLowerCase()))).size <= MAX_CLAIMED_RESERVATIONS, {
+    message: `a transcript may claim at most ${MAX_CLAIMED_RESERVATIONS} distinct reservations`, path: ["turns"],
+  })
+  .openapi("AuditRequest");
+
+const AuditObservedSchema = z.object({
+  call: z.number().int(), tool: z.string(), at: z.string(), status: z.string(), effective_status: z.string(),
+  starts_at: z.string().optional(), party_size: z.number().int().optional(), hold_expires_at: z.string().optional(),
+  replayed: z.literal(true).optional(),
+}).openapi("AuditObserved");
+
+const AuditClaimResultSchema = z.object({
+  turn: z.number().int(),
+  claim: ClaimSchema,
+  verdict: z.enum(["backed", "unbacked"]),
+  reason: z.enum(["no_observation", "observed_later", "status_mismatch", "starts_at_mismatch", "party_size_mismatch"]).optional(),
+  observed: AuditObservedSchema.optional(),
+  receipts: z.array(ReceiptSchema),
+  receipts_omitted: z.number().int(),
+  current_status: z.string(),
+  current_differs: z.boolean(),
+}).openapi("AuditClaimResult");
+
+export const AuditSchema = z.object({
+  session_id: z.string(), audited_at: z.string(), mode: z.enum(["timed", "coarse"]),
+  claims: z.object({ total: z.number().int(), backed: z.number().int(), unbacked: z.number().int() }),
+  results: z.array(AuditClaimResultSchema),
+  receipts: z.object({
+    recorded: z.number().int(), verified: z.number().int(),
+    unverified: z.array(z.object({ call: z.number().int(), receipt: z.unknown() })),
+  }),
+  unknown_outcomes: z.number().int(), confirmations: z.number().int(), undeclared: z.literal("not checked"),
+}).openapi("Audit");
