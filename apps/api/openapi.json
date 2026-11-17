@@ -535,6 +535,290 @@
           "audited_at"
         ]
       },
+      "Audit": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "audited_at": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "timed",
+              "coarse"
+            ]
+          },
+          "claims": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "backed": {
+                "type": "integer"
+              },
+              "unbacked": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "backed",
+              "unbacked"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditClaimResult"
+            }
+          },
+          "receipts": {
+            "type": "object",
+            "properties": {
+              "recorded": {
+                "type": "integer"
+              },
+              "verified": {
+                "type": "integer"
+              },
+              "unverified": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "call": {
+                      "type": "integer"
+                    },
+                    "receipt": {
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "call"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "recorded",
+              "verified",
+              "unverified"
+            ]
+          },
+          "unknown_outcomes": {
+            "type": "integer"
+          },
+          "confirmations": {
+            "type": "integer"
+          },
+          "undeclared": {
+            "type": "string",
+            "enum": [
+              "not checked"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "audited_at",
+          "mode",
+          "claims",
+          "results",
+          "receipts",
+          "unknown_outcomes",
+          "confirmations",
+          "undeclared"
+        ]
+      },
+      "AuditClaimResult": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "integer"
+          },
+          "claim": {
+            "$ref": "#/components/schemas/Claim"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "backed",
+              "unbacked"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_observation",
+              "observed_later",
+              "status_mismatch",
+              "starts_at_mismatch",
+              "party_size_mismatch"
+            ]
+          },
+          "observed": {
+            "$ref": "#/components/schemas/AuditObserved"
+          },
+          "receipts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Receipt"
+            }
+          },
+          "receipts_omitted": {
+            "type": "integer"
+          },
+          "current_status": {
+            "type": "string"
+          },
+          "current_differs": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "turn",
+          "claim",
+          "verdict",
+          "receipts",
+          "receipts_omitted",
+          "current_status",
+          "current_differs"
+        ]
+      },
+      "Claim": {
+        "type": "object",
+        "properties": {
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "held",
+              "confirmed",
+              "seated",
+              "completed",
+              "cancelled",
+              "expired"
+            ]
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "party_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "The words of the turn the claim rests on. Scrubbed of emails and numbers before it is stored."
+          }
+        },
+        "required": [
+          "reservation_id",
+          "status"
+        ]
+      },
+      "AuditObserved": {
+        "type": "object",
+        "properties": {
+          "call": {
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "effective_status": {
+            "type": "string"
+          },
+          "starts_at": {
+            "type": "string"
+          },
+          "party_size": {
+            "type": "integer"
+          },
+          "hold_expires_at": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "call",
+          "tool",
+          "at",
+          "status",
+          "effective_status"
+        ]
+      },
+      "AuditRequest": {
+        "type": "object",
+        "properties": {
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptTurn"
+            },
+            "minItems": 1,
+            "maxItems": 500
+          }
+        },
+        "required": [
+          "turns"
+        ]
+      },
+      "TranscriptTurn": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000,
+            "description": "Scrubbed of emails and numbers before it is stored."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Claim"
+            },
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ]
+      },
       "UnitList": {
         "type": "object",
         "properties": {
@@ -2686,6 +2970,260 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found or outside the key's venues",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many live holds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/audit": {
+      "post": {
+        "summary": "Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB.",
+        "security": [
+          {
+            "Bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The audit of the transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Audit"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found or outside the key's venues",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many live holds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Read the latest audit of a session of the calling key.",
+        "security": [
+          {
+            "Bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest audit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Audit"
                 }
               }
             }
