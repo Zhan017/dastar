@@ -1,4 +1,6 @@
-// Text scrubbing for the transcripts an audit reads. Every pattern here runs in linear time on any input:
+// Text scrubbing for the transcripts an audit reads. Emails are masked first, over the whole text, since an address
+// can hold what would otherwise be kept (a date or an id before the @); then ids, dates, and times are kept by
+// position and the text between them is masked for numbers. Every pattern here runs in linear time on any input:
 // a lookbehind keeps a scan from starting inside a run it would only scan again, and no two adjacent
 // pieces of a pattern can match the same character, so no position can be matched in two ways.
 
@@ -34,26 +36,27 @@ function maskNumber(run: string): string {
 }
 
 function maskGap(gap: string): string {
-  if (gap === "") return gap;
-  const mailed = gap.includes("@") ? gap.replace(EMAIL, "[email]") : gap;
-  return mailed.replace(DIGIT_GROUPS, maskNumber);
+  return gap === "" ? gap : gap.replace(DIGIT_GROUPS, maskNumber);
 }
 
 /**
  * Masks what a transcript should not keep: an email as `[email]`, a number of 7 to 15 digits as `[phone]`, one of
- * 16 or more as `[number]`. A uuid, an ISO date or date-time, and a time of day stay as written. The protected
- * spans are found first and kept by position, and only the text between them is masked, so no input can pass for
- * a placeholder. Never throws, and scrubbing twice gives what scrubbing once does.
+ * 16 or more as `[number]`. A uuid, an ISO date or date-time, and a time of day stay as written. Emails go first,
+ * over the whole text, because an address can contain what would otherwise be kept (a date or an id in its local
+ * part) and is masked as one. The protected spans are then found and kept by position, and only the text between
+ * them is masked for digit groups, so no input can pass for a placeholder. Never throws, and scrubbing twice gives
+ * what scrubbing once does.
  */
 export function scrubText(text: string): string {
+  const mailed = text.includes("@") ? text.replace(EMAIL, "[email]") : text;
   let out = "";
   let last = 0;
   PROTECTED.lastIndex = 0;
-  for (let m = PROTECTED.exec(text); m !== null; m = PROTECTED.exec(text)) {
-    out += maskGap(text.slice(last, m.index)) + m[0];
+  for (let m = PROTECTED.exec(mailed); m !== null; m = PROTECTED.exec(mailed)) {
+    out += maskGap(mailed.slice(last, m.index)) + m[0];
     last = m.index + m[0].length;
   }
-  return out + maskGap(text.slice(last));
+  return out + maskGap(mailed.slice(last));
 }
 
 // The claim matcher: what an assistant said about reservations, set against what the session's own calls observed.

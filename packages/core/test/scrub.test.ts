@@ -18,6 +18,8 @@ const CASES: [string, string][] = [
   ["on 2030-06-07 at 19:00", "on 2030-06-07 at 19:00"],
   ["table 12 for 4 at 19:30, €1,234.56", "table 12 for 4 at 19:30, €1,234.56"],
   ["+7 1555-12-34", "[phone]"],
+  ["jane-2030-06-07@x.com", "[email]"],
+  ["reply+0199a000-0000-7000-8000-000000000001@mail.example.com", "[email]"],
   ["", ""],
 ];
 
