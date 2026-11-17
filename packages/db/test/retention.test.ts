@@ -4,7 +4,10 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js
 import { setClock } from "./helpers/clock.js";
 import { seedVenue, seedKey, type Seed } from "./helpers/seed.js";
 import { hold, type HoldInput } from "../src/commands/hold.js";
-import { purgeRetained, PUBLISHED_OUTBOX_RETENTION_DAYS, EXTERNAL_SESSION_RETENTION_DAYS } from "../src/commands/retention.js";
+import {
+  purgeRetained, PUBLISHED_OUTBOX_RETENTION_DAYS, EXTERNAL_SESSION_RETENTION_DAYS,
+  PURGE_SESSION_CALLS_SQL, PURGE_SESSION_TURNS_SQL, PURGE_SESSIONS_SQL,
+} from "../src/commands/retention.js";
 import { createDastar } from "../src/handle.js";
 
 const HOUR = 3_600_000;
@@ -261,6 +264,62 @@ describe("retention", () => {
       expect(await sessionIds()).toEqual([id]);
       expect(await rowsOf(id)).toEqual({ calls: 1, turns: 1 });
     });
+
+    it("each session purge statement reads due sessions by last_seen_at and their rows by session", async () => {
+      // 2000 live external sessions last seen over the last 29 days and 3 due ones, each with 10 calls and 2 turns
+      await owner.query(
+        `insert into dastar_agent.session(venue_id, api_key_id, kind, last_seen_at)
+         select $1::uuid, $2::uuid, 'external'::dastar_agent.session_kind, now() - make_interval(secs => (g * 29 * 86400.0 / 2000)::float8)
+           from generate_series(1, 2000) g`,
+        [seed.venue, keyId],
+      );
+      await owner.query(
+        `insert into dastar_agent.session(venue_id, api_key_id, kind, last_seen_at)
+         select $1::uuid, $2::uuid, 'external'::dastar_agent.session_kind, now() - make_interval(days => 31) - make_interval(mins => g)
+           from generate_series(1, 3) g`,
+        [seed.venue, keyId],
+      );
+      await owner.query(
+        `insert into dastar_agent.tool_call(session_id, venue_id, tool, input)
+         select s.id, s.venue_id, 'hold', '{}'::jsonb from dastar_agent.session s cross join generate_series(1, 10)`,
+      );
+      await owner.query(
+        `insert into dastar_agent.turn(session_id, venue_id, seq, role, content)
+         select s.id, s.venue_id, g, 'user', 'text' from dastar_agent.session s cross join generate_series(0, 1) g`,
+      );
+      await owner.query("analyze dastar_agent.session");
+      await owner.query("analyze dastar_agent.tool_call");
+      await owner.query("analyze dastar_agent.turn");
+
+      const planOf = async (sql: string): Promise<string[]> =>
+        (await worker.query(`explain (costs off) ${sql}`, [500, 10])).rows.map((r) => r["QUERY PLAN"] as string);
+      const expectations: [string, string, string | null][] = [
+        ["calls", PURGE_SESSION_CALLS_SQL, "tool_call_session"],
+        ["turns", PURGE_SESSION_TURNS_SQL, "turn_session_id_seq_key"],
+        ["sessions", PURGE_SESSIONS_SQL, null],
+      ];
+      for (const [name, sql, rowIndex] of expectations) {
+        const plan = await planOf(sql);
+        const text = `${name}\n${plan.join("\n")}`;
+        expect(plan.some((line) => /Index Cond: .*last_seen_at <=/.test(line)), text).toBe(true);
+        expect(plan.some((line) => line.includes("session_external_last_seen")), text).toBe(true);
+        if (rowIndex !== null) {
+          expect(plan.some((line) => line.includes(rowIndex)), text).toBe(true);
+          expect(plan.some((line) => /Index Cond: .*session_id =/.test(line)), text).toBe(true);
+        }
+      }
+
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 3, calls: 30, turns: 6 });
+      const left = await owner.query(
+        `select (select count(*) from dastar_agent.session)::int as sessions,
+                (select count(*) from dastar_agent.tool_call)::int as calls,
+                (select count(*) from dastar_agent.turn)::int as turns,
+                (select count(*) from dastar_agent.session s
+                  where (select count(*) from dastar_agent.tool_call c where c.session_id = s.id) = 10
+                    and (select count(*) from dastar_agent.turn t where t.session_id = s.id) = 2)::int as whole`,
+      );
+      expect(left.rows[0]).toEqual({ sessions: 2000, calls: 20_000, turns: 4_000, whole: 2000 });
+    }, 120_000);
 
     it("never purges a reference session by age", async () => {
       const reference = await session("reference", 60 * DAY, 2, 2);

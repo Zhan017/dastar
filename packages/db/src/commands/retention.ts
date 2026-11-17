@@ -19,6 +19,41 @@ export const EXTERNAL_SESSION_RETENTION_DAYS = 30;
  */
 const EXTERNAL_SESSION_PURGE_MARGIN_MINUTES = 10;
 
+// An external session that is due: no longer live even counting the margin. The first call to `session_live` inlines to
+// `last_seen_at <= now - 30 days`, a range condition on the column that the partial index on external sessions by
+// last_seen_at serves; the second adds the margin, which puts an expression on the column, so it only filters what the
+// first found. $2 is the margin in minutes.
+const DUE_EXTERNAL_SESSION = `s.kind = 'external'
+            and not dastar_agent.session_live(s.kind, s.last_seen_at)
+            and not dastar_agent.session_live(s.kind, s.last_seen_at + make_interval(mins => $2::int))`;
+
+// The statements of the session purge; $1 is the limit, $2 the margin in minutes. Each takes due sessions oldest first
+// from the partial index, so the work of a batch follows its limit and not the number of live sessions. The calls and
+// the turns of those sessions are read through their own session indexes, a session's calls by id and its turns by
+// seq, and the batch ends at the limit.
+export const PURGE_SESSION_CALLS_SQL = `with due as (
+         select c.id
+           from (select s.id from dastar_agent.session s where ${DUE_EXTERNAL_SESSION} order by s.last_seen_at limit $1) ds
+           cross join lateral (select c.id from dastar_agent.tool_call c where c.session_id = ds.id order by c.id limit $1) c
+          limit $1)
+       delete from dastar_agent.tool_call c using due where c.id = due.id`;
+
+export const PURGE_SESSION_TURNS_SQL = `with due as (
+         select t.id
+           from (select s.id from dastar_agent.session s where ${DUE_EXTERNAL_SESSION} order by s.last_seen_at limit $1) ds
+           cross join lateral (select t.id from dastar_agent.turn t where t.session_id = ds.id order by t.seq limit $1) t
+          limit $1)
+       delete from dastar_agent.turn t using due where t.id = due.id`;
+
+// A due session with no call and no turn left, so the two statements before it must have run in the same transaction.
+export const PURGE_SESSIONS_SQL = `with due as (
+         select s.id from dastar_agent.session s
+          where ${DUE_EXTERNAL_SESSION}
+            and not exists (select 1 from dastar_agent.tool_call c where c.session_id = s.id)
+            and not exists (select 1 from dastar_agent.turn t where t.session_id = s.id)
+          order by s.last_seen_at limit $1)
+       delete from dastar_agent.session s using due where s.id = due.id`;
+
 /** The rows one retention batch deleted from each table. */
 export type RetentionBatch = { idempotency: number; outbox: number; sessions: number; calls: number; turns: number };
 
@@ -61,37 +96,11 @@ export async function purgeRetained(client: ClientBase, opts: { limit?: number }
       [limit, PUBLISHED_OUTBOX_RETENTION_DAYS],
     );
     // A due session is an external one the session routes already read as gone, so nothing writes to its rows and these
-    // deletes take no row locks to skip. The due sessions can come from the partial index on external sessions by last_seen_at,
-    // and their calls and turns from the indexes on session_id. The three statements run in this order so that each sees
-    // what the one before deleted: a session goes in the batch that deletes its last call or turn.
-    const calls = await client.query(
-      `with due as (
-         select c.id from dastar_agent.tool_call c
-           join dastar_agent.session s on s.id = c.session_id
-          where s.kind = 'external' and not dastar_agent.session_live(s.kind, s.last_seen_at + make_interval(mins => $2::int))
-          order by c.id limit $1)
-       delete from dastar_agent.tool_call c using due where c.id = due.id`,
-      [limit, EXTERNAL_SESSION_PURGE_MARGIN_MINUTES],
-    );
-    const turns = await client.query(
-      `with due as (
-         select t.id from dastar_agent.turn t
-           join dastar_agent.session s on s.id = t.session_id
-          where s.kind = 'external' and not dastar_agent.session_live(s.kind, s.last_seen_at + make_interval(mins => $2::int))
-          order by t.id limit $1)
-       delete from dastar_agent.turn t using due where t.id = due.id`,
-      [limit, EXTERNAL_SESSION_PURGE_MARGIN_MINUTES],
-    );
-    const sessions = await client.query(
-      `with due as (
-         select s.id from dastar_agent.session s
-          where s.kind = 'external' and not dastar_agent.session_live(s.kind, s.last_seen_at + make_interval(mins => $2::int))
-            and not exists (select 1 from dastar_agent.tool_call c where c.session_id = s.id)
-            and not exists (select 1 from dastar_agent.turn t where t.session_id = s.id)
-          order by s.last_seen_at limit $1)
-       delete from dastar_agent.session s using due where s.id = due.id`,
-      [limit, EXTERNAL_SESSION_PURGE_MARGIN_MINUTES],
-    );
+    // deletes take no row locks to skip. The three statements run in this order so that each sees what the one before
+    // deleted: a session goes in the batch that deletes its last call or turn.
+    const calls = await client.query(PURGE_SESSION_CALLS_SQL, [limit, EXTERNAL_SESSION_PURGE_MARGIN_MINUTES]);
+    const turns = await client.query(PURGE_SESSION_TURNS_SQL, [limit, EXTERNAL_SESSION_PURGE_MARGIN_MINUTES]);
+    const sessions = await client.query(PURGE_SESSIONS_SQL, [limit, EXTERNAL_SESSION_PURGE_MARGIN_MINUTES]);
     await client.query("commit");
     return {
       idempotency: idempotency.rowCount ?? 0, outbox: outbox.rowCount ?? 0,
