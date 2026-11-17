@@ -46,6 +46,34 @@ export async function getReservation(client: ClientBase, input: GetInput, hooks:
   }
 }
 
+export type CurrentStatusesInput = { venueId: string; reservationIds: string[] };
+
+/** The effective status of each listed reservation of one venue: a hold past its expiry reads `expired` before the sweeper has stored it. */
+export const CURRENT_STATUSES_SQL =
+  "select id, dastar.effective_status(status, hold_expires_at) as status from dastar.reservation where venue_id = $1 and id = any ($2::uuid[])";
+
+/** The rows of CURRENT_STATUSES_SQL as a record from reservation id to status. */
+export function toStatusRecord(rows: { id: string; status: string }[]): Record<string, string> {
+  return Object.fromEntries(rows.map((r) => [r.id, r.status]));
+}
+
+/**
+ * The current status of each listed reservation in one venue, read in one snapshot. A reservation of another venue
+ * and an id that names none are absent from the record.
+ */
+export async function currentStatuses(client: ClientBase, input: CurrentStatusesInput): Promise<Record<string, string>> {
+  await client.query("begin isolation level repeatable read read only");
+  try {
+    await bindVenue(client, input.venueId);
+    const r = await client.query(CURRENT_STATUSES_SQL, [input.venueId, input.reservationIds]);
+    await client.query("commit");
+    return toStatusRecord(r.rows);
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw asDastarError(e);
+  }
+}
+
 /** The venue of a reservation, for a caller that holds only its id; null when there is none. The caller then declares that venue. */
 export async function findReservationVenue(client: ClientBase, reservationId: string): Promise<string | null> {
   try {

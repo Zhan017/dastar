@@ -1,12 +1,17 @@
 export * from "./errors.js";
 export * from "./migrate.js";
-export { createDastar, type Dastar, type DastarOptions, type DastarCommand, type DastarAdmin, type AcquireInfo } from "./handle.js";
+export { createDastar, type Dastar, type DastarOptions, type DastarCommand, type DastarAdmin, type DastarSessions, type AcquireInfo } from "./handle.js";
 export type { Assignment, HoldInput, HoldHooks, HoldOutcome, Receipt } from "./commands/hold.js";
 export type { ConfirmInput, ConfirmHooks } from "./commands/confirm.js";
 export type { CancelInput, CancelHooks } from "./commands/cancel.js";
 export type { StatusInput, StatusHooks } from "./commands/seat.js";
 export type { MintInput } from "./commands/mint-token.js";
-export type { GetInput, ReservationView } from "./commands/get.js";
+export type { GetInput, ReservationView, CurrentStatusesInput } from "./commands/get.js";
+export { MAX_SESSION_CALLS } from "./commands/sessions.js";
+export type {
+  SessionKind, SessionView, RecordedCall, StoredTurn, BeginCallOutcome, AuditInputs, SessionHooks, OpenSessionInput, SessionVenueInput, SessionRef,
+  BeginCallInput, CompleteCallInput, AuditInputsInput, StoreAuditInput,
+} from "./commands/sessions.js";
 export type { ListHoldsInput, HoldView } from "./commands/list-holds.js";
 export type { AdminContext, ForceOption, AdminOutcome, StrandedCode, Stranded } from "./commands/admin.js";
 export type { UnitView, ComboView, CreateUnitInput, UpdateUnitInput, CreateComboInput, UpdateComboInput } from "./commands/admin-units.js";
