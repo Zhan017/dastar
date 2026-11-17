@@ -105,7 +105,7 @@ describe("worker", () => {
     }
     expect(await keys()).toEqual(["ret-later"]);
     expect(logs.filter((l) => l.level === "error")).toEqual([]);
-    expect(logs.filter((l) => l.msg === "purged")).toEqual([expect.objectContaining({ level: "info", msg: "purged", idempotency: 1, outbox: 0 })]);
+    expect(logs.filter((l) => l.msg === "purged")).toEqual([expect.objectContaining({ level: "info", msg: "purged", idempotency: 1, outbox: 0, sessions: 0, calls: 0, turns: 0 })]);
     expect(w.retention).toMatchObject({ idempotency: 1, outbox: 0, errors: 0 });
     const ticks = w.retention.ticks;
     await new Promise((res) => setTimeout(res, 350));

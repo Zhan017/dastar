@@ -13,7 +13,7 @@ export type WorkerConfig = {
 
 export type WorkerLogEntry =
   | { ts: string; level: "info"; msg: "expired"; count: number }
-  | { ts: string; level: "info"; msg: "purged"; idempotency: number; outbox: number }
+  | { ts: string; level: "info"; msg: "purged"; idempotency: number; outbox: number; sessions: number; calls: number; turns: number }
   | { ts: string; level: "error"; msg: "sweep failed" | "retention failed" | "pool error"; error: string; code?: string };
 
 /** Reads the worker's settings from the environment; the sweeper and the retention job default to the design's. Throws on a value it cannot use. */
@@ -60,7 +60,11 @@ export function startWorker(config: WorkerConfig, opts: { log?: (entry: WorkerLo
     },
   });
   const retention = startRetention(dastar, config.retention, {
-    onPurged: (c) => { if (c.idempotency > 0 || c.outbox > 0) log({ ts: now(), level: "info", msg: "purged", idempotency: c.idempotency, outbox: c.outbox }); },
+    onPurged: (c) => {
+      if (c.idempotency > 0 || c.outbox > 0 || c.sessions > 0 || c.calls > 0 || c.turns > 0) {
+        log({ ts: now(), level: "info", msg: "purged", idempotency: c.idempotency, outbox: c.outbox, sessions: c.sessions, calls: c.calls, turns: c.turns });
+      }
+    },
     onError: (e) => {
       const code = (e as { code?: unknown }).code;
       log({ ts: now(), level: "error", msg: "retention failed", error: e instanceof Error ? e.message : String(e), ...(typeof code === "string" ? { code } : {}) });
