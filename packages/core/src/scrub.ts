@@ -21,7 +21,7 @@ const PROTECTED = new RegExp(String.raw`(?<!\w)(?:${UUID}|${DATE}|${TIME})(?!\w)
 
 /**
  * An address: letters, digits, and combining marks of any script, with `._%+-` and an apostrophe, before the @
- * (so a name like josé, müller, or o'brien is one address); the same without the punctuation but with hyphens in
+ * (so an accented name or one with an apostrophe is one address); the same without the punctuation but with hyphens in
  * each dot-separated label of the domain. The lookbehind uses the local part's own class, so a scan only starts at
  * the start of a run of those characters and each run is scanned once; a dot is not in a label's class, so the
  * labels split one way.
@@ -31,9 +31,9 @@ const LABEL = String.raw`[\p{L}\p{N}\p{M}-]+`;
 const EMAIL = new RegExp(String.raw`(?<!${LOCAL})${LOCAL}+@${LABEL}(?:\.${LABEL})+`, "gu");
 
 /** A space: the plain one, a no-break space, a figure space, a thin space, a narrow no-break space. */
-const SPACE = String.raw`[     ]`;
+const SPACE = String.raw`[ \u00A0\u2007\u2009\u202F]`;
 /** A mark between digit groups: a dot, a slash, a hyphen, a dash from U+2010 to U+2015, or a minus sign. */
-const MARK = String.raw`[./\-‐-―−]`;
+const MARK = String.raw`[./\-\u2010-\u2015\u2212]`;
 /** One joiner: a space, or a mark with at most one space on either side. The two forms start on different characters. */
 const JOIN = `(?:${SPACE}(?:${MARK}${SPACE}?)?|${MARK}${SPACE}?)`;
 /**

@@ -16,23 +16,23 @@ const CASES: [string, string][] = [
   ["0199A000-0000-7000-8000-000000000001", "0199A000-0000-7000-8000-000000000001"],
   ["2030-06-07T19:00:00Z and 2030-06-07T19:00:00.000+02:00", "2030-06-07T19:00:00Z and 2030-06-07T19:00:00.000+02:00"],
   ["on 2030-06-07 at 19:00", "on 2030-06-07 at 19:00"],
-  ["table 12 for 4 at 19:30, €1,234.56", "table 12 for 4 at 19:30, €1,234.56"],
+  ["table 12 for 4 at 19:30, \u20ac1,234.56", "table 12 for 4 at 19:30, \u20ac1,234.56"],
   ["+7 1555-12-34", "[phone]"],
   ["jane-2030-06-07@x.com", "[email]"],
   ["reply+0199a000-0000-7000-8000-000000000001@mail.example.com", "[email]"],
-  ["josé@example.com", "[email]"],
-  ["müller@example.de", "[email]"],
+  ["jos\u00e9@example.com", "[email]"],
+  ["m\u00fcller@example.de", "[email]"],
   ["o'brien@example.com", "[email]"],
-  ["jane@bücher.de", "[email]"],
-  ["josé@example.com", "[email]"],
-  ["(555) 123–4567", "[phone]"],
-  ["555 123 4567", "[phone]"],
-  ["555 123 4567", "[phone]"],
+  ["jane@b\u00fccher.de", "[email]"],
+  ["jose\u0301@example.com", "[email]"],
+  ["(555) 123\u20134567", "[phone]"],
+  ["555\u00a0123\u00a04567", "[phone]"],
+  ["555\u202f123\u202f4567", "[phone]"],
   ["030/123456", "[phone]"],
   ["0171/1234567", "[phone]"],
-  ["+49 30 1234567", "[phone]"],
+  ["+49\u00a030\u00a01234567", "[phone]"],
   ["555 - 123 - 4567", "[phone]"],
-  ["4111–1111–1111–1111", "[number]"],
+  ["4111\u20131111\u20131111\u20131111", "[number]"],
   ["", ""],
 ];
 
@@ -88,8 +88,8 @@ describe("scrubText", () => {
       }
       return out;
     };
-    const word = (): string => pick(["table", "booking", "for", "at", "on", "Grüße", "ref", "x"]);
-    const punct = (): string => pick([..."(),.;:!?€$"]);
+    const word = (): string => pick(["table", "booking", "for", "at", "on", "Gr\u00fc\u00dfe", "ref", "x"]);
+    const punct = (): string => pick([..."(),.;:!?\u20ac$"]);
 
     const token = (): Token => {
       const kind = int(0, 8);
@@ -122,7 +122,7 @@ describe("scrubText", () => {
   });
 
   it("never throws, and leaves text without digits or @ alone", () => {
-    for (const s of ["\ud800 lone", "nul\u0000x", " private", "🙂 emoji", "Grüße, Jürgen!"]) {
+    for (const s of ["\ud800 lone", "nul\u0000x", "\ue000\ue001 private", "\ud83d\ude42 emoji", "Gr\u00fc\u00dfe, J\u00fcrgen!"]) {
       expect(scrubText(s)).toBe(s);
     }
   });
@@ -130,8 +130,8 @@ describe("scrubText", () => {
   it("scrubs 20000 characters of digits and separators quickly", () => {
     const inputs = [
       "1 2-3.(4) ".repeat(2000), "1".repeat(20000), "a@".repeat(10000), "+1 ".repeat(6667),
-      "1 – 2 /(3) ".repeat(1700),
-      "é.".repeat(10000) + "@", "ü@".repeat(10000), "a@" + "b".repeat(19998),
+      "1 \u2013 2\u00a0/(3) ".repeat(1700),
+      "\u00e9.".repeat(10000) + "@", "\u00fc@".repeat(10000), "a@" + "b".repeat(19998),
     ];
     for (const input of inputs) {
       const started = performance.now();

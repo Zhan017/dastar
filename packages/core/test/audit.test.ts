@@ -204,6 +204,23 @@ describe("auditSession", () => {
     expect(r.results.every((x) => x.receipts.length === 10 && x.receipts_omitted === 9990 && x.verdict === "backed")).toBe(true);
   });
 
+  it("a claim's receipts come in completion order", () => {
+    const r = run([hold(1, T(5), R1), hold(2, T(3), R1)], [said(T(10), { reservation_id: R1, status: "held" })]);
+    expect(r.results[0]!.receipts).toEqual([rc(R1, "held", 1, 20), rc(R1, "held", 1, 10)]);
+    expect(r.results[0]!.receipts_omitted).toBe(0);
+  });
+
+  it("claims made before most of their reservation's receipts are just as quick", () => {
+    const first = new Date(Date.UTC(2064, 0, 7, 16, 0, 10, 0)).toISOString();
+    const calls = Array.from({ length: 10000 }, (_, k) => hold(k + 1, new Date(Date.UTC(2064, 0, 7, 16, 0, 10, k)).toISOString(), R1));
+    const turns = Array.from({ length: 5000 }, () => said(first, { reservation_id: R1, status: "held" }));
+    const started = performance.now();
+    const r = run(calls, turns);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(r.results).toHaveLength(5000);
+    expect(r.results.every((x) => x.receipts.length === 1 && x.receipts[0]!.audit_id === 10 && x.receipts_omitted === 0)).toBe(true);
+  });
+
   it("a call whose recorded fields have the wrong shape observes nothing, and nothing throws", () => {
     const r = run([
       call(1, "hold", T(1), { status: 201, input: 5, output: "x" }),

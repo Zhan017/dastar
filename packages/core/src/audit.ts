@@ -17,7 +17,7 @@ export type Observed = {
 export type UnbackedReason = "no_observation" | "observed_later" | "status_mismatch" | "starts_at_mismatch" | "party_size_mismatch";
 export type ClaimResult = {
   turn: number; claim: Claim; verdict: "backed" | "unbacked"; reason?: UnbackedReason; observed?: Observed;
-  /** The latest receipts of the reservation up to the claim, at most MAX_CLAIM_RECEIPTS, in call order. */
+  /** The latest receipts of the reservation up to the claim, at most MAX_CLAIM_RECEIPTS, in completion order. */
   receipts: AuditReceipt[];
   /** How many earlier receipts are left out of `receipts`. */
   receipts_omitted: number;
@@ -35,7 +35,7 @@ export type AuditInput = { sessionId: string; auditedAt: string; calls: LoggedCa
 /** The most receipts one claim's result lists. */
 export const MAX_CLAIM_RECEIPTS = 10;
 
-type Recorded = { receipt: AuditReceipt; ms: number };
+type Recorded = { receipt: AuditReceipt; ms: number; call: number };
 type Attrs = { starts_at?: string; party_size?: number; hold_expires_at?: string };
 /** A reservation's state as one completed call showed it. */
 type Obs = Attrs & { call: number; tool: string; at: string; ms: number; status: string; replayed?: true };
@@ -139,21 +139,14 @@ function firstAfter<T>(xs: readonly T[], time: (x: T) => number, at: number): nu
 }
 
 /**
- * The latest receipts of one reservation, at most MAX_CLAIM_RECEIPTS, in call order, and how many earlier ones are
- * left out. Timed, only receipts completed at or before the claim count. The count of those comes from a binary
- * search of the completion times; the receipts themselves are taken from the end of the reservation's own list, so a
- * claim costs its reservation's receipts at worst (the ones completed after it, at the end of the list) and
- * MAX_CLAIM_RECEIPTS in the usual case, never all the session's.
+ * The latest receipts of one reservation completed at or before the claim's time, at most MAX_CLAIM_RECEIPTS, in
+ * completion order, and how many earlier ones are left out. The list is sorted by completion, so a binary search
+ * finds where the claim's receipts end, and a claim costs O(log r) plus the receipts it lists.
  */
-function lastReceipts(list: readonly Recorded[], times: readonly number[], timed: boolean, atMs: number): { receipts: AuditReceipt[]; omitted: number } {
-  const total = timed ? firstAfter(times, (ms) => ms, atMs) : list.length;
-  const out: AuditReceipt[] = [];
-  for (let i = list.length - 1; i >= 0 && out.length < MAX_CLAIM_RECEIPTS; i--) {
-    const r = list[i]!;
-    if (!timed || r.ms <= atMs) out.push(r.receipt);
-  }
-  out.reverse();
-  return { receipts: out, omitted: total - out.length };
+function latestReceipts(list: readonly Recorded[], atMs: number): { receipts: AuditReceipt[]; omitted: number } {
+  const end = firstAfter(list, (r) => r.ms, atMs);
+  const from = Math.max(0, end - MAX_CLAIM_RECEIPTS);
+  return { receipts: list.slice(from, end).map((r) => r.receipt), omitted: from };
 }
 
 function sameInstant(a: string, b: string): boolean {
@@ -200,7 +193,7 @@ export function auditSession(input: AuditInput): AuditResult {
     }
   }
 
-  // Each reservation's receipts in call order, and the completion times of those that completed, ascending.
+  // Each reservation's receipts that have a completion time, in completion order (then call id), the order observations use.
   const recorded = new Map<string, Recorded[]>();
   const unverified: { call: number; receipt: unknown }[] = [];
   let receiptCount = 0;
@@ -214,15 +207,15 @@ export function auditSession(input: AuditInput): AuditResult {
     receiptCount++;
     if (c.receiptVerified === true) verified++; else unverified.push({ call: c.id, receipt: c.receipt });
     const receipt = asReceipt(c.receipt);
-    if (receipt !== undefined) {
+    const ms = typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN;
+    if (receipt !== undefined && !Number.isNaN(ms)) {
       const id = receipt.reservation_id.toLowerCase();
-      const entry: Recorded = { receipt, ms: typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN };
+      const entry: Recorded = { receipt, ms, call: c.id };
       const list = recorded.get(id);
       if (list === undefined) recorded.set(id, [entry]); else list.push(entry);
     }
   }
-  const receiptTimes = new Map<string, number[]>();
-  for (const [id, list] of recorded) receiptTimes.set(id, list.map((r) => r.ms).filter((ms) => !Number.isNaN(ms)).sort((a, b) => a - b));
+  for (const list of recorded.values()) list.sort((a, b) => a.ms - b.ms || a.call - b.call);
 
   const results: ClaimResult[] = [];
   turns.forEach((turn, index) => {
@@ -242,7 +235,7 @@ export function auditSession(input: AuditInput): AuditResult {
       }
 
       const currentStatus = current.get(id) ?? "unknown";
-      const { receipts, omitted } = lastReceipts(recorded.get(id) ?? [], receiptTimes.get(id) ?? [], timed, atMs);
+      const { receipts, omitted } = latestReceipts(recorded.get(id) ?? [], atMs);
       const result: ClaimResult = {
         turn: index, claim, verdict: "backed", receipts, receipts_omitted: omitted, current_status: currentStatus, current_differs: false,
       };
