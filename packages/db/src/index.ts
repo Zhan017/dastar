@@ -19,5 +19,5 @@ export type {
   ScheduleView, BlackoutView, CreateScheduleInput, UpdateScheduleInput, CreateBlackoutInput, UpdateBlackoutInput, ListBlackoutsInput,
 } from "./commands/admin-calendar.js";
 export type { AvailabilityInput, AvailabilityResult } from "./commands/availability.js";
-export { PUBLISHED_OUTBOX_RETENTION_DAYS } from "./commands/retention.js";
+export { PUBLISHED_OUTBOX_RETENTION_DAYS, EXTERNAL_SESSION_RETENTION_DAYS, type RetentionBatch } from "./commands/retention.js";
 export { BOUNDS, restaurantHost, type RankingStrategy, type Slot } from "@dastar/core";

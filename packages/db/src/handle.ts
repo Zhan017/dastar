@@ -13,7 +13,7 @@ import {
 } from "./commands/sessions.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
-import { purgeRetained } from "./commands/retention.js";
+import { purgeRetained, type RetentionBatch } from "./commands/retention.js";
 import { availability, SnapshotCache, type AvailabilityInput, type AvailabilityResult } from "./commands/availability.js";
 import type { AdminContext, AdminOutcome } from "./commands/admin.js";
 import {
@@ -135,10 +135,12 @@ export interface Dastar {
   availability(input: AvailabilityInput): Promise<AvailabilityResult>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
   /**
-   * One retention batch, `limit` rows at most from each table (default 500): idempotency rows past their purge time and
-   * outbox rows published more than seven days ago. Needs the worker role, like `expireDue`.
+   * One retention batch, `limit` rows at most from each table (default 500): idempotency rows past their purge time,
+   * outbox rows published more than seven days ago, and the calls and turns of external sessions, then those sessions
+   * once nothing of them is left; an external session is purged 10 minutes after it stops being live (thirty days after
+   * it was last seen). Needs the worker role, like `expireDue`.
    */
-  purgeRetained(opts?: { limit?: number }): Promise<{ idempotency: number; outbox: number }>;
+  purgeRetained(opts?: { limit?: number }): Promise<RetentionBatch>;
   admin: DastarAdmin;
   sessions: DastarSessions;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */

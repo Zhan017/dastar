@@ -2,16 +2,16 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { Pool, type Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { setClock } from "./helpers/clock.js";
-import { seedVenue, type Seed } from "./helpers/seed.js";
+import { seedVenue, seedKey, type Seed } from "./helpers/seed.js";
 import { hold, type HoldInput } from "../src/commands/hold.js";
-import { purgeRetained, PUBLISHED_OUTBOX_RETENTION_DAYS } from "../src/commands/retention.js";
+import { purgeRetained, PUBLISHED_OUTBOX_RETENTION_DAYS, EXTERNAL_SESSION_RETENTION_DAYS } from "../src/commands/retention.js";
 import { createDastar } from "../src/handle.js";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
 describe("retention", () => {
-  let conn: Conn; let owner: Client; let app: Client; let worker: Client; let seed: Seed; let n = 0;
+  let conn: Conn; let owner: Client; let app: Client; let worker: Client; let seed: Seed; let keyId: string; let n = 0;
 
   beforeAll(async () => {
     conn = await cloneDatabase("retention_test");
@@ -19,6 +19,7 @@ describe("retention", () => {
     app = await connect(conn.app);
     worker = await connect(conn.worker);
     seed = await seedVenue(owner);
+    keyId = await seedKey(owner);
     await owner.query("update dastar.venue set max_live_holds_per_actor = 100 where id = $1", [seed.venue]);
   });
   afterAll(async () => {
@@ -29,6 +30,8 @@ describe("retention", () => {
   beforeEach(async () => {
     await owner.query("delete from dastar.idempotency");
     await owner.query("delete from dastar.outbox");
+    // a session's calls and turns go with it
+    await owner.query("delete from dastar_agent.session");
   });
 
   /** An idempotency row whose purge time is `offsetMs` from the real clock. */
@@ -57,6 +60,34 @@ describe("retention", () => {
   const outboxIds = async (): Promise<number[]> =>
     (await owner.query("select id from dastar.outbox order by id")).rows.map((r) => Number(r.id));
 
+  /** A session last seen `seenAgoMs` before the real clock, with `calls` calls and `turns` turns. Returns its id. */
+  async function session(kind: "external" | "reference", seenAgoMs: number, calls: number, turns: number): Promise<string> {
+    const id = (await owner.query(
+      `insert into dastar_agent.session(venue_id, api_key_id, kind, last_seen_at)
+       values ($1, $2, $3::dastar_agent.session_kind, now() - make_interval(secs => $4::float8)) returning id`,
+      [seed.venue, keyId, kind, seenAgoMs / 1000],
+    )).rows[0].id as string;
+    await owner.query(
+      "insert into dastar_agent.tool_call(session_id, venue_id, tool, input) select $1, $2, 'hold', '{}'::jsonb from generate_series(1, $3::int)",
+      [id, seed.venue, calls],
+    );
+    await owner.query(
+      "insert into dastar_agent.turn(session_id, venue_id, seq, role, content) select $1, $2, g, 'user', 'text' from generate_series(0, $3::int - 1) g",
+      [id, seed.venue, turns],
+    );
+    return id;
+  }
+  const sessionIds = async (): Promise<string[]> =>
+    (await owner.query("select id from dastar_agent.session order by id")).rows.map((r) => r.id as string);
+  /** The calls and turns the session still has. */
+  async function rowsOf(id: string): Promise<{ calls: number; turns: number }> {
+    const r = await owner.query(
+      "select (select count(*) from dastar_agent.tool_call where session_id = $1)::int as calls, (select count(*) from dastar_agent.turn where session_id = $1)::int as turns",
+      [id],
+    );
+    return r.rows[0] as { calls: number; turns: number };
+  }
+
   function holdInput(over: Partial<HoldInput> = {}): HoldInput {
     n += 1;
     return {
@@ -72,14 +103,14 @@ describe("retention", () => {
       await claim("later-a", HOUR);
       await claim("later-b", 23 * HOUR);
       // nothing is due by the real clock except the two
-      expect(await purgeRetained(worker)).toEqual({ idempotency: 2, outbox: 0 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 2, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual(["later-a", "later-b"]);
-      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual(["later-a", "later-b"]);
       // the purge time is judged by the database clock the engine uses, so a clock a day ahead makes the rest due
       await setClock(worker, new Date(Date.now() + 25 * HOUR).toISOString());
       try {
-        expect(await purgeRetained(worker)).toEqual({ idempotency: 2, outbox: 0 });
+        expect(await purgeRetained(worker)).toEqual({ idempotency: 2, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       } finally {
         await setClock(worker, null);
       }
@@ -90,9 +121,9 @@ describe("retention", () => {
       await claim("k3", -HOUR);
       await claim("k1", -3 * HOUR);
       await claim("k2", -2 * HOUR);
-      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 2, outbox: 0 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 2, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual(["k3"]);
-      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 1, outbox: 0 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 1, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual([]);
     });
 
@@ -102,11 +133,11 @@ describe("retention", () => {
       expect(first).toMatchObject({ ok: true, replayed: false });
       expect(await hold(app, i)).toEqual({ ...first, replayed: true });
       // the key is 24 hours from its claim: a purge on the real clock keeps it, and it still replays
-      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await hold(app, i)).toEqual({ ...first, replayed: true });
       await setClock(worker, new Date(Date.now() + 25 * HOUR).toISOString());
       try {
-        expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 0 });
+        expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       } finally {
         await setClock(worker, null);
       }
@@ -129,7 +160,7 @@ describe("retention", () => {
         // a purge that waited for the row would fail on the timeout instead of passing
         await worker.query("set statement_timeout = '3s'");
         try {
-          expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 0 });
+          expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 0, sessions: 0, calls: 0, turns: 0 });
         } finally {
           await worker.query("reset statement_timeout");
         }
@@ -138,7 +169,7 @@ describe("retention", () => {
         await other.query("rollback").catch(() => undefined);
         await other.end();
       }
-      expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 0 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual([]);
     });
   });
@@ -152,21 +183,21 @@ describe("retention", () => {
       const dead = await event("dead");
       // a dead-lettered row stays even when it also carries an old published_at
       const both = await event("published and dead", 8 * DAY);
-      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 1 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 1, sessions: 0, calls: 0, turns: 0 });
       expect(await outboxIds()).toEqual([recent, unpublished, dead, both]);
       expect(await outboxIds()).not.toContain(old);
-      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       // the age is judged by the worker's clock: two days later the recent row is eight days old
       await setClock(worker, new Date(Date.now() + 2 * DAY).toISOString());
       try {
-        expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 1 });
+        expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 1, sessions: 0, calls: 0, turns: 0 });
       } finally {
         await setClock(worker, null);
       }
       // however late the clock, a row never published is not purged
       await setClock(worker, new Date(Date.now() + 400 * DAY).toISOString());
       try {
-        expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0 });
+        expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       } finally {
         await setClock(worker, null);
       }
@@ -177,9 +208,9 @@ describe("retention", () => {
       const newest = await event("published", 8 * DAY);
       await event("published", 10 * DAY);
       await event("published", 9 * DAY);
-      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 2 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 2, sessions: 0, calls: 0, turns: 0 });
       expect(await outboxIds()).toEqual([newest]);
-      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 1 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 1, sessions: 0, calls: 0, turns: 0 });
       expect(await outboxIds()).toEqual([]);
     });
 
@@ -190,8 +221,52 @@ describe("retention", () => {
       await event("published", 8 * DAY);
       await event("published", 9 * DAY);
       await event("published", 10 * DAY);
-      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 2, outbox: 2 });
-      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 1, outbox: 1 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 2, outbox: 2, sessions: 0, calls: 0, turns: 0 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 1, outbox: 1, sessions: 0, calls: 0, turns: 0 });
+    });
+  });
+
+  describe("external sessions", () => {
+    it("purges an external session 30 days after it was last seen, with its calls and turns, and not before", async () => {
+      expect(EXTERNAL_SESSION_RETENTION_DAYS).toBe(30);
+      const due = await session("external", 30 * DAY + HOUR, 2, 1);
+      const kept = await session("external", 30 * DAY - HOUR, 3, 2);
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 1, calls: 2, turns: 1 });
+      expect(await sessionIds()).toEqual([kept]);
+      expect(await rowsOf(due)).toEqual({ calls: 0, turns: 0 });
+      expect(await rowsOf(kept)).toEqual({ calls: 3, turns: 2 });
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
+      expect(await rowsOf(kept)).toEqual({ calls: 3, turns: 2 });
+    });
+
+    it("a batch deletes at most limit calls and limit turns, and a session once nothing of it is left", async () => {
+      const due = await session("external", 31 * DAY, 5, 3);
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 2, turns: 2 });
+      expect(await rowsOf(due)).toEqual({ calls: 3, turns: 1 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 2, turns: 1 });
+      expect(await rowsOf(due)).toEqual({ calls: 1, turns: 0 });
+      expect(await sessionIds()).toEqual([due]);
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 0, sessions: 1, calls: 1, turns: 0 });
+      expect(await sessionIds()).toEqual([]);
+    });
+
+    it("keeps a session for 10 minutes after it is no longer live", async () => {
+      const id = await session("external", 30 * DAY + 5 * 60_000, 1, 1);
+      const live = await owner.query(
+        "select dastar_agent.session_live(kind, last_seen_at) as live from dastar_agent.session where id = $1",
+        [id],
+      );
+      expect(live.rows[0].live).toBe(false);
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
+      expect(await sessionIds()).toEqual([id]);
+      expect(await rowsOf(id)).toEqual({ calls: 1, turns: 1 });
+    });
+
+    it("never purges a reference session by age", async () => {
+      const reference = await session("reference", 60 * DAY, 2, 2);
+      expect(await purgeRetained(worker)).toEqual({ idempotency: 0, outbox: 0, sessions: 0, calls: 0, turns: 0 });
+      expect(await sessionIds()).toEqual([reference]);
+      expect(await rowsOf(reference)).toEqual({ calls: 2, turns: 2 });
     });
   });
 
@@ -203,7 +278,7 @@ describe("retention", () => {
     expect(await keys()).toEqual(["due"]);
     expect(await outboxIds()).toEqual([published]);
     // the same rows go to the worker role
-    expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 1 });
+    expect(await purgeRetained(worker)).toEqual({ idempotency: 1, outbox: 1, sessions: 0, calls: 0, turns: 0 });
   });
 
   it("the handle runs purgeRetained as a command of its own and returns the counts", async () => {
@@ -216,9 +291,9 @@ describe("retention", () => {
       await claim("h2", -2 * HOUR);
       await claim("h3", HOUR);
       await event("published", 8 * DAY);
-      expect(await d.purgeRetained({ limit: 1 })).toEqual({ idempotency: 1, outbox: 1 });
+      expect(await d.purgeRetained({ limit: 1 })).toEqual({ idempotency: 1, outbox: 1, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual(["h1", "h3"]);
-      expect(await d.purgeRetained()).toEqual({ idempotency: 1, outbox: 0 });
+      expect(await d.purgeRetained()).toEqual({ idempotency: 1, outbox: 0, sessions: 0, calls: 0, turns: 0 });
       expect(await keys()).toEqual(["h3"]);
       expect(seen).toEqual([{ command: "purgeRetained", traceId: null }, { command: "purgeRetained", traceId: null }]);
     } finally {
