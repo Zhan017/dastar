@@ -163,6 +163,9 @@
                 "party_size": {
                   "type": "integer"
                 },
+                "starts_at": {
+                  "type": "string"
+                },
                 "during": {
                   "type": "string"
                 },
@@ -195,6 +198,7 @@
               "required": [
                 "id",
                 "party_size",
+                "starts_at",
                 "during",
                 "assignment",
                 "hold_expires_at",
@@ -304,6 +308,9 @@
           "party_size": {
             "type": "integer"
           },
+          "starts_at": {
+            "type": "string"
+          },
           "during": {
             "type": "string"
           },
@@ -361,6 +368,7 @@
           "status",
           "stored_status",
           "party_size",
+          "starts_at",
           "during",
           "assignment",
           "hold_expires_at",

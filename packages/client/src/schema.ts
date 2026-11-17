@@ -2968,6 +2968,7 @@ export interface components {
             holds: {
                 id: string;
                 party_size: number;
+                starts_at: string;
                 during: string;
                 assignment: {
                     kind: string;
@@ -3004,6 +3005,7 @@ export interface components {
             status: string;
             stored_status: string;
             party_size: number;
+            starts_at: string;
             during: string;
             assignment: {
                 kind: string;
