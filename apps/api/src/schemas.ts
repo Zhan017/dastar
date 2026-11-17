@@ -46,7 +46,7 @@ export const HoldResponseSchema = z.object({ receipt: ReceiptSchema, hold_expire
 
 export const ReservationSchema = z.object({
   id: z.string(), venue_id: z.string(), status: z.string(), stored_status: z.string(), party_size: z.number().int(),
-  during: z.string(), assignment: z.object({ kind: z.string(), id: z.string() }), hold_expires_at: z.string(),
+  starts_at: z.string(), during: z.string(), assignment: z.object({ kind: z.string(), id: z.string() }), hold_expires_at: z.string(),
   version: z.number().int(), external_ref: z.string().nullable(),
   history: z.array(z.object({ action: z.string(), actor: z.string(), at: z.string() })),
 }).openapi("Reservation");
@@ -60,7 +60,7 @@ export const MintResponseSchema = z.object({ confirm_token: z.string(), version:
 
 export const HoldListSchema = z.object({
   holds: z.array(z.object({
-    id: z.string(), party_size: z.number().int(), during: z.string(), assignment: z.object({ kind: z.string(), id: z.string() }),
+    id: z.string(), party_size: z.number().int(), starts_at: z.string(), during: z.string(), assignment: z.object({ kind: z.string(), id: z.string() }),
     hold_expires_at: z.string(), version: z.number().int(), external_ref: z.string().nullable(),
   })),
 }).openapi("HoldList");

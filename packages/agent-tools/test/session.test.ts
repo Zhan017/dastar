@@ -16,7 +16,7 @@ const EXPIRES = "2064-01-07T12:10:00.000Z";
 const held = (id = RES, replayed = false): Response =>
   json(201, { receipt: { reservation_id: id, status: "held", version: 1, audit_id: 1, trace_id: "t-1" }, hold_expires_at: EXPIRES, replayed });
 const reservation = (status: string, venue = VENUE, id = RES): Response =>
-  json(200, { id, venue_id: venue, status, stored_status: status, party_size: 2, during: '["2064-01-07 16:00:00+00","2064-01-07 17:30:00+00")', assignment: { kind: "unit", id: UNIT }, hold_expires_at: EXPIRES, version: 1, external_ref: null, history: [] });
+  json(200, { id, venue_id: venue, status, stored_status: status, party_size: 2, starts_at: "2064-01-07T16:00:00.000Z", during: '["2064-01-07 16:00:00+00","2064-01-07 17:30:00+00")', assignment: { kind: "unit", id: UNIT }, hold_expires_at: EXPIRES, version: 1, external_ref: null, history: [] });
 const cancelledReceipt = (id = RES): Response => json(200, { receipt: { reservation_id: id, status: "cancelled", version: 2, audit_id: 2, trace_id: "t-2" } });
 const firstLine = (text: string): string => text.split("\n")[0]!;
 

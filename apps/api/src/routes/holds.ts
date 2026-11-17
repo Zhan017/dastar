@@ -58,7 +58,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const holds = await deps.dastar.listHolds({ venueId, actor: `key:${key.id}` });
     return c.json({
       holds: holds.map((h) => ({
-        id: h.id, party_size: h.partySize, during: h.during, assignment: h.assignment,
+        id: h.id, party_size: h.partySize, starts_at: h.startsAt, during: h.during, assignment: h.assignment,
         hold_expires_at: h.holdExpiresAt, version: h.version, external_ref: h.externalRef,
       })),
     }, 200);

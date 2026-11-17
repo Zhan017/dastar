@@ -33,7 +33,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const v = await deps.dastar.getReservation({ reservationId: id, venueId });
     if (!v) throw new ApiProblem(404, "not_found", "no such reservation");
     return c.json({
-      id: v.id, venue_id: v.venueId, status: v.status, stored_status: v.storedStatus, party_size: v.partySize, during: v.during,
+      id: v.id, venue_id: v.venueId, status: v.status, stored_status: v.storedStatus, party_size: v.partySize, starts_at: v.startsAt, during: v.during,
       assignment: v.assignment, hold_expires_at: v.holdExpiresAt, version: v.version, external_ref: v.externalRef, history: v.history,
     }, 200);
   });
