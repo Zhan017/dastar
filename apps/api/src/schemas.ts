@@ -34,6 +34,13 @@ export function toReceipt(r: Receipt): z.infer<typeof ReceiptSchema> {
 
 export const IdParam = z.object({ id: z.guid().openapi({ param: { name: "id", in: "path" } }) });
 
+/** On the nine v1 routes an agent calls: the audit session, from POST /v1/sessions, that records the call. */
+export const SessionHeader = z.object({
+  "dastar-session": z.guid().optional().openapi({
+    description: "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+  }),
+});
+
 export const HoldBodySchema = z.object({
   party_size: z.number().int().min(1).max(10_000),
   starts_at: z.iso.datetime({ offset: true }),

@@ -1,7 +1,8 @@
 import { createRoute, type OpenAPIHono } from "@hono/zod-openapi";
 import type { Deps, Env } from "../env.js";
 import { requireCapability, requireKey, assertVenueInScope } from "../auth.js";
-import { AvailabilityBodySchema, AvailabilityResponseSchema, IdParam, problemResponses } from "../schemas.js";
+import { recorded } from "../recorder.js";
+import { AvailabilityBodySchema, AvailabilityResponseSchema, IdParam, SessionHeader, problemResponses } from "../schemas.js";
 
 export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   const route = createRoute({
@@ -12,12 +13,13 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     middleware: [requireCapability(deps, "read")] as const,
     request: {
       params: IdParam,
+      headers: SessionHeader,
       body: { required: true, content: { "application/json": { schema: AvailabilityBodySchema } } },
     },
     responses: { 200: { description: "The bookable slots in start order, and whether the list was cut short", content: { "application/json": { schema: AvailabilityResponseSchema } } }, ...problemResponses },
   });
 
-  app.openapi(route, async (c) => {
+  app.openapi(route, recorded(deps, route, "search_availability", "path-venue", async (c) => {
     const key = requireKey(c);
     const venueId = c.req.valid("param").id.toLowerCase();
     assertVenueInScope(key, venueId);
@@ -33,5 +35,5 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
       slots: out.slots.map((s) => ({ starts_at: s.startsAt, duration_minutes: s.durationMinutes, assignment: { kind: s.assignment.kind, id: s.assignment.id } })),
       truncated: out.truncated,
     }, 200);
-  });
+  }));
 }
