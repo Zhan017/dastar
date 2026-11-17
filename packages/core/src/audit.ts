@@ -1,64 +1,3 @@
-// Text scrubbing for the transcripts an audit reads. Emails are masked first, over the whole text, since an address
-// can hold what would otherwise be kept (a date or an id before the @); then ids, dates, and times are kept by
-// position and the text between them is masked for numbers. Every pattern here runs in linear time on any input:
-// a lookbehind keeps a scan from starting inside a run it would only scan again, and no two adjacent
-// pieces of a pattern can match the same character, so no position can be matched in two ways.
-
-const HEX = "[0-9a-fA-F]";
-const HOUR = String.raw`(?:[01]\d|2[0-3])`;
-const MINSEC = String.raw`[0-5]\d`;
-const MONTH = String.raw`(?:0[1-9]|1[0-2])`;
-const DAY = String.raw`(?:0[1-9]|[12]\d|3[01])`;
-const CLOCK = `${HOUR}:${MINSEC}`;
-
-const UUID = `${HEX}{8}-${HEX}{4}-${HEX}{4}-${HEX}{4}-${HEX}{12}`;
-/** A date, with an optional time and zone: 2030-06-07, 2030-06-07T19:00:00.000+02:00. A day past 31 is not a date. */
-const DATE = String.raw`\d{4}-${MONTH}-${DAY}(?:[T ]${CLOCK}(?::${MINSEC}(?:\.\d{1,9})?)?(?:Z|[+-]${CLOCK})?)?`;
-const TIME = `${CLOCK}(?::${MINSEC})?`;
-
-/** The spans kept as written: a uuid, an ISO date or date-time, a bare time. Each stands alone, not inside a longer word. */
-const PROTECTED = new RegExp(String.raw`(?<!\w)(?:${UUID}|${DATE}|${TIME})(?!\w)`, "g");
-
-/** The local part may only begin where a run of its characters begins, so one run is scanned once. */
-const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
-
-/**
- * Digit groups read as one number: an optional plus, then groups joined by at most one space, dot, or hyphen;
- * a group may be parenthesized. A separator is required between plain groups, so a run of digits is one group.
- */
-const DIGIT_GROUPS = /\+?(?:\(\d+\)|\d+)(?:[ .-]?\(\d+\)|[ .-]\d+|(?<=\))\d+)*/g;
-
-function maskNumber(run: string): string {
-  const digits = run.replace(/\D/g, "").length;
-  if (digits >= 16) return "[number]";
-  if (digits >= 7) return "[phone]";
-  return run;
-}
-
-function maskGap(gap: string): string {
-  return gap === "" ? gap : gap.replace(DIGIT_GROUPS, maskNumber);
-}
-
-/**
- * Masks what a transcript should not keep: an email as `[email]`, a number of 7 to 15 digits as `[phone]`, one of
- * 16 or more as `[number]`. A uuid, an ISO date or date-time, and a time of day stay as written. Emails go first,
- * over the whole text, because an address can contain what would otherwise be kept (a date or an id in its local
- * part) and is masked as one. The protected spans are then found and kept by position, and only the text between
- * them is masked for digit groups, so no input can pass for a placeholder. Never throws, and scrubbing twice gives
- * what scrubbing once does.
- */
-export function scrubText(text: string): string {
-  const mailed = text.includes("@") ? text.replace(EMAIL, "[email]") : text;
-  let out = "";
-  let last = 0;
-  PROTECTED.lastIndex = 0;
-  for (let m = PROTECTED.exec(mailed); m !== null; m = PROTECTED.exec(mailed)) {
-    out += maskGap(mailed.slice(last, m.index)) + m[0];
-    last = m.index + m[0].length;
-  }
-  return out + maskGap(mailed.slice(last));
-}
-
 // The claim matcher: what an assistant said about reservations, set against what the session's own calls observed.
 
 export const CLAIM_STATUSES = ["held", "confirmed", "seated", "completed", "cancelled", "expired"] as const;
@@ -78,7 +17,11 @@ export type Observed = {
 export type UnbackedReason = "no_observation" | "observed_later" | "status_mismatch" | "starts_at_mismatch" | "party_size_mismatch";
 export type ClaimResult = {
   turn: number; claim: Claim; verdict: "backed" | "unbacked"; reason?: UnbackedReason; observed?: Observed;
-  receipts: AuditReceipt[]; current_status: string; current_differs: boolean;
+  /** The latest receipts of the reservation up to the claim, at most MAX_CLAIM_RECEIPTS, in call order. */
+  receipts: AuditReceipt[];
+  /** How many earlier receipts are left out of `receipts`. */
+  receipts_omitted: number;
+  current_status: string; current_differs: boolean;
 };
 export type AuditResult = {
   session_id: string; audited_at: string; mode: "timed" | "coarse";
@@ -89,6 +32,10 @@ export type AuditResult = {
 };
 export type AuditInput = { sessionId: string; auditedAt: string; calls: LoggedCall[]; turns: AuditTurn[]; current: Record<string, string> };
 
+/** The most receipts one claim's result lists. */
+export const MAX_CLAIM_RECEIPTS = 10;
+
+type Recorded = { receipt: AuditReceipt; ms: number };
 type Attrs = { starts_at?: string; party_size?: number; hold_expires_at?: string };
 /** A reservation's state as one completed call showed it. */
 type Obs = Attrs & { call: number; tool: string; at: string; ms: number; status: string; replayed?: true };
@@ -180,6 +127,35 @@ function show(o: Obs, atMs: number): Observed {
   return out;
 }
 
+/** The index of the first element whose time is after `at`, in a list ascending by that time. */
+function firstAfter<T>(xs: readonly T[], time: (x: T) => number, at: number): number {
+  let lo = 0;
+  let hi = xs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (time(xs[mid]!) <= at) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * The latest receipts of one reservation, at most MAX_CLAIM_RECEIPTS, in call order, and how many earlier ones are
+ * left out. Timed, only receipts completed at or before the claim count. The count of those comes from a binary
+ * search of the completion times; the receipts themselves are taken from the end of the reservation's own list, so a
+ * claim costs its reservation's receipts at worst (the ones completed after it, at the end of the list) and
+ * MAX_CLAIM_RECEIPTS in the usual case, never all the session's.
+ */
+function lastReceipts(list: readonly Recorded[], times: readonly number[], timed: boolean, atMs: number): { receipts: AuditReceipt[]; omitted: number } {
+  const total = timed ? firstAfter(times, (ms) => ms, atMs) : list.length;
+  const out: AuditReceipt[] = [];
+  for (let i = list.length - 1; i >= 0 && out.length < MAX_CLAIM_RECEIPTS; i--) {
+    const r = list[i]!;
+    if (!timed || r.ms <= atMs) out.push(r.receipt);
+  }
+  out.reverse();
+  return { receipts: out, omitted: total - out.length };
+}
+
 function sameInstant(a: string, b: string): boolean {
   const x = Date.parse(a);
   const y = Date.parse(b);
@@ -224,7 +200,8 @@ export function auditSession(input: AuditInput): AuditResult {
     }
   }
 
-  const recorded: { id: string; receipt: AuditReceipt; ms: number }[] = [];
+  // Each reservation's receipts in call order, and the completion times of those that completed, ascending.
+  const recorded = new Map<string, Recorded[]>();
   const unverified: { call: number; receipt: unknown }[] = [];
   let receiptCount = 0;
   let verified = 0;
@@ -238,9 +215,14 @@ export function auditSession(input: AuditInput): AuditResult {
     if (c.receiptVerified === true) verified++; else unverified.push({ call: c.id, receipt: c.receipt });
     const receipt = asReceipt(c.receipt);
     if (receipt !== undefined) {
-      recorded.push({ id: receipt.reservation_id.toLowerCase(), receipt, ms: typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN });
+      const id = receipt.reservation_id.toLowerCase();
+      const entry: Recorded = { receipt, ms: typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN };
+      const list = recorded.get(id);
+      if (list === undefined) recorded.set(id, [entry]); else list.push(entry);
     }
   }
+  const receiptTimes = new Map<string, number[]>();
+  for (const [id, list] of recorded) receiptTimes.set(id, list.map((r) => r.ms).filter((ms) => !Number.isNaN(ms)).sort((a, b) => a - b));
 
   const results: ClaimResult[] = [];
   turns.forEach((turn, index) => {
@@ -252,17 +234,18 @@ export function auditSession(input: AuditInput): AuditResult {
       let matched: Obs | undefined;
       let later: Obs | undefined;
       if (timed) {
-        for (const o of list) {
-          if (o.ms <= atMs) matched = o;
-          else { later = o; break; }
-        }
+        const after = firstAfter(list, (o) => o.ms, atMs);
+        matched = list[after - 1];
+        later = list[after];
       } else {
         matched = list[list.length - 1];
       }
 
       const currentStatus = current.get(id) ?? "unknown";
-      const receipts = recorded.filter((r) => r.id === id && (!timed || r.ms <= atMs)).map((r) => r.receipt);
-      const result: ClaimResult = { turn: index, claim, verdict: "backed", receipts, current_status: currentStatus, current_differs: false };
+      const { receipts, omitted } = lastReceipts(recorded.get(id) ?? [], receiptTimes.get(id) ?? [], timed, atMs);
+      const result: ClaimResult = {
+        turn: index, claim, verdict: "backed", receipts, receipts_omitted: omitted, current_status: currentStatus, current_differs: false,
+      };
       if (matched !== undefined) {
         const effective = effectiveStatus(matched, atMs);
         const reason = judge(claim, matched, effective);

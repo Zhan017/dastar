@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { auditSession, type AuditReceipt, type AuditTurn, type Claim, type LoggedCall } from "../src/index.js";
+import { auditSession, MAX_CLAIM_RECEIPTS, type AuditReceipt, type AuditTurn, type Claim, type LoggedCall } from "../src/index.js";
 
 const S = "0199b000-0000-7000-8000-000000000000";
 const R1 = "0199b000-0000-7000-8000-00000000000a", R2 = "0199b000-0000-7000-8000-00000000000b", R3 = "0199b000-0000-7000-8000-00000000000c";
@@ -27,7 +27,7 @@ describe("auditSession", () => {
     expect(r.results).toEqual([{
       turn: 0, claim, verdict: "backed",
       observed: { call: 1, tool: "hold", at: T(1), status: "held", effective_status: "held", starts_at: STARTS, party_size: 2, hold_expires_at: EXP },
-      receipts: [rc(R1, "held", 1, 10)], current_status: "held", current_differs: false,
+      receipts: [rc(R1, "held", 1, 10)], receipts_omitted: 0, current_status: "held", current_differs: false,
     }]);
     expect(r.claims).toEqual({ total: 1, backed: 1, unbacked: 0 });
   });
@@ -180,6 +180,28 @@ describe("auditSession", () => {
     const r = run(calls, [said(T(5), { reservation_id: R1, status: "held" }), said(T(20), { reservation_id: R1, status: "cancelled" })]);
     expect(r.results[0]!.receipts).toEqual([rc(R1, "held", 1, 10)]);
     expect(r.results[1]!.receipts).toEqual([rc(R1, "held", 1, 10), rc(R1, "cancelled", 2, 20)]);
+  });
+
+  it("a claim lists at most MAX_CLAIM_RECEIPTS receipts, the latest, and counts the rest", () => {
+    expect(MAX_CLAIM_RECEIPTS).toBe(10);
+    const calls = Array.from({ length: 25 }, (_, k) => hold(k + 1, T(k + 1), R1));
+    const claim: Claim = { reservation_id: R1, status: "held" };
+    const between = new Date(Date.UTC(2064, 0, 7, 16, 0, 5, 500)).toISOString();
+    const r = run(calls, [said(T(40), claim), said(between, claim)]);
+    expect(r.results[0]!.receipts).toEqual(Array.from({ length: 10 }, (_, k) => rc(R1, "held", 1, (k + 16) * 10)));
+    expect(r.results[0]!.receipts_omitted).toBe(15);
+    expect(r.results[1]!.receipts).toEqual(Array.from({ length: 5 }, (_, k) => rc(R1, "held", 1, (k + 1) * 10)));
+    expect(r.results[1]!.receipts_omitted).toBe(0);
+  });
+
+  it("audits 10000 calls and 5000 claims about one reservation quickly", () => {
+    const calls = Array.from({ length: 10000 }, (_, k) => hold(k + 1, new Date(Date.UTC(2064, 0, 7, 16, 0, 0, k + 1)).toISOString(), R1));
+    const turns = Array.from({ length: 5000 }, () => said(T(20), { reservation_id: R1, status: "held" }));
+    const started = performance.now();
+    const r = run(calls, turns);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(r.results).toHaveLength(5000);
+    expect(r.results.every((x) => x.receipts.length === 10 && x.receipts_omitted === 9990 && x.verdict === "backed")).toBe(true);
   });
 
   it("a call whose recorded fields have the wrong shape observes nothing, and nothing throws", () => {

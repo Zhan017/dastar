@@ -20,6 +20,19 @@ const CASES: [string, string][] = [
   ["+7 1555-12-34", "[phone]"],
   ["jane-2030-06-07@x.com", "[email]"],
   ["reply+0199a000-0000-7000-8000-000000000001@mail.example.com", "[email]"],
+  ["josé@example.com", "[email]"],
+  ["müller@example.de", "[email]"],
+  ["o'brien@example.com", "[email]"],
+  ["jane@bücher.de", "[email]"],
+  ["josé@example.com", "[email]"],
+  ["(555) 123–4567", "[phone]"],
+  ["555 123 4567", "[phone]"],
+  ["555 123 4567", "[phone]"],
+  ["030/123456", "[phone]"],
+  ["0171/1234567", "[phone]"],
+  ["+49 30 1234567", "[phone]"],
+  ["555 - 123 - 4567", "[phone]"],
+  ["4111–1111–1111–1111", "[number]"],
   ["", ""],
 ];
 
@@ -115,7 +128,12 @@ describe("scrubText", () => {
   });
 
   it("scrubs 20000 characters of digits and separators quickly", () => {
-    for (const input of ["1 2-3.(4) ".repeat(2000), "1".repeat(20000), "a@".repeat(10000), "+1 ".repeat(6667)]) {
+    const inputs = [
+      "1 2-3.(4) ".repeat(2000), "1".repeat(20000), "a@".repeat(10000), "+1 ".repeat(6667),
+      "1 – 2 /(3) ".repeat(1700),
+      "é.".repeat(10000) + "@", "ü@".repeat(10000), "a@" + "b".repeat(19998),
+    ];
+    for (const input of inputs) {
       const started = performance.now();
       scrubText(input);
       expect(performance.now() - started).toBeLessThan(200);
