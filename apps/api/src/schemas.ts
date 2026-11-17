@@ -65,6 +65,15 @@ export const HoldListSchema = z.object({
   })),
 }).openapi("HoldList");
 
+export const SessionRequestSchema = z.object({ venue_id: z.guid() }).openapi("SessionRequest");
+export const SessionCreatedSchema = z.object({
+  id: z.string(), venue_id: z.string(), kind: z.enum(["reference", "external"]), started_at: z.string(),
+}).openapi("SessionCreated");
+export const SessionSchema = z.object({
+  id: z.string(), venue_id: z.string(), kind: z.enum(["reference", "external"]), started_at: z.string(), last_seen_at: z.string(),
+  calls: z.number().int(), audited_at: z.string().nullable(),
+}).openapi("Session");
+
 export const AvailabilityBodySchema = z.object({
   party_size: z.number().int().min(1).max(10_000),
   from: z.iso.datetime({ offset: true }),

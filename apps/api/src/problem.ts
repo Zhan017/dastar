@@ -2,7 +2,7 @@ import { HTTPException } from "hono/http-exception";
 import { DastarError, type DastarErrorCode } from "@dastar/db";
 
 export type ProblemStatus = 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 503;
-export type ApiCode = DastarErrorCode | "validation" | "unauthorized" | "not_ready";
+export type ApiCode = DastarErrorCode | "validation" | "unauthorized" | "not_ready" | "session_venue_mismatch" | "session_full";
 
 /** The only failure shape the API renders. Handlers throw it; `onError` turns it into Problem Details. */
 export class ApiProblem extends Error {

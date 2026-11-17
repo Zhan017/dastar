@@ -11,6 +11,7 @@ import { register as registerDocs } from "./routes/docs.js";
 import { register as registerHealth } from "./routes/health.js";
 import { register as registerHolds } from "./routes/holds.js";
 import { register as registerReservations } from "./routes/reservations.js";
+import { register as registerSessions } from "./routes/sessions.js";
 
 const TRACE_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 
@@ -58,6 +59,7 @@ export function createApp(deps: Deps): OpenAPIHono<Env> {
   registerHolds(app, deps);
   registerAvailability(app, deps);
   registerReservations(app, deps);
+  registerSessions(app, deps);
   registerAdminUnits(app, deps);
   registerAdminCalendar(app, deps);
   registerAdminKeys(app, deps);
