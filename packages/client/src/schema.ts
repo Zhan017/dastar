@@ -100,7 +100,10 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -207,6 +210,8 @@ export interface paths {
                 query?: never;
                 header: {
                     "idempotency-key": string;
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
                 };
                 path: {
                     id: string;
@@ -330,7 +335,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -451,7 +459,10 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -572,7 +583,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -695,7 +709,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -818,7 +835,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -941,7 +961,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -1064,7 +1087,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };

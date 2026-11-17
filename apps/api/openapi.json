@@ -1280,6 +1280,17 @@
             "required": true,
             "name": "idempotency-key",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1411,6 +1422,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "responses": {
@@ -1534,6 +1556,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1667,6 +1700,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "responses": {
@@ -1790,6 +1834,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1923,6 +1978,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -2056,6 +2122,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -2189,6 +2266,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -2323,6 +2411,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key."
+            },
+            "required": false,
+            "description": "The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key.",
+            "name": "dastar-session",
+            "in": "header"
           }
         ],
         "requestBody": {
