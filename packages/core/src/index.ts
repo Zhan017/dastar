@@ -10,4 +10,8 @@ export {
   type ServicePeriod, type UnitSnapshot, type ComboSnapshot, type Busy, type Closure, type Slot, type Candidate,
   type RankingContext, type RankingStrategy, type AvailabilityComputation,
 } from "./availability.js";
-export { scrubText } from "./audit.js";
+export {
+  CLAIM_STATUSES, auditSession, scrubText,
+  type ClaimStatus, type Claim, type AuditTurn, type LoggedCall, type AuditReceipt, type Observed, type UnbackedReason,
+  type ClaimResult, type AuditResult, type AuditInput,
+} from "./audit.js";
