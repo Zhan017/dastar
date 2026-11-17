@@ -7,13 +7,17 @@ const NO_RESERVATION = "00000000-0000-0000-0000-000000000000";
 
 export const keyCommand = (venueId: string): string => `pnpm keys:create --label mcp --capabilities read,hold,cancel --venues ${venueId}`;
 
-type Reply = { error?: unknown; response: Response };
+type Reply = { data?: unknown; error?: unknown; response: Response };
 
-type Probe = {
+/** One request the start-up checks make. */
+type Question = {
   method: string;
   /** The path as the OpenAPI document writes it. */
   path: string;
   run: (signal: AbortSignal) => Promise<Reply>;
+};
+
+type Probe = Question & {
   /** The one status that lets the key serve. */
   pass: number;
   /** What a status other than `pass` says when it is a known refusal, before the fix is appended. */
@@ -34,9 +38,24 @@ function unreachable(origin: string, error: unknown): string {
   return `could not reach ${origin}: ${message}${typeof code === "string" ? ` (${code})` : ""}`;
 }
 
-function unexpected(probe: Probe, status: number, error: unknown): string {
+/** What the check is about, as its failure lines name it. */
+type Subject = "key" | "session";
+
+function unexpected(subject: Subject, question: Question, status: number, error: unknown): string {
   const code = codeOf(error);
-  return `checking the key failed: ${probe.method} ${probe.path} answered HTTP ${status}${code !== undefined ? ` ${code}` : ""}`;
+  return `checking the ${subject} failed: ${question.method} ${question.path} answered HTTP ${status}${code !== undefined ? ` ${code}` : ""}`;
+}
+
+/** Sends one question and gives its reply, or the line for an API that does not answer, answers with something that is not JSON, or cannot be reached. */
+async function ask(origin: string, timeoutMs: number, subject: Subject, question: Question): Promise<{ reply: Reply } | { line: string }> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    return { reply: await question.run(signal) };
+  } catch (error) {
+    if (signal.aborted) return { line: `no answer from ${origin} within ${timeoutMs / 1000} seconds` };
+    if (error instanceof SyntaxError) return { line: `checking the ${subject} failed: ${question.method} ${question.path} answered with a body that is not JSON` };
+    return { line: unreachable(origin, error) };
+  }
 }
 
 function probesFor(client: DastarClient, venueId: string): Probe[] {
@@ -77,19 +96,37 @@ export async function checkCredential(client: DastarClient, target: CredentialTa
   const origin = new URL(target.url).origin;
   const fix = `create one with: ${keyCommand(target.venueId)}`;
   for (const probe of probesFor(client, target.venueId)) {
-    const signal = AbortSignal.timeout(timeoutMs);
-    let reply: Reply;
-    try {
-      reply = await probe.run(signal);
-    } catch (error) {
-      if (signal.aborted) return `no answer from ${origin} within ${timeoutMs / 1000} seconds`;
-      if (error instanceof SyntaxError) return `checking the key failed: ${probe.method} ${probe.path} answered with a body that is not JSON`;
-      return unreachable(origin, error);
-    }
+    const asked = await ask(origin, timeoutMs, "key", probe);
+    if ("line" in asked) return asked.line;
+    const { reply } = asked;
     const status = reply.response.status;
     if (status === probe.pass) continue;
     const refusal = probe.refusals[status];
-    return refusal !== undefined ? `${refusal}; ${fix}` : unexpected(probe, status, reply.error);
+    return refusal !== undefined ? `${refusal}; ${fix}` : unexpected("key", probe, status, reply.error);
   }
   return null;
+}
+
+export type SessionTarget = { url: string; venueId: string; sessionId: string };
+
+/**
+ * Asks the API whether the session is one of the key's own, opened for this venue. Returns `null` when it is, else the refusal line;
+ * the API answers 404 for a session the key does not own, so a session of another key and one that does not exist read the same.
+ */
+export async function checkSession(client: DastarClient, target: SessionTarget, timeoutMs = 10_000): Promise<string | null> {
+  const origin = new URL(target.url).origin;
+  const question: Question = {
+    method: "GET",
+    path: "/v1/sessions/{id}",
+    run: (signal) => client.GET("/v1/sessions/{id}", { params: { path: { id: target.sessionId } }, signal }),
+  };
+  const asked = await ask(origin, timeoutMs, "session", question);
+  if ("line" in asked) return asked.line;
+  const { reply } = asked;
+  const status = reply.response.status;
+  const refusal = `session ${target.sessionId} is not one of the key's sessions for venue ${target.venueId}`;
+  if (status === 404) return refusal;
+  if (status !== 200) return unexpected("session", question, status, reply.error);
+  const venueId = isObject(reply.data) ? reply.data["venue_id"] : undefined;
+  return venueId === target.venueId ? null : refusal;
 }

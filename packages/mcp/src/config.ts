@@ -1,4 +1,5 @@
-export type McpConfig = { url: string; key: string; venueId: string };
+/** `sessionId` is present only when DASTAR_SESSION_ID is set: the audit session that records the server's tool calls. */
+export type McpConfig = { url: string; key: string; venueId: string; sessionId?: string };
 
 export type ConfigResult = { ok: true; config: McpConfig } | { ok: false; line: string };
 
@@ -18,7 +19,7 @@ function parseUrl(value: string): URL | null {
   }
 }
 
-/** Reads the server's three settings from the environment, refusing with one line that names what to fix. */
+/** Reads the server's three required settings and one optional one (DASTAR_SESSION_ID) from the environment, refusing with one line that names what to fix. */
 export function readConfig(env: Record<string, string | undefined>): ConfigResult {
   const missing = SETTINGS.filter((name) => (env[name] ?? "").trim() === "");
   if (missing.length > 0) return refuse(`set ${SETTINGS[0]}, ${SETTINGS[1]} and ${SETTINGS[2]}; missing: ${missing.join(", ")}`);
@@ -26,6 +27,7 @@ export function readConfig(env: Record<string, string | undefined>): ConfigResul
   const url = (env["DASTAR_URL"] ?? "").trim();
   const key = (env["DASTAR_KEY"] ?? "").trim();
   const venueId = (env["DASTAR_VENUE_ID"] ?? "").trim();
+  const sessionId = (env["DASTAR_SESSION_ID"] ?? "").trim();
 
   const parsed = parseUrl(url);
   if (parsed === null || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return refuse("DASTAR_URL must be an http or https URL");
@@ -33,5 +35,7 @@ export function readConfig(env: Record<string, string | undefined>): ConfigResul
   if (!VISIBLE_ASCII.test(key)) return refuse("DASTAR_KEY must contain only visible ASCII characters");
   if (!UUID.test(venueId)) return refuse("DASTAR_VENUE_ID must be a uuid");
 
-  return { ok: true, config: { url, key, venueId: venueId.toLowerCase() } };
+  if (sessionId !== "" && !UUID.test(sessionId)) return refuse("DASTAR_SESSION_ID must be a uuid");
+
+  return { ok: true, config: { url, key, venueId: venueId.toLowerCase(), ...(sessionId !== "" ? { sessionId: sessionId.toLowerCase() } : {}) } };
 }
