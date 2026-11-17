@@ -33,8 +33,8 @@ describe("OpenAPI document", () => {
       "/admin/venues/{id}/blackouts", "/admin/venues/{id}/blackouts/{blackoutId}", "/admin/venues/{id}/combos", "/admin/venues/{id}/combos/{comboId}",
       "/admin/venues/{id}/keys", "/admin/venues/{id}/keys/{keyId}/revoke", "/admin/venues/{id}/schedules", "/admin/venues/{id}/schedules/{scheduleId}", "/admin/venues/{id}/units", "/admin/venues/{id}/units/{unitId}",
       "/health/live", "/health/ready", "/v1/reservations/{id}", "/v1/reservations/{id}/cancel", "/v1/reservations/{id}/complete",
-      "/v1/reservations/{id}/confirm", "/v1/reservations/{id}/confirm-token", "/v1/reservations/{id}/seat", "/v1/venues/{id}/availability",
-      "/v1/venues/{id}/holds",
+      "/v1/reservations/{id}/confirm", "/v1/reservations/{id}/confirm-token", "/v1/reservations/{id}/seat", "/v1/sessions", "/v1/sessions/{id}",
+      "/v1/venues/{id}/availability", "/v1/venues/{id}/holds",
     ]);
   });
 
@@ -48,6 +48,8 @@ describe("OpenAPI document", () => {
     expect(doc.paths["/v1/reservations/{id}/complete"]!.post!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/v1/reservations/{id}/confirm-token"]!.post!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/v1/reservations/{id}/confirm"]!.post!.security).toEqual([{ Bearer: [] }, {}]);
+    expect(doc.paths["/v1/sessions"]!.post!.security).toEqual([{ Bearer: [] }]);
+    expect(doc.paths["/v1/sessions/{id}"]!.get!.security).toEqual([{ Bearer: [] }]);
     expect(doc.paths["/health/live"]!.get!.security).toBeUndefined();
   });
 
