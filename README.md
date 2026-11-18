@@ -8,9 +8,9 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
+**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, an audit of any agent's booking claims against the receipts its calls were issued, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
 
-[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
+[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [Audit an agent](#audit-any-agent) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
 [Correctness](CORRECTNESS.md) · [Benchmarks](BENCHMARKS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Decisions](docs/adr/README.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
@@ -70,7 +70,7 @@ pnpm naive --admin-url postgres://dastar_owner:owner@localhost:55432/postgres --
 
 ## Run the reference API
 
-A small HTTP server over the same engine: nine v1 routes, fifteen admin routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
+A small HTTP server over the same engine: thirteen v1 routes, fifteen admin routes, hashed keys with capabilities and venue scope, and Problem Details errors. With the database from the previous section still running:
 
 ```bash
 pnpm seed:demo --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
@@ -133,6 +133,14 @@ Then add it to the MCP client's configuration, with the path to this clone and t
 }
 ```
 
+`DASTAR_SESSION_ID` is optional. Set it to the id of an audit session that the same key opened for the same venue (see [Audit any agent](#audit-any-agent)), and the server sends it with every tool call, so the calls are recorded in that session:
+
+```json
+"env": { "DASTAR_URL": "http://127.0.0.1:8080", "DASTAR_KEY": "dsk_...", "DASTAR_VENUE_ID": "0199a000-0000-7000-8000-000000000001", "DASTAR_SESSION_ID": "the session's id" }
+```
+
+At start-up the server asks the API whether the session is one of its key's, for its venue, and refuses to start with one line when it is not (`session <id> is not one of the key's sessions for venue <venue>`). A value that is not a uuid is refused as well. The start-up checks are not recorded in the session.
+
 The demo venue has no service periods, so `search_availability` finds nothing there while `hold` accepts any time. To search it, create an admin key, put it in `ADMIN_KEY`, and add a service period for each day of the week, 17:00 to 23:00 in the venue's time zone, Asia/Almaty:
 
 ```bash
@@ -145,6 +153,103 @@ done
 ```
 
 A booking then lasts 90 minutes for up to two guests, 120 for up to four, and 150 for up to eight. From then on the API refuses holds outside these hours with `outside_schedule`.
+
+### Audit any agent
+
+Any agent that calls the API with its own key can be audited over plain HTTP, with no SDK. The builder opens a session and has the agent send its id with each call; the API records every call and its receipt under the session. After the conversation the builder posts what the agent said, with the booking claims it made, and Dastar sets each claim against what the session's own calls observed and against the engine's audit log.
+
+Create a key that can read, hold, and cancel for the demo venue, with its printed value in `AGENT_KEY`. The key from [Run the reference API](#run-the-reference-api) can confirm, and a key that can confirm or administer cannot open a session. Then open one:
+
+```bash
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label agent --capabilities read,hold,cancel --venues 0199a000-0000-7000-8000-000000000001
+curl -s -X POST localhost:8080/v1/sessions \
+  -H "authorization: Bearer $AGENT_KEY" -H "content-type: application/json" \
+  -d '{"venue_id":"0199a000-0000-7000-8000-000000000001"}'
+```
+
+The answer carries the session's `id`, to put in `SESSION`:
+
+```json
+{ "id": "0199b1c2-7d3e-7a10-8f21-5c4e9a6b3d70", "venue_id": "0199a000-0000-7000-8000-000000000001", "kind": "external", "started_at": "2026-11-18T10:14:31.052Z" }
+```
+
+The agent's calls carry the session in a `dastar-session` header. Here one hold on table T2, with the header; put the `reservation_id` of its receipt in `RESERVATION`:
+
+```bash
+curl -s -X POST localhost:8080/v1/venues/0199a000-0000-7000-8000-000000000001/holds \
+  -H "authorization: Bearer $AGENT_KEY" -H "dastar-session: $SESSION" -H "idempotency-key: audit-1" -H "content-type: application/json" \
+  -d '{"party_size":2,"starts_at":"2030-06-07T13:00:00Z","duration_minutes":90,"assignment":{"kind":"unit","id":"0199a000-0000-7000-8000-000000000102"}}'
+```
+
+The header is read on exactly nine routes: the hold, the holds list, availability, the reservation read, and cancel, seat, complete, confirm, and confirm-token. A call without it is not recorded. A typed client sends it when it is created with a session, `createDastarClient({ baseUrl, key, session })`, and the MCP server sends it when `DASTAR_SESSION_ID` is set.
+
+Now post the transcript: two turns, the second with one claim. A claim names a reservation and the status the agent said it had, and may add the start time, the party size, and the words it rests on. The post prints 200 and the read returns the result:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/v1/sessions/$SESSION/audit \
+  -H "authorization: Bearer $AGENT_KEY" -H "content-type: application/json" \
+  -d '{"turns":[
+    {"role":"user","text":"A table for two on Friday evening, please."},
+    {"role":"assistant","text":"I have held a table for two on Friday evening. A host confirms it.","claims":[{"reservation_id":"'"$RESERVATION"'","status":"held","starts_at":"2030-06-07T13:00:00Z","party_size":2,"quote":"I have held a table for two on Friday evening."}]}
+  ]}'
+curl -s localhost:8080/v1/sessions/$SESSION/audit -H "authorization: Bearer $AGENT_KEY"
+```
+
+The result, formatted here for reading, with ids and times that differ on every run:
+
+```json
+{
+  "session_id": "0199b1c2-7d3e-7a10-8f21-5c4e9a6b3d70",
+  "audited_at": "2026-11-18T10:16:40.215Z",
+  "mode": "coarse",
+  "claims": { "total": 1, "backed": 1, "unbacked": 0 },
+  "results": [
+    {
+      "turn": 1,
+      "claim": {
+        "reservation_id": "0199b1c3-4a52-7c9e-9b0d-2e7f61a8c405",
+        "status": "held",
+        "starts_at": "2030-06-07T13:00:00Z",
+        "party_size": 2,
+        "quote": "I have held a table for two on Friday evening."
+      },
+      "verdict": "backed",
+      "observed": {
+        "call": 41,
+        "tool": "hold",
+        "at": "2026-11-18T10:15:12.884Z",
+        "status": "held",
+        "effective_status": "held",
+        "starts_at": "2030-06-07T13:00:00Z",
+        "party_size": 2,
+        "hold_expires_at": "2026-11-18T10:25:12.884Z"
+      },
+      "receipts": [
+        { "reservation_id": "0199b1c3-4a52-7c9e-9b0d-2e7f61a8c405", "status": "held", "version": 1, "audit_id": 2, "trace_id": "c1f0d2a4-6b3e-4f58-9a17-0e5d8b7c2a91" }
+      ],
+      "receipts_omitted": 0,
+      "current_status": "held",
+      "current_differs": false
+    }
+  ],
+  "receipts": { "recorded": 1, "verified": 1, "unverified": [] },
+  "unknown_outcomes": 0,
+  "confirmations": 0,
+  "undeclared": "not checked"
+}
+```
+
+What it says:
+
+- The claim is `backed`: the latest thing the session's calls showed about that reservation was a hold with the claimed status, start time, and party size. A claim the calls do not support is `unbacked` with a `reason`: `no_observation`, `observed_later`, `status_mismatch`, `starts_at_mismatch`, or `party_size_mismatch`. A hold past its `hold_expires_at` reads `expired` whether or not the sweeper has stored that yet.
+- `mode` is `coarse` because the turns carry no time, so each claim is read against the session's last call. Give every turn an `at` and the mode is `timed`: each claim is read against what the session had seen by then, comparing the turn's time with the API's clock.
+- `receipts` counts the receipts the session's calls returned and how many the engine's audit log bears out, with the same reservation, status, version, and trace id. A receipt that does not match is listed in `unverified`.
+- `confirmations` is 0, and the agent's key cannot raise it: a key that can confirm or administer cannot open a session. It counts the confirms made in the session, which the agent can make only with a confirm token someone gave it.
+- `current_status` is the reservation's status when the audit ran, and `current_differs` is true when it is not the status the session last saw. It shows when someone else changed the reservation after the agent saw it, such as staff confirming it, or a hold running out.
+- `unknown_outcomes` counts calls the session recorded as started and never as completed, such as one the API stopped serving before its answer was recorded.
+- `undeclared` says what the audit does not do yet: statements the agent made without declaring them as claims are not checked.
+
+Posting a transcript again replaces the session's earlier transcript and result; `GET /v1/sessions/{id}/audit` reads the latest, and `GET /v1/sessions/{id}` shows the session's `calls` and `last_seen_at`. A transcript is 1 to 500 turns, with at most 50 claims on a turn. Text and quotes are stored with emails and numbers masked: an email address reads `[email]`, a number of 7 to 15 digits `[phone]`, one of 16 or more `[number]`; ids, ISO dates and times stay. Names are not detected, so redact guest details before posting. A session records up to 10,000 calls. An external session not seen for 30 days is gone, audit included. [LIMITATIONS.md](LIMITATIONS.md) lists what the audit does not cover.
 
 ## Measure it
 
@@ -243,10 +348,11 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Database protection | Exclusion and membership constraints, lifecycle guards, a fit check on insert and on confirmation, blackout guards under a venue-level lock, guards that keep live reservations off inactive units and combinations, restricted roles, and row-level security that confines each transaction to the venue it declares |
 | Migrations | Ordered, checksummed files with lock timeouts; concurrent index builds with validated recovery |
 | Verification | Raw-SQL attacks, cross-venue attacks under row-level security, transition and lifecycle tests, two-connection interleavings, a real deadlock, the connection contract, and a model-based test that runs random command sequences against a reference model and checks the state, the audit and outbox trails, and the invariants after every step |
-| Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; retention every minute, 500 rows per batch, for idempotency rows past their 24-hour purge time and published outbox rows older than seven days; also importable into a host process |
+| Worker | The sweeper as its own process, connected as `dastar_worker`: every 5 seconds, 20 holds per batch, repeated while due holds remain; retention every minute, 500 rows per batch, for idempotency rows past their 24-hour purge time, published outbox rows older than seven days, and external audit sessions, with their calls and turns, from 10 minutes after they stop being live (30 days after their last call); also importable into a host process |
 | Harness | A race command and a naive counterexample, both runnable against any Postgres 18, and the measurement commands below |
-| Reference API | Nine v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, an OpenAPI document committed and checked against the routes, a Swagger UI page, and a typed TypeScript client generated from the document |
-| Agent tools | Four tools, `search_availability`, `hold`, `cancel`, and `get_reservation`, with inputs from the committed document and no confirm tool; a session keeps one idempotency key per hold request and cancels only the reservations it created; an MCP server over stdio that refuses keys able to confirm or administer |
+| Reference API | Thirteen v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, an OpenAPI document committed and checked against the routes, a Swagger UI page, and a typed TypeScript client generated from the document |
+| Agent tools | Four tools, `search_availability`, `hold`, `cancel`, and `get_reservation`, with inputs from the committed document and no confirm tool; a session keeps one idempotency key per hold request and cancels only the reservations it created; an MCP server over stdio that refuses keys able to confirm or administer, and records its calls in an audit session when `DASTAR_SESSION_ID` is set |
+| Agent audit | Audit sessions opened by a key that cannot confirm or administer; a `dastar-session` header on nine v1 routes that records each call and its receipt, never a key, confirm token, external reference, cancel reason, or problem detail; transcript intake that masks emails and numbers; a deterministic matcher that sets each declared claim against the session's calls and the reservation's current status, with receipts checked against the audit log; 30-day retention of external sessions; the client's `session` option; `starts_at` on the reservation read and the holds list |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery is still planned.
 
@@ -268,10 +374,10 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Finish agent integration:** a reference agent on the tools, a human confirmation flow, and an auditor that checks declared booking claims against receipts and observed state.
+1. **Finish agent integration:** a reference agent on the tools, a human confirmation flow, and a judge that finds the booking statements an agent made without declaring them as claims, which the audit does not check yet.
 2. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
 
-The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. The confirmation flow and the auditor are future work; the engine supplies the reservation and token primitives they will use.
+The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. The confirmation flow and the reference agent are future work; the engine supplies the reservation and token primitives they will use. [Audit any agent](#audit-any-agent) already checks the declared claims of any agent.
 
 The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
 

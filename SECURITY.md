@@ -36,8 +36,8 @@ Two owner-run functions let a caller that holds only a reservation id find the v
 |---|---|---|
 | `dastar_owner` | Migrations | Owns everything |
 | `dastar_app` | Commands | Statement timeout 10 s, idle-in-transaction timeout 30 s |
-| `dastar_worker` | Sweeper, publisher, retention | UPDATE and DELETE on the outbox, DELETE on idempotency rows, bypasses row-level security |
-| `dastar_readonly` | Reporting | SELECT only, on every venue through a read-only policy |
+| `dastar_worker` | Sweeper, publisher, retention | UPDATE and DELETE on the outbox, DELETE on idempotency rows, SELECT and DELETE on the audit session tables, bypasses row-level security |
+| `dastar_readonly` | Reporting | SELECT only, on every venue through a read-only policy, the audit session tables included |
 
 ## Confirm tokens
 
@@ -53,9 +53,20 @@ Keys are 32 random bytes shown once at creation; the database stores their SHA-2
 
 The docs page at `/docs` needs no key and shows only what `/openapi.json` already publishes. It serves Swagger UI from the installed package, not from a CDN, under a content security policy that admits scripts, styles, and requests from the API's own origin only, and it makes no request to a third party. A key typed into its Authorize dialog stays in the page's memory and is sent only to the API.
 
+## Audit sessions
+
+An audit session records what an agent's calls observed, so that the claims in its transcript can be set against it. The tables are `dastar_agent.session`, `tool_call`, and `turn`.
+
+- **The agent's key cannot confirm.** `POST /v1/sessions` refuses a key that can confirm or administer with 403, so a session belongs to a key that holds neither. A confirm token that someone gives the agent still confirms: the agent sends it with its own key and the session header, the confirm is recorded, and the audit counts it in `confirmations`. A confirm the agent makes without the header is not recorded; the reservation's current status in the result shows it.
+- **A session is its key's and its venue's.** Another key's session, one that does not exist, and one not seen for 30 days all answer 404 `no such session`, so they cannot be told apart. A call whose venue is not the session's is refused with 422. The three tables carry the same row-level security as the engine's, and `dastar_agent.session_venue`, an owner-run lookup like the reservation lookups above, returns the venue of a live session only to the key that owns it.
+- **The session log is written by the API's role.** `dastar_app` inserts and completes calls, and updates a session's `last_seen_at`, call count, and audit; it cannot change a session's key, venue, or kind, a call's tool or input, or delete a session or call. It can still write a call's output and receipt, so the audit does not take a receipt on trust. A receipt is verified only when the venue's audit log, which `dastar_app` cannot write, holds the row the receipt names: that reservation, the audit id, and the same status, version, and trace id. Every other receipt is listed as unverified in the result. Only `dastar_worker` deletes sessions, once they are past retention.
+- **The log stores no free text.** A call keeps ids, numbers, times, statuses, and error codes. It never keeps the key, a confirm token, `external_ref`, a cancel reason, or a problem detail, whatever the request or response carries. The one string a client chooses is a hold's idempotency key. The transcript is the exception by design: its turns and quotes are stored, scrubbed.
+- **The scrubber runs before a transcript is stored.** It masks email addresses and numbers of seven digits or more, keeping ids, dates, and times. It does not detect names; [LIMITATIONS.md](LIMITATIONS.md) lists what else it misses.
+- **The audit's size is bounded.** The audit post takes up to 1 MiB, after the key check, so a request without a valid key is refused before its body is read; every other route takes 64 KB. A session records at most 10,000 calls, a transcript has at most 500 turns, and an external session is purged 30 days after it was last seen.
+
 ## Agent tools and MCP
 
-No agent tool reaches a confirm route: there is no confirm tool, hold responses carry no token, and a test fails if the tools' source names a confirm or token route. The MCP server checks its key before it serves: the key must read its venue and be refused both confirm-token minting and the venue's key listing, so a key that can confirm or administer stops it with exit code 1. Neither the key nor any user name or password in `DASTAR_URL` appears in its output. Over plain HTTP the key crosses the network in clear; use HTTPS for an API on another machine.
+No agent tool reaches a confirm route: there is no confirm tool, hold responses carry no token, and a test fails if the tools' source names a confirm or token route. The MCP server checks its key before it serves: the key must read its venue and be refused both confirm-token minting and the venue's key listing, so a key that can confirm or administer stops it with exit code 1. With `DASTAR_SESSION_ID` set it then checks that the session is its key's, for its venue, and stops with one line otherwise; those start-up checks are sent without the session, so they are not recorded. Neither the key nor any user name or password in `DASTAR_URL` appears in its output. Over plain HTTP the key crosses the network in clear; use HTTPS for an API on another machine.
 
 ## Reporting a vulnerability
 

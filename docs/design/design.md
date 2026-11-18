@@ -190,6 +190,7 @@ flowchart TB
     rank["RankingStrategy + restaurantHost"]
     errs["error taxonomy, stable codes"]
     events["outbox payload builders, versioned"]
+    claims["claim matcher, transcript scrubber"]
   end
   subgraph db["@dastar/db"]
     mig["SQL migrations + runner"]
@@ -199,11 +200,13 @@ flowchart TB
     outbox["outbox: claim SKIP LOCKED, markPublished, deadLetter"]
     map["SQLSTATE to core error mapper, retry classifier"]
     crypto["secretbox: encrypt at rest for tokens and webhook secrets"]
+    asess["audit sessions: begin and complete calls, store and read audits, purge"]
   end
   subgraph api["@dastar/api"]
     routes["v1, admin, demo routers"]
     mw["auth keys, per-key rate limit, idempotency, problem details, tracing, redaction"]
     oapi["OpenAPI from Zod"]
+    rec["recorder: dastar-session on nine routes; session and audit routes"]
   end
   subgraph worker["@dastar/worker"]
     sweep["sweeper"]
@@ -232,17 +235,17 @@ flowchart TB
   mcp --> client
 ```
 
-**core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is pure functions over instants: candidate slots from service periods, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default, and one pass that combines them. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. Time zone math is Postgres's (D48): the database computes service periods as instants, and the availability functions take instants.
+**core.** Domain types with a half-open `TimeRange`. State machine as a data table, hand-written into the SQL trigger, with an exhaustive test over every from-to pair. Availability is pure functions over instants: candidate slots from service periods, fitting assignments from units and combos, ranking through a `RankingStrategy` with `restaurantHost` as default, and one pass that combines them. Error taxonomy with stable codes reused by every surface. Versioned outbox payload builders. The claim matcher, `auditSession`, which sets the claims of a transcript against a session's recorded calls and the claimed reservations' current statuses, and the transcript scrubber, `scrubText`, are pure functions here, with no database and no clock of their own. Time zone math is Postgres's (D48): the database computes service periods as instants, and the availability functions take instants.
 
-**db.** Migrations and runner. Commands, one transaction each, returning a receipt, with a retry classifier for deadlock and serialization errors. Idempotency stores actor, key, payload hash, and the exact response. Snapshot and occupancy queries. Outbox claim and ack. SQLSTATE mapper. A secretbox helper for encrypting confirm tokens and webhook secrets at rest with a key from the environment. Every command sets `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` as transaction-local settings at the start; from M2 the venue setting is what row-level security keys on, so a transaction that forgets it reads nothing and inserts nothing.
+**db.** Migrations and runner. Commands, one transaction each, returning a receipt, with a retry classifier for deadlock and serialization errors. Idempotency stores actor, key, payload hash, and the exact response. Snapshot and occupancy queries. Outbox claim and ack. The audit session store: open a session, begin a call under the session's row lock and complete it once, read a session's calls with their receipt checks and the claimed reservations' current statuses in one snapshot, store and read an audit, and purge expired external sessions; core's matcher and scrubber are re-exported for the API. SQLSTATE mapper. A secretbox helper for encrypting confirm tokens and webhook secrets at rest with a key from the environment. Every command sets `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` as transaction-local settings at the start; from M2 the venue setting is what row-level security keys on, so a transaction that forgets it reads nothing and inserts nothing.
 
-**api.** Routers for v1, admin, demo (flagged). Middleware: capability keys, per-key token buckets in memory, idempotency header handling, Problem Details, tracing with the trace id echoed in receipts, and log redaction so a confirm token never appears in a log line or span. OpenAPI from Zod, committed as `apps/api/openapi.json`; Swagger UI at `/docs`; the typed client `@dastar/client` is generated from the committed document, and a test fails while the document or the client's types differ from what the routes generate.
+**api.** Routers for v1, admin, demo (flagged). Middleware: capability keys, per-key token buckets in memory, idempotency header handling, Problem Details, tracing with the trace id echoed in receipts, and log redaction so a confirm token never appears in a log line or span. The recorder wraps the nine v1 routes an agent calls: a request that carries `Dastar-Session` is checked against the key's own sessions and the session's venue, recorded as started, answered by the route itself, and recorded as completed with its status, the fields section 6 lists, and its receipt. The session routes open and read a session; the audit routes take a transcript, scrub it, read the session's calls in one snapshot, run the matcher, store the turns and the result, and read the latest result back. OpenAPI from Zod, committed as `apps/api/openapi.json`; Swagger UI at `/docs`; the typed client `@dastar/client` is generated from the committed document, and a test fails while the document or the client's types differ from what the routes generate.
 
-**worker.** Sweeper expires due holds through the same command path in small batches. Publisher signs, delivers with backoff, dead-letters. Retention purges idempotency rows past their purge time, published outbox rows older than seven days, and demo transcripts older than thirty days. Backup runs the nightly dump. Demo reset reseeds nightly when flagged.
+**worker.** Sweeper expires due holds through the same command path in small batches. Publisher signs, delivers with backoff, dead-letters. Retention purges idempotency rows past their purge time, published outbox rows older than seven days, external audit sessions with their calls and turns from ten minutes after they stop being live (section 6), and demo transcripts older than thirty days. Backup runs the nightly dump. Demo reset reseeds nightly when flagged.
 
 **agent-tools.** Tool definitions from the shared schemas, executed via a library binding or an HTTP binding, with tool-result strings length-capped and control characters stripped before they enter the model context. `LLMProvider` interface with an Anthropic adapter first, OpenAI-compatible second. Agent loop with a versioned prompt file whose hash goes on every span, forcing a structured reply. Inline guardrail: every declared claim must match a receipt in the session's tool log, or the reply regenerates at most twice, then falls back to a receipt-only message. Async auditor: a judge model scans stored turns for undeclared claims, and its precision and recall against a hand-labeled set are published beside the hallucination rate. Session store persisted in `dastar_agent`, holding encrypted confirm tokens so an API restart strands nothing. Evals: golden conversations, recorded cassettes on PR, live nightly under a spend cap, a basic prompt-injection set, and a report that writes `AUDIT.md`. Parser turns free text into a structured search request.
 
-**mcp.** stdio MCP server over the tool definitions, bound to one venue by its configuration. It checks its key before serving and refuses one that can confirm or administer.
+**mcp.** stdio MCP server over the tool definitions, bound to one venue by its configuration. It checks its key before serving and refuses one that can confirm or administer. An optional `DASTAR_SESSION_ID` makes it send `Dastar-Session` with every tool call; it then checks, with the key and without the header, that the session is the key's and belongs to its venue, and refuses to start with one line otherwise.
 
 ---
 
@@ -287,13 +290,22 @@ api_key           id uuid, label, key_hash bytea unique, capabilities text[], ve
                   created_at, revoked_at null
 schema_migration  version int pk, name, checksum bytea, applied_at
 
-dastar_agent.session       id, venue_id, api_key_id, kind session_kind (reference | external),
-                           model null, prompt_hash null, started_at, last_seen_at
-dastar_agent.session_hold  session_id, reservation_id, confirm_token_enc bytea, created_at, pk (session_id, reservation_id)
-dastar_agent.turn          id, session_id, role, content jsonb, claims jsonb, guardrail_fired bool,
-                           judge_result jsonb null, at
-dastar_agent.tool_call     id, turn_id, tool, input jsonb, output jsonb, receipt jsonb, at
+dastar_agent.session       id uuid pk default uuidv7(), venue_id fk venue, api_key_id fk api_key,
+                           kind session_kind (reference | external), started_at, last_seen_at,
+                           call_count int not null default 0 check (>= 0), audit jsonb null, audited_at null
+                           unique (venue_id, id)
+dastar_agent.tool_call     id bigint identity pk, session_id, venue_id, turn_id bigint null (no foreign key),
+                           tool text, input jsonb, status int null, output jsonb null, receipt jsonb null,
+                           started_at, completed_at null
+                           fk (venue_id, session_id) -> session (venue_id, id) on delete cascade
+dastar_agent.turn          id bigint identity pk, session_id, venue_id, seq int check (>= 0),
+                           role (user | assistant), content text, claims jsonb null,
+                           guardrail_fired bool default false, judge_result jsonb null, at null
+                           unique (session_id, seq)
+                           fk (venue_id, session_id) -> session (venue_id, id) on delete cascade
 ```
+
+The reference agent adds `dastar_agent.session_hold (session_id, reservation_id, confirm_token_enc bytea, created_at, pk (session_id, reservation_id))` and the columns `model` and `prompt_hash` on `session`; the three tables above are what the audit of an external agent uses.
 
 Enums: `reservation_status` = held, confirmed, seated, completed, cancelled, expired. `assignment_kind` = unit, combo. `session_kind` = reference, external.
 
@@ -305,7 +317,8 @@ Indexes.
 - `api_key (key_hash)` unique.
 - `idempotency (purge_at)`.
 - `audit_log (entity_id, at)`.
-- `dastar_agent.turn (session_id, at)`.
+- `dastar_agent.tool_call (session_id, id)` for a session's calls in order, and the unique `(session_id, seq)` on `dastar_agent.turn` for its turns.
+- `dastar_agent.session (api_key_id)` for a key's sessions, and `dastar_agent.session (last_seen_at) WHERE kind = 'external'` for the purge of external sessions by the time they were last seen.
 
 Notes.
 - `reservation_unit.during` is the source of truth for the exclusion constraint. `reservation.during` is kept for queries; DA008 asserts equality.
@@ -323,8 +336,26 @@ Notes.
 - `webhook_endpoint.secret_enc` and `session_hold.confirm_token_enc` are encrypted at rest with a key from the environment.
 - `schedule.closes_next_day` expresses a service period that ends after midnight.
 - Capabilities: `read`, `hold`, `cancel`, `confirm`, `seat`, `admin`, `demo`. Agent keys get `read, hold, cancel`; the tool executor further restricts cancel to reservations created in the same session.
-- Retention: idempotency by `purge_at`; published outbox rows deleted after seven days; demo and external-audit transcripts after thirty days; audit_log is never deleted, which is why no guest data may enter it.
-- Any v1 call that carries a `Dastar-Session: <id>` header is recorded as a `tool_call` row with the route name as the tool and the receipt attached, so an external agent gets the same receipt log as the reference agent. The session must belong to the calling key.
+- Retention: idempotency by `purge_at`; published outbox rows deleted after seven days; external audit sessions thirty days after they were last seen, as below; demo transcripts after thirty days; audit_log is never deleted, which is why no guest data may enter it.
+
+Audit sessions.
+- A session belongs to one key and one venue. `call_count` is raised, under the session's row lock, by the statement that begins a call while it is below `MAX_SESSION_CALLS` (10,000), so the cap is exact under concurrent calls and `GET /v1/sessions/:id` reads `calls` without counting rows. A call is begun with its tool and input and completed once with its HTTP status, its stored output, and its receipt; a call never completed has no `completed_at`, and the audit counts it as an unknown outcome. `last_seen_at` is the time of the session's latest begun call, or of its opening.
+- The header rule. A call that carries `Dastar-Session: <id>` on one of the nine routes in section 9 is recorded as a `tool_call` row with the route's tool name, so an external agent gets the same receipt log as the reference agent. A call without the header runs the route and nothing else. With it, in this order: validation and the route's capability check come first, and a refusal by either is not recorded; no bearer key is 400 `validation`, `Dastar-Session needs a bearer key` (a confirm by token alone cannot be recorded); a session that is not the key's, does not exist, or is not live is 404 `not_found`, `no such session`; the call's venue, from the path or from the reservation the path names, must be the session's, else 422 `session_venue_mismatch`; a session that has recorded `MAX_SESSION_CALLS` calls refuses the next with 422 `session_full`. A reservation that is absent or outside the key's venues is recorded in the session's venue, and the route answers its own 404. The route then runs, and its completion is awaited before the response is returned; if recording the completion fails, the response is unchanged and the call stays pending.
+- Recorded fields. A call stores only these, ids lowercased and absent fields left out:
+
+| Tool | Input stored | Output stored (a 2xx answer) | Receipt |
+|---|---|---|---|
+| `hold` | `party_size`, `starts_at`, `duration_minutes`, `assignment` {`kind`, `id`}, `idempotency_key` | `hold_expires_at`, `replayed` | the answer's receipt |
+| `list_holds` | none | `holds`: for each, `id`, `starts_at`, `party_size`, `hold_expires_at` | none |
+| `search_availability` | `party_size`, `from`, `to` | `slots` (the count), `truncated` | none |
+| `get_reservation` | `reservation_id` | `id`, `status`, `starts_at`, `party_size`, `hold_expires_at`, `version` | none |
+| `cancel`, `seat`, `complete`, `confirm` | `reservation_id`, `expected_version` | none | the answer's receipt |
+| `confirm_token` | `reservation_id`, `expected_version` | `version` | none |
+
+A receipt keeps `reservation_id`, `status`, `version`, `audit_id`, and `trace_id`. An answer that is not 2xx keeps its problem's `code` as the output and no receipt. Never stored: the key, a confirm token, `external_ref`, a cancel reason, or a problem's detail.
+
+- A receipt is verified, when the audit reads the session, if the venue's `audit_log` holds the row the receipt names: that `audit_id`, for that reservation, with the receipt's status, version, and trace id. A receipt that is not an object, lacks a field, or carries a value of the wrong type is unverified, never an error.
+- Liveness and retention. `dastar_agent.session_live(kind, last_seen_at)` is the one rule: a reference session is always live, and an external session is live while it was last seen less than 30 days (720 hours) ago. The session lookup, the statement that begins a call, the audit write, and every session read refuse a session that is not live, so every session route answers 404 for it at once. The worker's retention job purges an external session, with its calls, turns, and audit, from 10 minutes after it stops being live: a transaction that began just before the line may still touch the session, and the margin keeps the purge from meeting it. It deletes in bounded batches, calls first, then turns, then the sessions that have none left, oldest first, repeated while a batch comes back full.
 
 ### 6.1 Roles and session settings
 
@@ -332,8 +363,8 @@ Notes.
 -- dastar_owner:    owns schema, tables, and functions; used only by the migration runner.
 -- dastar_app:      USAGE on schemas, EXECUTE on the helper functions and the two venue lookups, and the table and column grants below.
 --                  No ownership, no DELETE anywhere, no TRUNCATE, no DDL. Subject to row-level security (M2).
--- dastar_worker:   dastar_app's grants plus UPDATE on outbox, DELETE on idempotency, outbox, and
---                  dastar_agent tables for retention, and BYPASSRLS. Used only by the worker container.
+-- dastar_worker:   dastar_app's grants plus UPDATE on outbox, DELETE on idempotency and outbox for retention, and
+--                  SELECT and DELETE on the three dastar_agent tables, and BYPASSRLS. Used only by the worker container.
 -- dastar_readonly: SELECT only.
 ALTER ROLE dastar_app SET statement_timeout = '10s';
 ALTER ROLE dastar_app SET idle_in_transaction_session_timeout = '30s';
@@ -353,7 +384,11 @@ Grants for `dastar_app`:
 | audit_log | SELECT only. The audit trigger is the only writer |
 | outbox | SELECT, INSERT |
 | schema_migration | SELECT |
-| dastar_agent.* | SELECT, INSERT, UPDATE (session.last_seen_at, turn.judge_result) |
+| dastar_agent.session | SELECT, INSERT, UPDATE (last_seen_at, call_count, audit, audited_at). `api_key_id`, `venue_id`, and `kind` never change; no DELETE |
+| dastar_agent.tool_call | SELECT, INSERT, UPDATE (status, output, receipt, completed_at). `tool` and `input` never change; no DELETE |
+| dastar_agent.turn | SELECT, INSERT, DELETE. A new post of a transcript replaces a session's turns; no UPDATE |
+
+`dastar_app` also has USAGE on the `dastar_agent` identity sequences and EXECUTE on `dastar_agent.session_live` and `dastar_agent.session_venue`; `dastar_worker` has EXECUTE on `session_live`; `dastar_readonly` has SELECT on the three tables through a read-only policy. The three tables carry the venue policy below, one migration each, so a transaction bound to one venue reads and writes only that venue's sessions, calls, and turns. `session_venue(session_id, api_key_id)` is an owner-run lookup that returns the venue of a live session the key owns, for a caller that holds only the session's id.
 
 The three triggers that write rows other than the one being written, the audit insert, the unit-row flip, and the venue config-version bump, are `SECURITY DEFINER` functions owned by `dastar_owner` with a fixed `search_path`. From M2 the four triggers that read other rows to enforce an invariant (the fit check, the capacity guard, the unit-row insert guard, and the membership check) run the same way, so row-level security never changes what they see (ADR 6). A BEFORE trigger that edits the row being written, such as the version bump or the transition trigger clearing `confirm_token_hash`, is not in this class and runs with the caller's rights. Schema USAGE is granted in the same migration that defines the functions it makes callable (0003); table and column grants follow in 0005. That is what lets the app role be denied the privileges those triggers need. A BEFORE trigger may set `NEW.version` regardless of the caller's column grants, and the audit and sync triggers run as owner, which also means row-level security does not apply to them.
 
@@ -363,7 +398,7 @@ Boundary A, adversarial. Invariants 1, 2, 4, 5, 7, 8, 9 and the supporting guard
 
 Boundary B, declared context. `dastar.actor`, `dastar.trace_id`, and `dastar.venue_id` are declarations by the caller. The database enforces that they are present (DA007) and that a transaction is internally consistent with its declared venue (row-level security, invariant 10). It cannot verify that the declaration is true, because custom settings are user-settable and the app role can address every venue. What authenticates the declaration is the API key check in the API process, or the host application in embedded mode. Invariant 3 also sits here: the actor in the idempotency key is whatever the caller declared. CORRECTNESS.md states this plainly rather than implying the database authenticates tenants.
 
-Row-level security, M2, boundary B. Every venue-scoped table gets `ENABLE ROW LEVEL SECURITY` and one policy for `dastar_app` of the form (on `venue` the column is `id`) `USING (venue_id = nullif(current_setting('dastar.venue_id', true), '')::uuid) WITH CHECK (same)`; the `nullif` turns the empty string a finished transaction-local setting leaves behind into no venue. It contains a bug that mixes venues inside one transaction, and it fails closed when the context is missing; it does not stop a caller that declares the wrong venue on purpose. `api_key` and `schema_migration` are not venue-scoped and carry no policy; key lookup happens before the venue is known. A route addressed by a reservation id finds the reservation's venue through an owner-run lookup, checks it against the key's scope, and then binds it (ADR 6). Foreign-key checks run as the table owner and are unaffected. The exclusion constraint checks the whole table regardless of policy, which is correct because a unit belongs to exactly one venue.
+Row-level security, M2, boundary B. Every venue-scoped table gets `ENABLE ROW LEVEL SECURITY` and one policy for `dastar_app` of the form (on `venue` the column is `id`) `USING (venue_id = nullif(current_setting('dastar.venue_id', true), '')::uuid) WITH CHECK (same)`; the `nullif` turns the empty string a finished transaction-local setting leaves behind into no venue. It contains a bug that mixes venues inside one transaction, and it fails closed when the context is missing; it does not stop a caller that declares the wrong venue on purpose. `api_key` and `schema_migration` are not venue-scoped and carry no policy; key lookup happens before the venue is known. A route addressed by a reservation id finds the reservation's venue through an owner-run lookup, checks it against the key's scope, and then binds it (ADR 6); a route addressed by a session id does the same through `dastar_agent.session_venue`, which also requires that the key owns the session and that it is live. Foreign-key checks run as the table owner and are unaffected. The exclusion constraint checks the whole table regardless of policy, which is correct because a unit belongs to exactly one venue.
 
 ### 6.2 Clock
 
@@ -531,26 +566,33 @@ receipt: { reservation_id, status, version, audit_id, trace_id }
 | POST | /v1/reservations/:id/confirm-token | confirm | M1 | Mints a single-use confirm token for a human channel such as a UI button or a link; replaces any previous token; the caller, not the agent, decides who receives it |
 | POST | /v1/reservations/:id/confirm | confirm or token | M1 | Body: confirm_token?, expected_version? |
 | POST | /v1/reservations/:id/cancel | cancel | M1 | Body: reason, expected_version? |
-| GET | /v1/reservations/:id | read | M1 | Returns `status` as effective status by database time (D43), `stored_status`, `hold_expires_at`, `version`, and history from audit_log |
+| GET | /v1/reservations/:id | read | M1 | Returns `status` as effective status by database time (D43), `stored_status`, `starts_at` (the start of the range), `hold_expires_at`, `version`, and history from audit_log |
 | GET | /health/live, /health/ready | none | M1 | Ready means database reachable and migrations applied |
 | GET | /openapi.json | none | M1 | The committed document, `apps/api/openapi.json` |
 | GET | /docs | none | M2 | Swagger UI over /openapi.json, served from the installed package under a same-origin content security policy |
 | POST | /v1/reservations/:id/seat, /complete | seat | M2 | |
 | POST | /v1/venues/:id/availability | read | M2 | Body: party_size, from, to, limit?. Each slot carries the exact `{starts_at, duration_minutes, assignment}` to pass to hold; `truncated` says the list was cut short |
 | GET | /v1/venues/:id/floor-plan | read | M2 | Units with current occupancy |
-| GET | /v1/venues/:id/holds | read | M2 | Live holds belonging to the calling actor, so a client can find and release holds it lost track of |
+| GET | /v1/venues/:id/holds | read | M2 | Live holds belonging to the calling actor, so a client can find and release holds it lost track of; each carries `starts_at` beside `during` |
 | GET, POST, PATCH | /admin/venues/:id/{units,combos,schedules,blackouts} | admin | M2 | Reject-or-force on stranded bookings (D49): a refusal is 409 or 422 with the stranded ids, a forced change returns the cancelled ids. Combination members and capacities are fixed (D34). Webhooks in M4 |
 | GET, POST | /admin/venues/:id/keys, /admin/venues/:id/keys/:keyId/revoke | admin | M2 | Keys scoped to exactly the venue, with any of the six capabilities; the secret is returned once at creation; revoking is idempotent. Keys of several venues or all venues stay with the host (the CLI) |
 | POST | /admin/outbox/:id/replay | admin | M4 | Dead-letter replay |
 | POST | /demo/race | demo | M5 | Body: n <= 100. Advisory lock per venue |
 | POST | /demo/chat | demo | M3 | Agent turn |
-| POST | /v1/sessions | read | M3 | Creates an audit session bound to the key and venue; returns the id. Later calls carrying `Dastar-Session: <id>` record their receipts under it |
-| POST | /v1/sessions/:id/audit | read | M3 | Body: the agent's user-facing transcript, optionally with structured claims per turn. Returns the audit: claims, backed, unbacked with quotes and the receipts that were available |
-| GET | /v1/sessions/:id/audit | read | M3 | Last audit result, including async judge output when it lands |
+| POST | /v1/sessions | read | M3 | Body: venue_id. Opens an external audit session bound to the calling key and the venue; 201 with `id`, `venue_id`, `kind`, `started_at`. Later calls carrying `Dastar-Session: <id>` record their receipts under it. 403 `forbidden`, `a key that can confirm or administer cannot open an audit session`; 404 for a venue outside the key's venues or one that does not exist |
+| GET | /v1/sessions/:id | read | M3 | The key's own session: `id`, `venue_id`, `kind`, `started_at`, `last_seen_at`, `calls`, `audited_at` (null before the first audit). 404 `not_found`, `no such session`, for another key's session, one that does not exist, and an external one not seen for 30 days |
+| POST | /v1/sessions/:id/audit | read | M3 | Body: `turns`, 1 to 500, each `role` (`user` or `assistant`), `text` (1 to 20000 characters), `at` (an instant with an offset) on every turn or on none, and on an assistant turn at most 50 `claims`. A claim is `reservation_id`, `status` (one of the six), and optionally `starts_at` (with an offset), `party_size` (1 to 999), `quote` (1 to 500 characters). At most 1000 distinct reservations in all. Text and quotes are scrubbed, the turns replace any earlier post's, and the matcher runs. 200 with the audit; 400 `validation` for a transcript that breaks a rule, and nothing is stored; 404 `no such session` |
+| GET | /v1/sessions/:id/audit | read | M3 | The latest audit, as the post returned it. 404 `not_found`, `the session has no audit yet`, before the first post; 404 `no such session` otherwise as above |
+
+The audit result, for each claim: its `turn` (the 0-based position of the turn in the posted transcript), the `claim`, `verdict` (`backed` or `unbacked`), a `reason` when unbacked (`no_observation`, `observed_later`, `status_mismatch`, `starts_at_mismatch`, `party_size_mismatch`), the `observed` state it was read against, the reservation's `receipts` up to the claim (the latest 10, with `receipts_omitted` counting the earlier ones), `current_status`, and `current_differs`. Beside the results: `session_id`, `audited_at`, `mode` (`timed` or `coarse`), `claims` {`total`, `backed`, `unbacked`}, `receipts` {`recorded`, `verified`, `unverified`}, `unknown_outcomes`, `confirmations`, and `undeclared`, which reads `not checked`. There is no judge output: statements an agent made without declaring them as claims are not audited.
+
+The `Dastar-Session` header is declared on exactly nine routes: `POST` and `GET /v1/venues/:id/holds`, `POST /v1/venues/:id/availability`, `GET /v1/reservations/:id`, and `POST /v1/reservations/:id/{cancel,seat,complete,confirm-token,confirm}`. It must be a uuid. Its refusals, after the route's own validation and capability checks: 400 `validation`, `Dastar-Session needs a bearer key`; 404 `not_found`, `no such session`; 422 `session_venue_mismatch`, `the call's venue is not the session's`; 422 `session_full`, `the session has recorded 10000 calls, its limit`. Section 6 gives the order and what is recorded.
+
+Request bodies are limited to 64 KB and a larger one is refused as 400 `validation`. The audit post alone takes up to 1 MiB; it checks the key first, so a request without a valid key is refused with 401 before its body is read.
 
 Hold is deliberately dumb: it receives an explicit assignment and range and lets the constraint decide. Availability is smart and stateless and may be stale; the constraint is the judge. Outside-schedule bookings are a policy check in the API, not an invariant, because walk-ins and manual bookings are legitimate: the reference API's hold refuses a range that no service period of the venue contains, when the venue has any (`outside_schedule`), after the idempotency claim and without storing the refusal; a hold through the engine is checked only when its caller asks. The live-holds-per-actor cap is likewise a policy check, not an invariant.
 
-HTTP mapping: hold_conflict, hold_expired, invalid_transition, version_conflict, serialization_conflict, blackout 409; idempotency_mismatch, party_does_not_fit, window_too_large, outside_schedule 422; validation 400; unauthorized 401; forbidden 403; not_found 404; rate_limited 429 with Retry-After; database unavailable 503 with Retry-After.
+HTTP mapping: hold_conflict, hold_expired, invalid_transition, version_conflict, serialization_conflict, blackout 409; idempotency_mismatch, party_does_not_fit, window_too_large, outside_schedule, session_venue_mismatch, session_full 422; validation 400; unauthorized 401; forbidden 403; not_found 404; rate_limited 429 with Retry-After; database unavailable 503 with Retry-After.
 
 ---
 
@@ -602,11 +644,11 @@ Publisher every 1s: claim up to 50 unpublished due outbox rows `FOR UPDATE SKIP 
 
 ### 10.7 Bring-your-own-agent audit
 
-1. The builder's agent, or the builder's harness, calls `POST /v1/sessions` with a hold-only key and gets a session id.
-2. Every subsequent v1 call from that agent carries `Dastar-Session: <id>`. The API records each call and its receipt as a `tool_call` row under the session. The agent otherwise behaves exactly as any API client; no SDK is involved.
-3. When the conversation ends, the builder posts the user-facing transcript to `POST /v1/sessions/:id/audit`. Each turn carries a timestamp, and may include structured `claims` in the same shape the reference agent uses. With claims, the deterministic matcher runs immediately, matching each claim against the latest recorded state of that reservation as of the turn's timestamp. Without claims, the async judge extracts them, and the response says so and carries the judge's published precision and recall. Without timestamps, claims are matched against end-of-session state, and the audit is labeled coarse. The verdict for an external session is "supported by the latest session observation as of the builder-supplied timestamp", not "true": a cancellation by an operator or an expiry that produced no call is invisible to the session log, so the response also reports each claimed reservation's current effective status at audit time and flags claims whose observation and current state disagree. The builder's agent cannot confirm anything: confirmation is the builder's host, holding a confirm key or minting a token for its own human channel, which is the property the audit is there to demonstrate.
-4. The response: total booking claims, claims backed by a receipt in this session, unbacked claims with the quoted text and the turn, and the list of receipts that existed at that point. Example: fourteen claims, eleven backed, three unbacked, here they are.
-5. Results are stored on the session, retained thirty days, and count toward the same public dashboard as the reference agent, labeled external. Posted transcripts are the builder's data, live only in `dastar_agent`, and are deleted with the session; the intake asks builders to redact guest details before posting, because the engine schema's no-guest-data rule cannot be enforced on free text. The intake also runs the pattern scrubber from section 13 before storing anything.
+1. The builder's agent, or the builder's harness, calls `POST /v1/sessions` with a key that can read, hold, and cancel, and gets a session id. A key that can confirm or administer is refused with 403, so the audited agent's key cannot confirm.
+2. Every subsequent v1 call from that agent to one of the nine routes carries `Dastar-Session: <id>`. The API records each call and its receipt as a `tool_call` row under the session. The agent otherwise behaves exactly as any API client; no SDK is involved. A call without the header is not recorded.
+3. When the conversation ends, the builder posts the user-facing transcript to `POST /v1/sessions/:id/audit`. Each turn has a role and text, and a timestamp `at` on every turn or on none. An assistant turn carries the structured `claims` the agent declares, in the same shape the reference agent uses: `reservation_id`, `status`, and optionally `starts_at`, `party_size`, and the `quote` the claim rests on. The intake scrubs the text and the quotes (section 13), stores the turns in place of any earlier post's, reads the session's calls and the claimed reservations' current effective statuses in one snapshot, and runs the deterministic matcher. The matcher matches each claim against the latest state the session's calls showed for that reservation as of the turn's timestamp: on status first, where a hold past its expiry reads `expired`, then on the claimed start time, then on the party size. A claim with no observation at all, or only one made after the turn, is unbacked. Claims are what is audited: there is no judge yet, so a statement the agent made without declaring it as a claim is not checked, and the result says `undeclared: "not checked"`. Without timestamps, each claim is matched against the state as of the session's last completed call, and the audit is labeled `coarse`; with them it is `timed`. The verdict for an external session is "supported by the latest session observation as of the builder-supplied timestamp", not "true": a cancellation by an operator or an expiry that produced no call is invisible to the session log, so the response also reports each claimed reservation's current effective status at audit time and flags claims whose observation and current state disagree. The builder's agent cannot confirm anything with its key: confirmation is the builder's host, holding a confirm key or minting a token for its own human channel, which is the property the audit is there to demonstrate. A token given to the agent still confirms, through the confirm route with the agent's key and the header, and the response counts such confirms in `confirmations`.
+4. The response: total claims, claims backed by an observation in this session, and unbacked claims with the reason, the quoted text, and the turn. For each claim it carries the observation it was read against, the reservation's receipts up to that point (the latest 10 and a count of the earlier ones), the reservation's current status, and whether that differs. For the session it carries how many receipts its calls returned and how many the audit log bears out, the receipts that it does not, the calls that never completed, and the confirms made in the session. Example: fourteen claims, eleven backed, three unbacked, here they are.
+5. The result is stored on the session, with the turns. An external session is retained until thirty days after it was last seen, then purged with everything under it (section 6). Posted transcripts are the builder's data, live only in `dastar_agent`, and are deleted with the session; the intake asks builders to redact guest details before posting, because the engine schema's no-guest-data rule cannot be enforced on free text, and the scrubber does not detect names.
 
 ### 10.8 Demo race
 
@@ -672,9 +714,9 @@ Each returned slot carries the exact `{ starts_at, duration_minutes, assignment 
 - Prompt files in the repo with a hash on every span. A prompt change without a passing eval does not merge.
 - Evals: golden conversation set in YAML with expected outcomes; cassettes record provider responses for deterministic PR runs; nightly live run under a spend cap; a basic prompt-injection set covering guest text, unit labels, and cancel reasons; hand-labeled turns for judge accuracy. The report writes `AUDIT.md` with conversations, claims, unbacked claims, guardrail firings and fallbacks, judge precision and recall, per model. Budget: at most two provider calls per turn in the request path.
 - Parser: free text to `{ party_size, window, preferences }`, the only LLM step in availability.
-- MCP server `@dastar/mcp`: stdio, the same four tools mirrored one to one, configured with a base URL, a key, and one venue. It checks the key before serving and refuses one that can confirm or administer, so it is hold-only with nothing to switch off. A session's memory of its hold requests' idempotency keys and of the reservations it created lasts as long as its process. In 2026 this is how agent builders find and try a backend, so it ships in M3 alongside the audit endpoint, not after it.
+- MCP server `@dastar/mcp`: stdio, the same four tools mirrored one to one, configured with a base URL, a key, and one venue. It checks the key before serving and refuses one that can confirm or administer, so it is hold-only with nothing to switch off. A session's memory of its hold requests' idempotency keys and of the reservations it created lasts as long as its process. With the optional `DASTAR_SESSION_ID` set, its tool calls are recorded in that audit session (section 10.7). In 2026 this is how agent builders find and try a backend, so it ships in M3 alongside the audit endpoint, not after it.
 - Bring-your-own-agent audit: sessions, the session header, and the audit endpoint from section 10.7. The auditor code is the same one that audits the reference agent; the only new code is the session routes and the transcript intake.
-- Transcript scrubbing: before any turn is stored, reference or external, a pattern pass masks email addresses, phone numbers in common formats, and digit runs of eight or more. Names are not detected and the docs say so. The scrubber runs before the auditor, and claim matching is unaffected because claims carry reservation ids, statuses, and times.
+- Transcript scrubbing: before any turn is stored, a pattern pass masks email addresses as `[email]` and digit groups, which are digits joined by single spaces or marks, as `[phone]` when they hold 7 to 15 digits and `[number]` when they hold 16 or more; a shorter run stays. Uuids, ISO dates and date-times, and times of day are kept. Names are not detected, a number in words stays, and a date written with slashes or dots reads `[phone]`; the docs say so. The scrubber runs before the auditor, and claim matching is unaffected because claims carry reservation ids, statuses, and times. The external intake runs it on every turn's text and every claim's quote; the reference agent's turns will pass through it too.
 
 ---
 
