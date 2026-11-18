@@ -72,7 +72,7 @@ create index session_external_last_seen on dastar_agent.session (last_seen_at) w
 
 -- The application starts and completes calls, touches and audits its sessions, and replaces a session's turns on a new
 -- post; it never rewrites a session's key, venue, or kind, a call's tool or input, or a turn, and deletes no session or
--- call. The worker deletes expired sessions (their calls and turns go with them) and changes nothing.
+-- call. The worker deletes expired sessions with their calls and turns, and updates nothing.
 grant select, insert on dastar_agent.session, dastar_agent.tool_call, dastar_agent.turn to dastar_app;
 grant update (last_seen_at, call_count, audit, audited_at) on dastar_agent.session to dastar_app;
 grant update (status, output, receipt, completed_at) on dastar_agent.tool_call to dastar_app;
@@ -83,7 +83,7 @@ grant usage on all sequences in schema dastar_agent to dastar_app;
 
 -- Whether a session still exists for the API: a reference session always, an external one while it was last seen less
 -- than 30 days (720 hours, not a calendar interval, so a change of daylight time does not move the edge) before now. The worker's
--- purge only reclaims the rows of sessions this says are gone. EXTERNAL_SESSION_RETENTION_DAYS, in the API's code, must equal it.
+-- purge only reclaims the rows of sessions this says are gone. EXTERNAL_SESSION_RETENTION_DAYS, in @dastar/db's retention command, must equal it.
 create function dastar_agent.session_live(p_kind dastar_agent.session_kind, p_last_seen_at timestamptz) returns boolean
 language sql stable as $$
   select p_kind = 'reference' or p_last_seen_at > dastar.dastar_now() - make_interval(hours => 30 * 24)

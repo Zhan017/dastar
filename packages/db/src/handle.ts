@@ -91,9 +91,11 @@ export interface DastarAdmin {
 }
 
 /**
- * What a session of an agent did: its calls, and the audit of what it said against what those calls observed. Every
- * method binds the venue it is given, and a session of another venue, one that is gone, and one no longer live
- * (an external session last seen more than 30 days ago) read as absent.
+ * What a session of an agent did: its calls, and the audit of what it said against what those calls observed.
+ * `sessionVenue` finds a session's venue from its id and its key; every other method binds the venue it is given. A
+ * session of another venue, one that is gone, and one no longer live (an external session last seen more than 30 days
+ * ago) read as absent, except to `auditInputs` and `completeCall`, which the API runs only after `sessionVenue` or
+ * `beginCall` has found the session live.
  */
 export interface DastarSessions {
   /** A new external session for the key in the venue; `not_found` when the venue does not exist. */
@@ -137,8 +139,8 @@ export interface Dastar {
   /**
    * One retention batch, `limit` rows at most from each table (default 500): idempotency rows past their purge time,
    * outbox rows published more than seven days ago, and the calls and turns of external sessions, then those sessions
-   * once nothing of them is left; an external session is purged 10 minutes after it stops being live (thirty days after
-   * it was last seen). Needs the worker role, like `expireDue`.
+   * once nothing of them is left; an external session stops being live thirty days after it was last seen and is purged
+   * 10 minutes later. Needs the worker role, like `expireDue`.
    */
   purgeRetained(opts?: { limit?: number }): Promise<RetentionBatch>;
   admin: DastarAdmin;

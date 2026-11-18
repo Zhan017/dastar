@@ -247,6 +247,14 @@ describe("transcript intake and the audit", () => {
     expect(hold.status).toBe(400);
     expect(await json(hold)).toMatchObject({ code: "validation", detail: TOO_LARGE });
 
+    const sessions = async (): Promise<number> =>
+      (await owner.query("select count(*)::int as n from dastar_agent.session")).rows[0].n as number;
+    const before = await sessions();
+    const opened = await send("POST", "/v1/sessions", { key: agent, body: { venue_id: A.venue, pad: "x".repeat(70_000) } });
+    expect(opened.status).toBe(400);
+    expect(await json(opened)).toMatchObject({ code: "validation", detail: TOO_LARGE });
+    expect(await sessions()).toBe(before);
+
     // the key is checked before the body is read, so a large post without one is refused for that
     const keyless = await postRaw(S, JSON.stringify({ turns: [{ role: "user", text: "x".repeat(70_000) }] }), null);
     expect(keyless.status).toBe(401);

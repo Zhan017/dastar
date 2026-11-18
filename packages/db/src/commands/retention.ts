@@ -45,13 +45,13 @@ export const PURGE_SESSION_TURNS_SQL = `with due as (
           limit $1)
        delete from dastar_agent.turn t using due where t.id = due.id`;
 
-// A due session with no call and no turn left, so the two statements before it must have run in the same transaction.
+// Reads the same window as the two statements before it, the oldest `limit` due sessions, and deletes those of them
+// with no call and no turn left, so the two statements before it must have run first in the same transaction.
 export const PURGE_SESSIONS_SQL = `with due as (
-         select s.id from dastar_agent.session s
-          where ${DUE_EXTERNAL_SESSION}
-            and not exists (select 1 from dastar_agent.tool_call c where c.session_id = s.id)
-            and not exists (select 1 from dastar_agent.turn t where t.session_id = s.id)
-          order by s.last_seen_at limit $1)
+         select ds.id
+           from (select s.id from dastar_agent.session s where ${DUE_EXTERNAL_SESSION} order by s.last_seen_at limit $1) ds
+          where not exists (select 1 from dastar_agent.tool_call c where c.session_id = ds.id)
+            and not exists (select 1 from dastar_agent.turn t where t.session_id = ds.id))
        delete from dastar_agent.session s using due where s.id = due.id`;
 
 /** The rows one retention batch deleted from each table. */

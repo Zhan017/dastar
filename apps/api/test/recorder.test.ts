@@ -251,6 +251,25 @@ describe("the recorder on the v1 routes", () => {
     ]);
   });
 
+  it("a reservation outside the key's venues is recorded in the session's venue as the 404 it answers, the same 404 as one that does not exist", async () => {
+    const S = await openSession(agent, A.venue);
+    const inB = await heldBy(wide, B);
+    const got = await send("GET", `/v1/reservations/${inB}`, { key: agent, session: S });
+    expect(got.status).toBe(404);
+    const gotBody = await json<{ detail: string }>(got);
+    expect(gotBody).toMatchObject({ code: "not_found" });
+    const missing = await send("GET", `/v1/reservations/${NIL}`, { key: agent });
+    expect(missing.status).toBe(404);
+    expect(gotBody.detail).toBe((await json<{ detail: string }>(missing)).detail);
+    const c = await send("POST", `/v1/reservations/${inB}/cancel`, { key: agent, session: S, body: { reason: "x" } });
+    expect(c.status).toBe(404);
+    expect(await reservationStatus(inB, wide)).toBe("held");
+    expect(await rows(S)).toEqual([
+      { tool: "get_reservation", input: { reservation_id: inB }, status: 404, output: { code: "not_found" }, receipt: null },
+      { tool: "cancel", input: { reservation_id: inB }, status: 404, output: { code: "not_found" }, receipt: null },
+    ]);
+  });
+
   it("a full session is 422 session_full before the command", async () => {
     const S = await openSession(agent, A.venue);
     await owner.query("update dastar_agent.session set call_count = 10000 where id = $1", [S]);

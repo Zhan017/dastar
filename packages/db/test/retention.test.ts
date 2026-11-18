@@ -253,6 +253,19 @@ describe("retention", () => {
       expect(await sessionIds()).toEqual([]);
     });
 
+    it("a batch reads only the oldest limit due sessions, so an empty one behind a busy one waits its turn", async () => {
+      const oldest = await session("external", 33 * DAY, 5, 0);
+      await session("external", 32 * DAY, 0, 0);
+      const newest = await session("external", 31 * DAY, 0, 0);
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 0, sessions: 1, calls: 2, turns: 0 });
+      expect(await sessionIds()).toEqual([oldest, newest]);
+      expect(await rowsOf(oldest)).toEqual({ calls: 3, turns: 0 });
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 0, sessions: 1, calls: 2, turns: 0 });
+      expect(await sessionIds()).toEqual([oldest]);
+      expect(await purgeRetained(worker, { limit: 2 })).toEqual({ idempotency: 0, outbox: 0, sessions: 1, calls: 1, turns: 0 });
+      expect(await sessionIds()).toEqual([]);
+    });
+
     it("keeps a session for 10 minutes after it is no longer live", async () => {
       const id = await session("external", 30 * DAY + 5 * 60_000, 1, 1);
       const live = await owner.query(
