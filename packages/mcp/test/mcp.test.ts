@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool, type Client as PgClient } from "pg";
 import { Client } from "@modelcontextprotocol/client";
@@ -32,10 +33,11 @@ describe("dastar-mcp, the built server over stdio", () => {
   let conn: Conn; let owner: PgClient; let seed: Seed; let other: Seed; let pool: Pool;
   let api: Awaited<ReturnType<typeof listen>>;
   const keys: Record<"agent" | "confirm" | "admin" | "revoked", { id: string; key: string }> = {} as never;
-  const env = (key: string, venue = seed.venue): Record<string, string> => ({ DASTAR_URL: api.url, DASTAR_KEY: key, DASTAR_VENUE_ID: venue });
-  const connectWith = async (key: string): Promise<Client> => {
+  const env = (key: string, venue = seed.venue, extra: Record<string, string> = {}): Record<string, string> =>
+    ({ DASTAR_URL: api.url, DASTAR_KEY: key, DASTAR_VENUE_ID: venue, ...extra });
+  const connectWith = async (key: string, extra: Record<string, string> = {}): Promise<Client> => {
     const client = new Client({ name: "dastar-mcp-test", version: "0.0.0" });
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [BUNDLE], env: env(key), stderr: "pipe" }));
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [BUNDLE], env: env(key, seed.venue, extra), stderr: "pipe" }));
     return client;
   };
 
@@ -135,6 +137,41 @@ describe("dastar-mcp, the built server over stdio", () => {
       expect(run.stderr.trimEnd(), name).toMatch(line);
       if (e.DASTAR_KEY !== undefined) expect(run.stderr, name).not.toContain(e.DASTAR_KEY);
     }
+  });
+
+  it("records the tools' calls under DASTAR_SESSION_ID, and not the start-up checks", async () => {
+    const agent = createDastarClient({ baseUrl: api.url, key: keys.agent.key });
+    const opened = await agent.POST("/v1/sessions", { body: { venue_id: seed.venue } });
+    if (opened.data === undefined) throw new Error(`could not open a session: HTTP ${opened.response.status}`);
+    const sessionId = opened.data.id;
+    const client = await connectWith(keys.agent.key, { DASTAR_SESSION_ID: sessionId });
+    let heldId = "";
+    try {
+      const found = await client.callTool({ name: "search_availability", arguments: { party_size: 2, from: "2064-01-07T00:00:00Z", to: "2064-01-08T00:00:00Z", limit: 5 } });
+      expect(found.isError).toBeFalsy();
+      const slot = (found.structuredContent as { slots: Slot[] }).slots[0]!;
+      const held = await client.callTool({ name: "hold", arguments: { party_size: 2, starts_at: slot.starts_at, duration_minutes: slot.duration_minutes, assignment: slot.assignment } });
+      expect(held.isError).toBeFalsy();
+      heldId = (held.structuredContent as Held).receipt.reservation_id;
+    } finally {
+      await client.close();
+    }
+    // the start-up checks ran before the tools did, and they are not among the calls
+    const session = await agent.GET("/v1/sessions/{id}", { params: { path: { id: sessionId } } });
+    expect(session.data).toMatchObject({ id: sessionId, venue_id: seed.venue, kind: "external", calls: 2 });
+    const tools = await owner.query("select tool from dastar_agent.tool_call where session_id = $1 order by id", [sessionId]);
+    expect(tools.rows.map((row: { tool: string }) => row.tool)).toEqual(["search_availability", "hold"]);
+    // released without the session header, so it is not recorded either
+    const cancelled = await agent.POST("/v1/reservations/{id}/cancel", { params: { path: { id: heldId } }, body: { reason: "test cleanup" } });
+    expect(cancelled.error).toBeUndefined();
+  });
+
+  it("refuses a session that is not the key's, with one line", async () => {
+    const id = randomUUID();
+    const run = await runBundle(env(keys.agent.key, seed.venue, { DASTAR_SESSION_ID: id }));
+    expect(run.code).toBe(1);
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toBe(`dastar-mcp: session ${id} is not one of the key's sessions for venue ${seed.venue}\n`);
   });
 
   it("is one file that inlines the workspace packages and loads the SDK and openapi-fetch from its dependencies", () => {

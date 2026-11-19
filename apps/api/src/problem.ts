@@ -2,7 +2,7 @@ import { HTTPException } from "hono/http-exception";
 import { DastarError, type DastarErrorCode } from "@dastar/db";
 
 export type ProblemStatus = 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 503;
-export type ApiCode = DastarErrorCode | "validation" | "unauthorized" | "not_ready";
+export type ApiCode = DastarErrorCode | "validation" | "unauthorized" | "not_ready" | "session_venue_mismatch" | "session_full";
 
 /** The only failure shape the API renders. Handlers throw it; `onError` turns it into Problem Details. */
 export class ApiProblem extends Error {
@@ -16,6 +16,11 @@ export class ApiProblem extends Error {
     super(detail ?? code);
     this.name = "ApiProblem";
   }
+}
+
+/** The one answer for a body past a route's size bound: the global limit and the audit route's own limit both throw it. */
+export function bodyTooLarge(): never {
+  throw new ApiProblem(400, "validation", "request body too large");
 }
 
 type Mapping = { status: ProblemStatus; retryAfter?: string };

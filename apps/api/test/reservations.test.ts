@@ -27,12 +27,15 @@ describe("reservation routes", () => {
   });
   afterAll(async () => { await api.close(); await owner.end(); await dropDatabase("api_reservations_test"); });
 
+  const startsAtOf = new Map<string, string>();
   async function held(): Promise<string> {
     n += 1;
     const start = new Date(Date.UTC(2046, 0, 1 + Math.floor(n / 8), 8 + (n % 8)));
     const r = await api.app.request(`/v1/venues/${seed.venue}/holds`, jsonInit("POST", { party_size: 2, starts_at: start.toISOString(), duration_minutes: 60, assignment: { kind: "unit", id: seed.units[0] } }, { ...bearer(agent.key), "idempotency-key": `r${n}` }));
     expect(r.status).toBe(201);
-    return (await r.json() as { receipt: { reservation_id: string } }).receipt.reservation_id;
+    const id = (await r.json() as { receipt: { reservation_id: string } }).receipt.reservation_id;
+    startsAtOf.set(id, start.toISOString());
+    return id;
   }
   const get = (id: string, key: Key) => api.app.request(`/v1/reservations/${id}`, { headers: bearer(key.key) });
   const post = (id: string, action: string, body: unknown, headers: Record<string, string>) => api.app.request(`/v1/reservations/${id}/${action}`, jsonInit("POST", body, headers));
@@ -47,8 +50,9 @@ describe("reservation routes", () => {
     const id = await held();
     const r = await get(id, agent);
     expect(r.status).toBe(200);
-    const view = await r.json() as { id: string; venue_id: string; status: string; stored_status: string; version: number; party_size: number; assignment: { kind: string; id: string }; history: { action: string; actor: string; at: string }[] };
+    const view = await r.json() as { id: string; venue_id: string; status: string; stored_status: string; version: number; party_size: number; starts_at: string; assignment: { kind: string; id: string }; history: { action: string; actor: string; at: string }[] };
     expect(view).toMatchObject({ id, venue_id: seed.venue, status: "held", stored_status: "held", version: 1, party_size: 2, assignment: { kind: "unit", id: seed.units[0] } });
+    expect(view.starts_at).toBe(new Date(startsAtOf.get(id)!).toISOString());
     expect(view.history.length).toBeGreaterThanOrEqual(1);
     expect(view.history[0]!.actor).toBe(`key:${agent.id}`);
     expect((await get(id, elsewhere)).status).toBe(404);

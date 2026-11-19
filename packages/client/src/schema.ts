@@ -100,7 +100,10 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -207,6 +210,8 @@ export interface paths {
                 query?: never;
                 header: {
                     "idempotency-key": string;
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
                 };
                 path: {
                     id: string;
@@ -330,7 +335,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -451,7 +459,10 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -572,7 +583,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -695,7 +709,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -818,7 +835,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -941,7 +961,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -1064,7 +1087,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description The id of an audit session of the calling key. A call that carries it is recorded in that session; a call without it is not. Needs a bearer key. */
+                    "dastar-session"?: string;
+                };
                 path: {
                     id: string;
                 };
@@ -1083,6 +1109,472 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ReceiptResponse"];
+                    };
+                };
+                /** @description Validation failed */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Missing or unknown key */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not permitted */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found or outside the key's venues */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Unprocessable */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Too many live holds */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Internal error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Temporarily unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open an audit session for the calling key in a venue. Refused with 403 for a key that can confirm or administer. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SessionRequest"];
+                };
+            };
+            responses: {
+                /** @description The session, to send as the Dastar-Session header of the agent's tool calls */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionCreated"];
+                    };
+                };
+                /** @description Validation failed */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Missing or unknown key */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not permitted */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found or outside the key's venues */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Unprocessable */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Too many live holds */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Internal error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Temporarily unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read an audit session of the calling key. A session not seen for 30 days reads as absent. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The session */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Session"];
+                    };
+                };
+                /** @description Validation failed */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Missing or unknown key */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not permitted */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found or outside the key's venues */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Unprocessable */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Too many live holds */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Internal error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Temporarily unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the latest audit of a session of the calling key. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The latest audit */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Audit"];
+                    };
+                };
+                /** @description Validation failed */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Missing or unknown key */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not permitted */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found or outside the key's venues */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Unprocessable */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Too many live holds */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Internal error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Temporarily unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AuditRequest"];
+                };
+            };
+            responses: {
+                /** @description The audit of the transcript */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Audit"];
                     };
                 };
                 /** @description Validation failed */
@@ -2968,6 +3460,7 @@ export interface components {
             holds: {
                 id: string;
                 party_size: number;
+                starts_at: string;
                 during: string;
                 assignment: {
                     kind: string;
@@ -3004,6 +3497,7 @@ export interface components {
             status: string;
             stored_status: string;
             party_size: number;
+            starts_at: string;
             during: string;
             assignment: {
                 kind: string;
@@ -3038,6 +3532,99 @@ export interface components {
         ConfirmRequest: {
             confirm_token?: string;
             expected_version?: number;
+        };
+        SessionCreated: {
+            id: string;
+            venue_id: string;
+            /** @enum {string} */
+            kind: "reference" | "external";
+            started_at: string;
+        };
+        SessionRequest: {
+            /** Format: uuid */
+            venue_id: string;
+        };
+        Session: {
+            id: string;
+            venue_id: string;
+            /** @enum {string} */
+            kind: "reference" | "external";
+            started_at: string;
+            last_seen_at: string;
+            calls: number;
+            audited_at: string | null;
+        };
+        Audit: {
+            session_id: string;
+            audited_at: string;
+            /** @enum {string} */
+            mode: "timed" | "coarse";
+            claims: {
+                total: number;
+                backed: number;
+                unbacked: number;
+            };
+            results: components["schemas"]["AuditClaimResult"][];
+            receipts: {
+                recorded: number;
+                verified: number;
+                unverified: {
+                    call: number;
+                    receipt?: unknown;
+                }[];
+            };
+            unknown_outcomes: number;
+            confirmations: number;
+            /** @enum {string} */
+            undeclared: "not checked";
+        };
+        AuditClaimResult: {
+            turn: number;
+            claim: components["schemas"]["Claim"];
+            /** @enum {string} */
+            verdict: "backed" | "unbacked";
+            /** @enum {string} */
+            reason?: "no_observation" | "observed_later" | "status_mismatch" | "starts_at_mismatch" | "party_size_mismatch";
+            observed?: components["schemas"]["AuditObserved"];
+            receipts: components["schemas"]["Receipt"][];
+            receipts_omitted: number;
+            current_status: string;
+            current_differs: boolean;
+        };
+        Claim: {
+            /** Format: uuid */
+            reservation_id: string;
+            /** @enum {string} */
+            status: "held" | "confirmed" | "seated" | "completed" | "cancelled" | "expired";
+            /** Format: date-time */
+            starts_at?: string;
+            party_size?: number;
+            /** @description The words of the turn the claim rests on. Scrubbed of emails and numbers before it is stored. */
+            quote?: string;
+        };
+        AuditObserved: {
+            call: number;
+            tool: string;
+            at: string;
+            status: string;
+            effective_status: string;
+            starts_at?: string;
+            party_size?: number;
+            hold_expires_at?: string;
+            /** @enum {boolean} */
+            replayed?: true;
+        };
+        AuditRequest: {
+            turns: components["schemas"]["TranscriptTurn"][];
+        };
+        TranscriptTurn: {
+            /** @enum {string} */
+            role: "user" | "assistant";
+            /** @description Scrubbed of emails and numbers before it is stored. */
+            text: string;
+            /** Format: date-time */
+            at?: string;
+            claims?: components["schemas"]["Claim"][];
         };
         UnitList: {
             units: components["schemas"]["Unit"][];

@@ -114,8 +114,8 @@ describe("POST /v1/venues/{id}/holds", () => {
 });
 
 type Key = { id: string; key: string };
-type Placed = { id: string; hold_expires_at: string };
-type ListedHold = { id: string; party_size: number; during: string; assignment: { kind: string; id: string }; hold_expires_at: string; version: number; external_ref: string | null };
+type Placed = { id: string; starts_at: string; hold_expires_at: string };
+type ListedHold = { id: string; party_size: number; starts_at: string; during: string; assignment: { kind: string; id: string }; hold_expires_at: string; version: number; external_ref: string | null };
 
 describe("GET /v1/venues/{id}/holds", () => {
   let conn: Conn; let owner: Client; let seed: Seed; let other: Seed; let api: ReturnType<typeof makeApi>;
@@ -131,7 +131,7 @@ describe("GET /v1/venues/{id}/holds", () => {
     const r = await api.app.request(`/v1/venues/${venue.venue}/holds`, jsonInit("POST", body, { ...bearer(key.key), "idempotency-key": `list-${n}` }));
     expect(r.status).toBe(201);
     const out = await r.json() as { receipt: { reservation_id: string }; hold_expires_at: string };
-    return { id: out.receipt.reservation_id, hold_expires_at: out.hold_expires_at };
+    return { id: out.receipt.reservation_id, starts_at: body.starts_at as string, hold_expires_at: out.hold_expires_at };
   }
   const list = (key: Key | null, venue: string) => api.app.request(`/v1/venues/${venue}/holds`, { headers: key === null ? {} : bearer(key.key) });
   const reservation = (id: string, action: string, body: unknown, key: Key) => api.app.request(`/v1/reservations/${id}/${action}`, jsonInit("POST", body, bearer(key.key)));
@@ -173,11 +173,11 @@ describe("GET /v1/venues/{id}/holds", () => {
     // not the confirmed hold, the cancelled one, the rival's, or the other venue's
     expect(out.holds.map((h) => h.id)).toEqual([a.id, b.id]);
     expect(out.holds[0]).toEqual({
-      id: a.id, party_size: 2, during: expect.any(String), assignment: { kind: "unit", id: seed.units[0] },
+      id: a.id, party_size: 2, starts_at: new Date(a.starts_at).toISOString(), during: expect.any(String), assignment: { kind: "unit", id: seed.units[0] },
       hold_expires_at: a.hold_expires_at, version: 1, external_ref: "walk-in-1",
     });
     expect(out.holds[1]).toEqual({
-      id: b.id, party_size: 6, during: expect.any(String), assignment: { kind: "combo", id: seed.combos[0]!.id },
+      id: b.id, party_size: 6, starts_at: new Date(b.starts_at).toISOString(), during: expect.any(String), assignment: { kind: "combo", id: seed.combos[0]!.id },
       hold_expires_at: b.hold_expires_at, version: 1, external_ref: null,
     });
   });

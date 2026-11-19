@@ -4,7 +4,7 @@ import { createDastarClient } from "@dastar/client";
 import { createToolSession } from "@dastar/agent-tools";
 import { readConfig } from "./config.js";
 import { createServer } from "./server.js";
-import { checkCredential } from "./startup.js";
+import { checkCredential, checkSession } from "./startup.js";
 
 /** The package's own version, which the server reports to clients; the path holds from `src/` and from `dist/`. */
 function readVersion(): string {
@@ -22,14 +22,17 @@ const configured = readConfig(process.env);
 if (!configured.ok) {
   refuse(configured.line);
 } else {
-  const { url, key, venueId } = configured.config;
+  const { url, key, venueId, sessionId } = configured.config;
+  // the start-up checks go out without the session header, so they are never recorded in it
   const client = createDastarClient({ baseUrl: url, key });
-  const refusal = await checkCredential(client, { url, venueId });
+  let refusal = await checkCredential(client, { url, venueId });
+  if (refusal === null && sessionId !== undefined) refusal = await checkSession(client, { url, venueId, sessionId });
   if (refusal !== null) {
     refuse(refusal);
   } else {
     const version = readVersion();
-    const session = createToolSession({ client, venueId });
+    const toolClient = sessionId !== undefined ? createDastarClient({ baseUrl: url, key, session: sessionId }) : client;
+    const session = createToolSession({ client: toolClient, venueId });
     await serveStdio(() => createServer(session, version), {
       onerror: (e) => { process.stderr.write(`dastar-mcp: ${e.message}\n`); },
     });

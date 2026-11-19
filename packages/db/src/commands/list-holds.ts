@@ -3,7 +3,7 @@ import { asDastarError } from "../errors.js";
 import { bindVenue } from "../context.js";
 
 export type HoldView = {
-  id: string; partySize: number; during: string; assignment: { kind: string; id: string };
+  id: string; partySize: number; startsAt: string; during: string; assignment: { kind: string; id: string };
   holdExpiresAt: string; version: number; externalRef: string | null;
 };
 
@@ -21,14 +21,14 @@ export async function listHolds(client: ClientBase, input: ListHoldsInput): Prom
   try {
     await bindVenue(client, input.venueId);
     const r = await client.query(
-      `select id, party_size, during, assignment_kind, assignment_id, hold_expires_at, version, external_ref
+      `select id, party_size, lower(during) as starts_at, during, assignment_kind, assignment_id, hold_expires_at, version, external_ref
          from dastar.reservation
         where venue_id = $1 and created_by = $2 and status = 'held' and hold_expires_at > dastar.dastar_now()
         order by hold_expires_at, id`,
       [input.venueId, input.actor],
     );
     const holds: HoldView[] = r.rows.map((row) => ({
-      id: row.id, partySize: row.party_size, during: row.during, assignment: { kind: row.assignment_kind, id: row.assignment_id },
+      id: row.id, partySize: row.party_size, startsAt: new Date(row.starts_at).toISOString(), during: row.during, assignment: { kind: row.assignment_kind, id: row.assignment_id },
       holdExpiresAt: new Date(row.hold_expires_at).toISOString(), version: row.version, externalRef: row.external_ref,
     }));
     await client.query("commit");

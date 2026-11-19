@@ -10,7 +10,7 @@ import { confirm } from "../src/commands/confirm.js";
 import { cancel } from "../src/commands/cancel.js";
 import { listHolds, type HoldView } from "../src/commands/list-holds.js";
 
-type Placed = { id: string; holdExpiresAt: string };
+type Placed = { id: string; startsAt: string; holdExpiresAt: string };
 
 describe("list holds", () => {
   let conn: Conn; let owner: Client; let app: Client;
@@ -38,7 +38,7 @@ describe("list holds", () => {
     try {
       const out = await hold(app, input);
       if (!out.ok) throw new Error(out.error.code);
-      return { id: out.receipt.reservationId, holdExpiresAt: out.holdExpiresAt };
+      return { id: out.receipt.reservationId, startsAt: new Date(input.startsAt).toISOString(), holdExpiresAt: out.holdExpiresAt };
     } finally {
       if (clockOffsetMs !== 0) await setClock(app, null);
     }
@@ -83,15 +83,15 @@ describe("list holds", () => {
     expect(ids(out)).toEqual([aSoon.id, aMid.id, aLate.id]);
     expect(out).toEqual([
       {
-        id: aSoon.id, partySize: 6, during: await duringOf(aSoon.id), assignment: { kind: "combo", id: V1.combos[0]!.id },
+        id: aSoon.id, partySize: 6, startsAt: aSoon.startsAt, during: await duringOf(aSoon.id), assignment: { kind: "combo", id: V1.combos[0]!.id },
         holdExpiresAt: aSoon.holdExpiresAt, version: 1, externalRef: "walk-in-7",
       },
       {
-        id: aMid.id, partySize: 3, during: await duringOf(aMid.id), assignment: { kind: "unit", id: V1.units[1] },
+        id: aMid.id, partySize: 3, startsAt: aMid.startsAt, during: await duringOf(aMid.id), assignment: { kind: "unit", id: V1.units[1] },
         holdExpiresAt: aMid.holdExpiresAt, version: 1, externalRef: null,
       },
       {
-        id: aLate.id, partySize: 2, during: await duringOf(aLate.id), assignment: { kind: "unit", id: V1.units[0] },
+        id: aLate.id, partySize: 2, startsAt: aLate.startsAt, during: await duringOf(aLate.id), assignment: { kind: "unit", id: V1.units[0] },
         holdExpiresAt: aLate.holdExpiresAt, version: 1, externalRef: null,
       },
     ]);

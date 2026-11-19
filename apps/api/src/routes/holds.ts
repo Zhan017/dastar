@@ -2,7 +2,8 @@ import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import type { Deps, Env } from "../env.js";
 import { requireCapability, requireKey, assertVenueInScope } from "../auth.js";
 import { problemFor } from "../problem.js";
-import { HoldBodySchema, HoldListSchema, HoldResponseSchema, IdParam, problemResponses, toReceipt } from "../schemas.js";
+import { recorded } from "../recorder.js";
+import { HoldBodySchema, HoldListSchema, HoldResponseSchema, IdParam, SessionHeader, problemResponses, toReceipt } from "../schemas.js";
 
 export function register(app: OpenAPIHono<Env>, deps: Deps): void {
   const route = createRoute({
@@ -13,13 +14,13 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     middleware: [requireCapability(deps, "hold")] as const,
     request: {
       params: IdParam,
-      headers: z.object({ "idempotency-key": z.string().min(1).max(200) }),
+      headers: z.object({ "idempotency-key": z.string().min(1).max(200), ...SessionHeader.shape }),
       body: { required: true, content: { "application/json": { schema: HoldBodySchema } } },
     },
     responses: { 201: { description: "Held, or the stored success replayed", content: { "application/json": { schema: HoldResponseSchema } } }, ...problemResponses },
   });
 
-  app.openapi(route, async (c) => {
+  app.openapi(route, recorded(deps, route, "hold", "path-venue", async (c) => {
     const key = requireKey(c);
     const venueId = c.req.valid("param").id.toLowerCase();
     assertVenueInScope(key, venueId);
@@ -39,7 +40,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     // a stored domain outcome is part of the idempotency contract: same status on replay, with the flag
     if (!out.ok) throw problemFor(out.error.code, out.error.message, { replayed: out.replayed });
     return c.json({ receipt: toReceipt(out.receipt), hold_expires_at: out.holdExpiresAt, replayed: out.replayed }, 201);
-  });
+  }));
 
   const list = createRoute({
     method: "get",
@@ -47,20 +48,20 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     summary: "List the live holds the calling key owns in a venue, soonest expiry first. For a key scoped to all venues a venue that does not exist lists nothing; a venue outside the key's venues answers 404.",
     security: [{ Bearer: [] }],
     middleware: [requireCapability(deps, "read")] as const,
-    request: { params: IdParam },
+    request: { params: IdParam, headers: SessionHeader },
     responses: { 200: { description: "The calling key's live holds", content: { "application/json": { schema: HoldListSchema } } }, ...problemResponses },
   });
 
-  app.openapi(list, async (c) => {
+  app.openapi(list, recorded(deps, list, "list_holds", "path-venue", async (c) => {
     const key = requireKey(c);
     const venueId = c.req.valid("param").id.toLowerCase();
     assertVenueInScope(key, venueId);
     const holds = await deps.dastar.listHolds({ venueId, actor: `key:${key.id}` });
     return c.json({
       holds: holds.map((h) => ({
-        id: h.id, party_size: h.partySize, during: h.during, assignment: h.assignment,
+        id: h.id, party_size: h.partySize, starts_at: h.startsAt, during: h.during, assignment: h.assignment,
         hold_expires_at: h.holdExpiresAt, version: h.version, external_ref: h.externalRef,
       })),
     }, 200);
-  });
+  }));
 }

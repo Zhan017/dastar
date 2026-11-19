@@ -74,3 +74,10 @@ export function requireKey(c: Context<Env>): ApiKey {
 export function assertVenueInScope(key: ApiKey, venueId: string): void {
   if (key.venueIds !== null && !key.venueIds.includes(venueId.toLowerCase())) throw new ApiProblem(404, "not_found", "no such venue");
 }
+
+/** The session's venue for the key that owns it, or 404 no such session; one bounded read before any engine work. */
+export async function ownSessionVenue(deps: Deps, key: ApiKey, sessionId: string): Promise<string> {
+  const venueId = await deps.dastar.sessions.sessionVenue({ sessionId, apiKeyId: key.id });
+  if (venueId === null) throw new ApiProblem(404, "not_found", "no such session");
+  return venueId;
+}

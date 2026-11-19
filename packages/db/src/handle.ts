@@ -5,10 +5,15 @@ import { confirm, type ConfirmInput, type ConfirmHooks } from "./commands/confir
 import { cancel, type CancelInput, type CancelHooks } from "./commands/cancel.js";
 import { seat, complete, type StatusInput, type StatusHooks } from "./commands/seat.js";
 import { mintConfirmToken, type MintInput } from "./commands/mint-token.js";
-import { getReservation, findReservationVenue, type GetInput, type ReservationView } from "./commands/get.js";
+import { getReservation, findReservationVenue, currentStatuses, type GetInput, type ReservationView, type CurrentStatusesInput } from "./commands/get.js";
+import {
+  openSession, sessionVenue, getSession, beginCall, completeCall, auditInputs, storeAudit, getAudit,
+  type SessionView, type BeginCallOutcome, type AuditInputs, type SessionHooks, type OpenSessionInput, type SessionVenueInput, type SessionRef,
+  type BeginCallInput, type CompleteCallInput, type AuditInputsInput, type StoreAuditInput,
+} from "./commands/sessions.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
-import { purgeRetained } from "./commands/retention.js";
+import { purgeRetained, type RetentionBatch } from "./commands/retention.js";
 import { availability, SnapshotCache, type AvailabilityInput, type AvailabilityResult } from "./commands/availability.js";
 import type { AdminContext, AdminOutcome } from "./commands/admin.js";
 import {
@@ -50,7 +55,8 @@ export type DastarOptions = {
 
 export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue" | "purgeRetained"
   | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo"
-  | "listSchedules" | "createSchedule" | "updateSchedule" | "listBlackouts" | "createBlackout" | "updateBlackout";
+  | "listSchedules" | "createSchedule" | "updateSchedule" | "listBlackouts" | "createBlackout" | "updateBlackout"
+  | "currentStatuses" | "openSession" | "sessionVenue" | "getSession" | "beginCall" | "completeCall" | "auditInputs" | "storeAudit" | "getAudit";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 /**
@@ -84,6 +90,32 @@ export interface DastarAdmin {
   updateBlackout(ctx: AdminContext, input: UpdateBlackoutInput): Promise<AdminOutcome<BlackoutView>>;
 }
 
+/**
+ * What a session of an agent did: its calls, and the audit of what it said against what those calls observed.
+ * `sessionVenue` finds a session's venue from its id and its key; every other method binds the venue it is given. A
+ * session of another venue, one that is gone, and one no longer live (an external session last seen more than 30 days
+ * ago) read as absent, except to `auditInputs` and `completeCall`, which the API runs only after `sessionVenue` or
+ * `beginCall` has found the session live.
+ */
+export interface DastarSessions {
+  /** A new external session for the key in the venue; `not_found` when the venue does not exist. */
+  openSession(input: OpenSessionInput): Promise<SessionView>;
+  /** The venue of a live session the key owns, for a caller that holds only the session's id and its key; null when there is none. */
+  sessionVenue(input: SessionVenueInput): Promise<string | null>;
+  /** The session with its call count; null for a session of another venue or one that is not live. */
+  getSession(input: SessionRef): Promise<SessionView | null>;
+  /** Records a pending call and counts it; `full` at the limit of calls, `missing` for a session of another venue or one that is not live. */
+  beginCall(input: BeginCallInput, hooks?: SessionHooks): Promise<BeginCallOutcome>;
+  /** Stores a call's status, output, and receipt once; a call already completed is left as it is. */
+  completeCall(input: CompleteCallInput): Promise<void>;
+  /** The session's calls in order, each receipt checked against the audit log, with the current status of the listed reservations, in one snapshot. */
+  auditInputs(input: AuditInputsInput): Promise<AuditInputs>;
+  /** Replaces the session's turns and stores the audit's result; `not_found` for a session of another venue or one that is not live. */
+  storeAudit(input: StoreAuditInput, hooks?: SessionHooks): Promise<void>;
+  /** The result of the session's latest audit; null before the first. */
+  getAudit(input: SessionRef): Promise<unknown | null>;
+}
+
 export interface Dastar {
   hold(input: HoldInput, hooks?: HoldHooks): Promise<HoldOutcome>;
   confirm(input: ConfirmInput, hooks?: ConfirmHooks): Promise<Receipt>;
@@ -97,17 +129,22 @@ export interface Dastar {
   getReservation(input: GetInput): Promise<ReservationView | null>;
   /** The venue of a reservation, for a caller that holds only its id; null when there is none. */
   findReservationVenue(reservationId: string): Promise<string | null>;
+  /** The current status of each listed reservation of the venue, a hold past its expiry reading `expired`; absent for one of another venue or none. */
+  currentStatuses(input: CurrentStatusesInput): Promise<Record<string, string>>;
   /** The live holds the actor owns in the venue, soonest expiry first. */
   listHolds(input: ListHoldsInput): Promise<HoldView[]>;
   /** Bookable starts for a party in a window; advisory, a hold is still the judge. */
   availability(input: AvailabilityInput): Promise<AvailabilityResult>;
   expireDue(opts?: { limit?: number }): Promise<{ expired: string[] }>;
   /**
-   * One retention batch, `limit` rows at most from each table (default 500): idempotency rows past their purge time and
-   * outbox rows published more than seven days ago. Needs the worker role, like `expireDue`.
+   * One retention batch, `limit` rows at most from each table (default 500): idempotency rows past their purge time,
+   * outbox rows published more than seven days ago, and the calls and turns of external sessions, then those sessions
+   * once nothing of them is left; an external session stops being live thirty days after it was last seen and is purged
+   * 10 minutes later. Needs the worker role, like `expireDue`.
    */
-  purgeRetained(opts?: { limit?: number }): Promise<{ idempotency: number; outbox: number }>;
+  purgeRetained(opts?: { limit?: number }): Promise<RetentionBatch>;
   admin: DastarAdmin;
+  sessions: DastarSessions;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
 }
@@ -305,6 +342,7 @@ export function createDastar(opts: DastarOptions): Dastar {
     mintConfirmToken: (input) => run("mintConfirmToken", input.traceId, (c) => mintConfirmToken(c, input)),
     getReservation: (input) => run("getReservation", null, (c) => getReservation(c, input)),
     findReservationVenue: (reservationId) => run("findReservationVenue", null, (c) => findReservationVenue(c, reservationId)),
+    currentStatuses: (input) => run("currentStatuses", null, (c) => currentStatuses(c, input)),
     listHolds: (input) => run("listHolds", null, (c) => listHolds(c, input)),
     availability: (input) => run("availability", null, (c) => availability(c, input, snapshots)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
@@ -322,6 +360,16 @@ export function createDastar(opts: DastarOptions): Dastar {
       listBlackouts: (venueId, input) => run("listBlackouts", null, (c) => listBlackouts(c, venueId, input)),
       createBlackout: (ctx, input) => run("createBlackout", ctx.traceId, (c) => createBlackout(c, ctx, input)),
       updateBlackout: (ctx, input) => run("updateBlackout", ctx.traceId, (c) => updateBlackout(c, ctx, input)),
+    },
+    sessions: {
+      openSession: (input) => run("openSession", null, (c) => openSession(c, input)),
+      sessionVenue: (input) => run("sessionVenue", null, (c) => sessionVenue(c, input)),
+      getSession: (input) => run("getSession", null, (c) => getSession(c, input)),
+      beginCall: (input, hooks) => run("beginCall", null, (c) => beginCall(c, input, hooks)),
+      completeCall: (input) => run("completeCall", null, (c) => completeCall(c, input)),
+      auditInputs: (input) => run("auditInputs", null, (c) => auditInputs(c, input)),
+      storeAudit: (input, hooks) => run("storeAudit", null, (c) => storeAudit(c, input, hooks)),
+      getAudit: (input) => run("getAudit", null, (c) => getAudit(c, input)),
     },
     close: async () => {
       const p = cancellerPromise;
