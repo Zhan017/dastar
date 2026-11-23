@@ -235,8 +235,10 @@ export async function runTurn(deps: AgentDeps, request: { sessionId?: string; me
   const sessionId = request.sessionId ?? (await dastar.sessions.openReferenceSession({ venueId: venue.id, apiKeyId: deps.agentKeyId })).id;
   const ref: SessionRef = { sessionId, venueId: venue.id };
 
-  const message = scrubText(request.message);
-  const claimInput = { ...ref, apiKeyId: deps.agentKeyId, content: message, maxUserTurns: limits.maxUserTurns, staleAfterMs: limits.staleMs };
+  // the model reads the message as the person wrote it; what is stored of it, and what the guardrail reads as the turn, is scrubbed
+  const message = request.message;
+  const scrubbed = scrubText(message);
+  const claimInput = { ...ref, apiKeyId: deps.agentKeyId, content: scrubbed, maxUserTurns: limits.maxUserTurns, staleAfterMs: limits.staleMs };
   let claim = await dastar.sessions.claimTurn(claimInput);
   if (claim.kind === "stale") {
     await closeStale(deps, ref, claim.seq);
@@ -244,12 +246,13 @@ export async function runTurn(deps: AgentDeps, request: { sessionId?: string; me
   }
   if (claim.kind === "missing") return NOT_FOUND;
   if (claim.kind === "busy") return BUSY;
-  if (claim.kind === "stale") return CLOSED;
+  // a turn still open after the close above is another request's to answer
+  if (claim.kind === "stale") return BUSY;
   if (claim.kind === "full") return { ok: false, status: 422, code: "conversation_full", detail: `the conversation has reached ${limits.maxUserTurns} messages, its limit` };
   const { seq, at } = claim;
 
   const earlier = (await dastar.sessions.readTurns(ref)).filter((turn) => turn.seq < seq);
-  const stored: StoredTurn[] = [...earlier, { seq, role: "user", content: message, claims: null, at }];
+  const stored: StoredTurn[] = [...earlier, { seq, role: "user", content: scrubbed, claims: null, at }];
   const tools = await restoredTools(deps, ref);
   const context = renderContext(deps.prompt.contextTemplate, {
     utc: new Date(at).toISOString(),

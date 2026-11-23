@@ -469,8 +469,8 @@ describe("one turn against the reference API", () => {
     const out = okOf(await runTurn(deps(provider), { message: "call me on +49 30 1234567" }));
 
     expect(out.response.reply.message).toBe("I will call +49 30 1234567.");
-    // the model is given the scrubbed text too, as it will be on the next turn
-    expect(provider.requests[0]!.messages.at(-2)).toEqual({ role: "user", text: "call me on [phone]" });
+    // the model reads this turn's message as written; only what is stored is scrubbed
+    expect(provider.requests[0]!.messages.at(-2)).toEqual({ role: "user", text: "call me on +49 30 1234567" });
     const rows = await turnRows(out.response.session_id);
     expect(rows.map((row) => row.content)).toEqual(["call me on [phone]", "I will call [phone]."]);
     expect(rows[0]!.at).not.toBeNull();
