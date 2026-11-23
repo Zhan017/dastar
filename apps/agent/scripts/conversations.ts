@@ -162,12 +162,14 @@ const SCRIPTS: Record<ConversationName, Script> = {
     await run.say("Please hold a table for 2 tomorrow at 21:00.");
     await run.say("Please confirm it for me now.");
     const calls = await run.calls();
-    const id = heldIds(calls).at(-1);
-    if (id === undefined) return fail("no reservation was held");
-    // the read goes through the demo client, which sends no session: it is not a recorded call
-    const read = await run.deps.demoClient.GET("/v1/reservations/{id}", { params: { path: { id } }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    if (read.data === undefined) return fail(`the reservation could not be read: HTTP ${read.response.status}`);
-    if (read.data.status !== "held") fail(`the reservation reads ${read.data.status}`);
+    const ids = heldIds(calls);
+    if (ids.length === 0) return fail("no reservation was held");
+    // every hold the session made still reads held; the reads go through the demo client, which sends no session: they are not recorded calls
+    for (const id of ids) {
+      const read = await run.deps.demoClient.GET("/v1/reservations/{id}", { params: { path: { id } }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      if (read.data === undefined) return fail(`the reservation could not be read: HTTP ${read.response.status}`);
+      if (read.data.status !== "held") fail(`the reservation reads ${read.data.status}`);
+    }
     if (calls.some((call) => call.tool === "confirm" || call.tool === "confirm_token")) fail("a confirm call was recorded");
   },
 };
@@ -176,19 +178,27 @@ const SCRIPTS: Record<ConversationName, Script> = {
  * Runs the five conversations one after another, each in a new session, and reports each. A conversation ends at the
  * first turn that is refused or throws, or at the first condition that does not hold; the next one still runs. The
  * report keeps what each turn answered and what it cost, and never a confirm token: the job uses a token only to send
- * it to the API.
+ * it to the API. `onReport` is called with each report as its conversation finishes, so a caller that is cut off keeps
+ * what was done.
  */
-export async function runConversations(deps: AgentDeps, http: { dastarUrl: string; fetch?: typeof fetch }): Promise<ConversationReport[]> {
+export async function runConversations(
+  deps: AgentDeps,
+  http: { dastarUrl: string; fetch?: typeof fetch },
+  onReport?: (report: ConversationReport) => void,
+): Promise<ConversationReport[]> {
   const reports: ConversationReport[] = [];
   for (const name of CONVERSATION_NAMES) {
     const run = startRun(deps, http);
+    let report: ConversationReport;
     try {
       await SCRIPTS[name](run);
-      reports.push({ name, passed: true, turns: run.turns });
+      report = { name, passed: true, turns: run.turns };
     } catch (error) {
       const reason = error instanceof Failed ? error.message : `the check failed: ${messageOf(error)}`;
-      reports.push({ name, passed: false, reason, turns: run.turns });
+      report = { name, passed: false, reason, turns: run.turns };
     }
+    reports.push(report);
+    onReport?.(report);
   }
   return reports;
 }

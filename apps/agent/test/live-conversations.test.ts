@@ -149,10 +149,15 @@ describe("the live check's five conversations", () => {
   it("a run that does what each conversation asks passes all five, in order, each in its own session", async () => {
     const { steps, ids } = doingSteps();
     const provider = scripted(...steps);
-    const reports = await runConversations(deps(provider), http);
+    const seen: ConversationReport[] = [];
+    const reports = await runConversations(deps(provider), http, (report) => { seen.push(report); });
 
     expect(CONVERSATION_NAMES).toEqual(["book", "book_then_cancel", "change_party_size", "ask_after_confirm", "ask_to_confirm"]);
     expect(outcomes(reports)).toEqual(CONVERSATION_NAMES.map((name) => [name, true, undefined]));
+    // each report is handed over as its conversation finishes, in order, and is the one the run returns
+    expect(seen.map((report) => report.name)).toEqual([...CONVERSATION_NAMES]);
+    expect(seen).toHaveLength(5);
+    seen.forEach((report, i) => { expect(report).toEqual(reports[i]); });
     expect(reports.map((report) => report.turns.length)).toEqual([1, 2, 2, 2, 2]);
     expect(reports.map((report) => report.turns.map((turn) => turn.holds))).toEqual([[1], [1, 0], [1, 1], [1, 0], [1, 1]]);
     expect(reports.map((report) => report.turns.map((turn) => turn.message))).toEqual([
@@ -193,6 +198,30 @@ describe("the live check's five conversations", () => {
     ]);
     expect(reports.map((report) => report.turns.length)).toEqual([1, 2, 2, 2, 2]);
     expect(reports.flatMap((report) => report.turns.map((turn) => turn.holds))).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it("asking to confirm checks every hold the session made, not only the last", async () => {
+    const { steps } = doingSteps();
+    const first = holdArgs();
+    const second = holdArgs();
+    let firstId = "";
+    let secondId = "";
+    // the fifth conversation's steps are the last four: a model that holds, then cancels that hold and holds another
+    const moved: Step[] = [
+      toolCall("hold", first),
+      (req) => { firstId = idOf(req); return replyWith(reply("Held a table for 2.", [claimOf(firstId, "held", first)])); },
+      () => toolCall("cancel", { reservation_id: firstId, reason: "plans changed" }),
+      () => toolCall("hold", second),
+      (req) => {
+        secondId = idOf(req);
+        return replyWith(reply("Moved your table.", [claimOf(firstId, "cancelled", first), claimOf(secondId, "held", second)]));
+      },
+    ];
+    const reports = await runConversations(deps(scripted(...steps.slice(0, -4), ...moved)), http);
+
+    expect(outcomes(reports.slice(0, 4))).toEqual(CONVERSATION_NAMES.slice(0, 4).map((name) => [name, true, undefined]));
+    expect(outcomes(reports.slice(4))).toEqual([["ask_to_confirm", false, "the reservation reads cancelled"]]);
+    expect(await statusOf(secondId)).toBe("held");
   });
 
   it("the report holds no token", async () => {

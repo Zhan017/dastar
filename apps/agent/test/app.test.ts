@@ -50,12 +50,18 @@ describe("POST /demo/chat", () => {
   const agentClient = (sessionId: string): DastarClient =>
     createDastarClient({ baseUrl: BASE, key: agentKeyValue, session: sessionId, fetch: async (request: Request): Promise<Response> => api.app.request(request) });
 
+  const quiet = (): void => undefined;
+
+  /** The sinks write nothing unless a test passes its own, so the tests print no request lines and no error lines. */
   const deps = (provider: LLMProvider): AgentDeps => ({
-    dastar: api.dastar, provider, agentClient, demoClient, venue, agentKeyId, tokenKey, prompt,
+    dastar: api.dastar, provider, agentClient, demoClient, venue, agentKeyId, tokenKey, prompt, logError: quiet,
   });
 
-  const appFor = (provider: LLMProvider, log?: (entry: AgentLogEntry) => void): ReturnType<typeof createAgentApp> =>
-    createAgentApp(deps(provider), log !== undefined ? { log } : {});
+  const appFor = (
+    provider: LLMProvider,
+    log: (entry: AgentLogEntry) => void = quiet,
+    logError: (msg: string, fields: Record<string, string>) => void = quiet,
+  ): ReturnType<typeof createAgentApp> => createAgentApp(deps(provider), { log, logError });
 
   const post = (app: ReturnType<typeof createAgentApp>, body: unknown, headers: Record<string, string> = {}): Promise<Response> =>
     Promise.resolve(app.request("/demo/chat", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) }));
@@ -157,6 +163,42 @@ describe("POST /demo/chat", () => {
     expect(edge.status).toBe(200);
   });
 
+  /** A valid request body of exactly `bytes` bytes: the JSON object, then spaces. */
+  const paddedBody = (bytes: number): string => {
+    const json = JSON.stringify({ message: "hi" });
+    return json + " ".repeat(bytes - json.length);
+  };
+
+  it("refuses a request whose content-length is past the bound with 400, and stores nothing", async () => {
+    const provider = scripted();
+    const app = appFor(provider);
+    const before = await counts();
+
+    const body = paddedBody(16 * 1024 + 1);
+    expect(Buffer.byteLength(body)).toBe(16385);
+    const response = await app.request("/demo/chat", {
+      method: "POST", headers: { "content-type": "application/json", "content-length": "16385" }, body,
+    });
+    await expectProblem(response, 400, "validation", "request body too large");
+
+    expect(provider.requests).toHaveLength(0);
+    expect(await counts()).toEqual(before);
+  });
+
+  it("does not refuse for its size a valid request of exactly 16 KB, with or without a content-length", async () => {
+    const provider = scripted(hello, hello);
+    const app = appFor(provider);
+
+    const body = paddedBody(16 * 1024);
+    expect(Buffer.byteLength(body)).toBe(16384);
+    for (const headers of [{ "content-type": "application/json" }, { "content-type": "application/json", "content-length": "16384" }]) {
+      const response = await app.request("/demo/chat", { method: "POST", headers, body });
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as Body)["reply"]).toEqual(reply("Hello."));
+    }
+    expect(provider.requests).toHaveLength(2);
+  });
+
   it("a session that is not the agent's is 404, a busy one 409, a full one 422, with the exact texts", async () => {
     const external = (await api.dastar.sessions.openSession({ venueId: seed.venue, apiKeyId: agentKeyId })).id;
     const staffs = (await owner.query(
@@ -175,11 +217,15 @@ describe("POST /demo/chat", () => {
     const release = gate();
     const slow = scripted(async () => { reached.open(); await release.passed; return hello(); });
     const first = post(appFor(slow), { session_id: busySession, message: "first" });
-    await reached.passed;
-    const refused = scripted();
-    await expectProblem(await post(appFor(refused), { session_id: busySession.toUpperCase(), message: "second" }), 409, "turn_in_progress", "the session is still answering its previous message");
-    expect(refused.requests).toHaveLength(0);
-    release.open();
+    try {
+      await reached.passed;
+      const refused = scripted();
+      await expectProblem(await post(appFor(refused), { session_id: busySession.toUpperCase(), message: "second" }), 409, "turn_in_progress", "the session is still answering its previous message");
+      expect(refused.requests).toHaveLength(0);
+    } finally {
+      // a failed assertion above must not leave the first turn waiting at the gate
+      release.open();
+    }
     expect((await first).status).toBe(200);
 
     // a conversation at its limit of 50 messages
@@ -202,13 +248,22 @@ describe("POST /demo/chat", () => {
         sessions: { ...api.dastar.sessions, claimTurn: () => Promise.reject(new Error("connection terminated: the secret of the database")) },
       },
     };
-    const response = await createAgentApp(broken).request("/demo/chat", {
+    const logged: { msg: string; fields: Record<string, string> }[] = [];
+    const app = createAgentApp(broken, { log: quiet, logError: (msg, fields) => { logged.push({ msg, fields }); } });
+    const response = await app.request("/demo/chat", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "hi" }),
     });
     const text = await response.clone().text();
     const body = await expectProblem(response, 500, "internal");
     expect("detail" in body).toBe(false);
     expect(text).not.toContain("secret");
+
+    // the fault is traced: one line with the response's trace id and the error's message, which the person never sees
+    expect(logged).toEqual([{ msg: "request failed", fields: { trace_id: body["trace_id"], error: "connection terminated: the secret of the database" } }]);
+
+    // a refusal is a Problem, and logs nothing
+    await expectProblem(await post(app, { message: "" }), 400, "validation", "message: must not be empty");
+    expect(logged).toHaveLength(1);
   });
 
   it("any other path is 404 no such route; GET /demo/chat too", async () => {

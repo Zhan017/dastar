@@ -214,6 +214,14 @@ function turnLine(turn: ConversationReport["turns"][number], n: number): string 
   return `  turn ${n} model=${model} provider_calls=${providerCalls} regenerations=${regenerations} fell_back=${fellBack} input=${inputTokens} output=${outputTokens} cache_read=${cacheReadTokens} cache_write=${cacheWriteTokens}`;
 }
 
+/** One conversation's line, and for each of its turns what it cost. */
+function printConversation({ name, passed, reason, turns }: ConversationReport): void {
+  console.log(`${name} ${passed ? "passed" : `failed: ${reason ?? "no reason given"}`}`);
+  turns.forEach((turn, i) => {
+    console.log(turnLine(turn, i + 1));
+  });
+}
+
 /** The five conversations against the running API and the real model: one line for each, and for each turn what it cost. */
 async function runConversationsMode(env: Record<string, string | undefined>): Promise<number> {
   const configured = readAgentConfig(env);
@@ -248,15 +256,18 @@ async function runConversationsMode(env: Record<string, string | undefined>): Pr
       tokenKey: config.tokenKey,
       prompt: loadPrompt(),
     };
-    const conversations = await runConversations(deps, { dastarUrl: config.dastarUrl });
+    const writeReport = (conversations: ConversationReport[]): void => {
+      writeFileSync("agent-live.json", `${JSON.stringify({ mode: "conversations", model: config.model, started_at: startedAt, conversations, responses }, null, 2)}\n`);
+    };
+    // the artifact is rewritten and the lines printed as each conversation finishes, so a job cut off keeps every finished one
+    const done: ConversationReport[] = [];
+    const conversations = await runConversations(deps, { dastarUrl: config.dastarUrl }, (report) => {
+      done.push(report);
+      writeReport(done);
+      printConversation(report);
+    });
 
-    writeFileSync("agent-live.json", `${JSON.stringify({ mode: "conversations", model: config.model, started_at: startedAt, conversations, responses }, null, 2)}\n`);
-    for (const { name, passed, reason, turns } of conversations) {
-      console.log(`${name} ${passed ? "passed" : `failed: ${reason ?? "no reason given"}`}`);
-      turns.forEach((turn, i) => {
-        console.log(turnLine(turn, i + 1));
-      });
-    }
+    writeReport(conversations);
     return conversations.every((conversation) => conversation.passed) ? 0 : 1;
   } finally {
     await dastar.close().catch(() => undefined);

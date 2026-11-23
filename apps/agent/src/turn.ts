@@ -38,7 +38,19 @@ export type AgentDeps = {
   tokenKey: Buffer;
   prompt: LoadedPrompt;
   limits?: Partial<TurnLimits>;
+  /** Where a failure worth tracing is written: one JSON line on stderr when absent. The fields are ids and an error's message, never a request, a message or a key. */
+  logError?: LogError;
 };
+
+export type LogError = (msg: string, fields: Record<string, string>) => void;
+
+/** One JSON line on stderr: the time, the level, the message and the fields. */
+export const writeErrorLine: LogError = (msg, fields) => {
+  process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", msg, ...fields })}\n`);
+};
+
+/** An error's message alone. */
+export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export type TurnResponse = {
   session_id: string;
@@ -166,7 +178,8 @@ async function converse(deps: AgentDeps, limits: TurnLimits, ref: SessionRef, to
     try {
       const request = { system: deps.prompt.system, messages: [...messages], tools: AGENT_TOOLS, replySchema: REPLY_JSON_SCHEMA, signal };
       completion = await until(deps.provider.complete(request), signal);
-    } catch {
+    } catch (error) {
+      (deps.logError ?? writeErrorLine)("provider call failed", { session_id: ref.sessionId, error: messageOf(error) });
       return out;
     }
     out.model = completion.model;

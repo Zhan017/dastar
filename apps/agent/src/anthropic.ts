@@ -107,13 +107,35 @@ export function toRequestMessages(messages: ChatMessage[]): unknown[] {
   return buildMessages(messages);
 }
 
-function toCompletion(response: BetaMessage): Completion {
-  const usage: Usage = {
+const count = (value: unknown): number => (typeof value === "number" ? value : 0);
+
+/**
+ * The tokens a call used. Under a fallback the top-level counts cover only the attempt that produced the message, while
+ * `iterations` lists every attempt: when it is a non-empty array the counts are summed over it.
+ */
+function usageOf(response: BetaMessage): Usage {
+  const iterations: unknown = (response.usage as unknown as Block)["iterations"];
+  if (Array.isArray(iterations) && iterations.length > 0) {
+    const total: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    for (const entry of iterations as unknown[]) {
+      if (!isBlock(entry)) continue;
+      total.input += count(entry["input_tokens"]);
+      total.output += count(entry["output_tokens"]);
+      total.cacheRead += count(entry["cache_read_input_tokens"]);
+      total.cacheWrite += count(entry["cache_creation_input_tokens"]);
+    }
+    return total;
+  }
+  return {
     input: response.usage.input_tokens,
     output: response.usage.output_tokens,
     cacheRead: response.usage.cache_read_input_tokens ?? 0,
     cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
   };
+}
+
+function toCompletion(response: BetaMessage): Completion {
+  const usage = usageOf(response);
   const common = { usage, model: response.model };
 
   // what the model that answered wrote: nothing before the last fallback block counts, as the call that declined is not the answer
@@ -139,7 +161,11 @@ function toCompletion(response: BetaMessage): Completion {
   }
 }
 
-/** The model behind the agent, reached through the Messages API with strict tools, a JSON reply and no thinking. */
+/**
+ * The model behind the agent, reached through the Messages API with strict tools and a JSON reply. The request sets no
+ * thinking field, so the model's own default applies: its answers may carry thinking blocks, which are passed back
+ * unchanged within the turn.
+ */
 export function createAnthropicProvider(opts: AnthropicProviderOptions): LLMProvider {
   const client = new Anthropic({ apiKey: opts.apiKey, fetch: opts.fetch, maxRetries: opts.maxRetries });
   const fallbacks = FALLBACK_MODELS.has(opts.model);

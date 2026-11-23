@@ -73,7 +73,8 @@ describe("one turn against the reference API", () => {
       },
     });
 
-  const deps = (provider: LLMProvider, limits?: Partial<TurnLimits>): AgentDeps => ({
+  /** The deps of a turn; the error sink writes nothing unless a test passes its own. */
+  const deps = (provider: LLMProvider, limits?: Partial<TurnLimits>, logError: NonNullable<AgentDeps["logError"]> = () => undefined): AgentDeps => ({
     dastar: api.dastar,
     provider,
     agentClient,
@@ -82,6 +83,7 @@ describe("one turn against the reference API", () => {
     agentKeyId,
     tokenKey,
     prompt,
+    logError,
     ...(limits !== undefined ? { limits } : {}),
   });
 
@@ -277,9 +279,17 @@ describe("one turn against the reference API", () => {
   });
 
   it("a provider failure ends the turn in the fallback", async () => {
-    const out = okOf(await runTurn(deps(scripted(() => Promise.reject(new Error("upstream")))), { message: "hi" }));
+    const logged: { msg: string; fields: Record<string, string> }[] = [];
+    const message = "a table for the Okafor party";
+    const out = okOf(
+      await runTurn(deps(scripted(() => Promise.reject(new Error("upstream"))), undefined, (msg, fields) => { logged.push({ msg, fields }); }), { message }),
+    );
     expect(out.response.guardrail).toEqual({ fired: true, regenerations: 0, fallback: true });
     expect(out.record).toMatchObject({ providerCalls: 1, fellBack: true, model: "" });
+
+    // one line: the session's id and the error's message, and nothing of the person's message
+    expect(logged).toEqual([{ msg: "provider call failed", fields: { session_id: out.response.session_id, error: "upstream" } }]);
+    for (const value of Object.values(logged[0]!.fields)) expect(value).not.toContain("Okafor");
   });
 
   it("a reply that a cancel by staff after the read made stale is rejected as not current", async () => {
@@ -536,12 +546,14 @@ describe("one turn against the reference API", () => {
   });
 
   it("the deadline after a hold ends in a fallback that reports the held reservation, and the hold is in the response", async () => {
-    let id = "";
-    const hangs = (req: CompletionRequest): Promise<Completion> => {
-      id = idOf(req);
-      return new Promise<Completion>((_, reject) => { req.signal.addEventListener("abort", () => { reject(new Error("aborted")); }); });
-    };
+    const hangs = (req: CompletionRequest): Promise<Completion> =>
+      new Promise<Completion>((_, reject) => { req.signal.addEventListener("abort", () => { reject(new Error("aborted")); }); });
     const out = okOf(await runTurn(deps(scripted(toolCall("hold", holdArgs()), hangs), { deadlineMs: 2_000 }), { message: "a table for two" }));
+
+    // the reservation is the one the session's recorded hold made; a deadline that cut the turn before the hold fails here
+    const holdCalls = (await callRows(out.response.session_id)).filter((call) => call.tool === "hold");
+    expect(holdCalls, "the deadline passed before the hold was recorded").toHaveLength(1);
+    const id = (holdCalls[0]!.receipt as { reservation_id: string }).reservation_id;
 
     const reads = await readsOf(id);
     expect(reads[0]!.reservation?.status).toBe("held");

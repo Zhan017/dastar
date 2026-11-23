@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
-import { runTurn, type AgentDeps } from "./turn.js";
+import { messageOf, runTurn, writeErrorLine, type AgentDeps, type LogError } from "./turn.js";
 
 /** One line per request: what was asked and how it went, never a body. */
 export type AgentLogEntry = { ts: string; method: string; path: string; status: number; duration_ms: number; trace_id: string };
@@ -68,12 +68,13 @@ function messageRefusal(message: string): string | null {
  * The agent's HTTP face: `POST /demo/chat` takes one message (and the session it belongs to, once there is one) and
  * answers with the turn. Every failure is Problem Details with the request's trace id; the log line has no body.
  */
-export function createAgentApp(deps: AgentDeps, opts: { log?: (entry: AgentLogEntry) => void } = {}): Hono<Env> {
+export function createAgentApp(deps: AgentDeps, opts: { log?: (entry: AgentLogEntry) => void; logError?: LogError } = {}): Hono<Env> {
   const log =
     opts.log ??
     ((entry: AgentLogEntry): void => {
       console.log(JSON.stringify(entry));
     });
+  const logError = opts.logError ?? writeErrorLine;
   const app = new Hono<Env>();
 
   // trace id first, so every response and every log line carries one; never log a body
@@ -104,8 +105,12 @@ export function createAgentApp(deps: AgentDeps, opts: { log?: (entry: AgentLogEn
     }),
   );
 
-  // anything but a Problem is a fault of the agent's own: 500, and nothing about it reaches the person
-  app.onError((error, c) => problemResponse(c, error instanceof Problem ? error : new Problem(500, "internal")));
+  // anything but a Problem is a fault of the agent's own: 500, traced by its id and message, and nothing about it reaches the person
+  app.onError((error, c) => {
+    if (error instanceof Problem) return problemResponse(c, error);
+    logError("request failed", { trace_id: c.get("traceId"), error: messageOf(error) });
+    return problemResponse(c, new Problem(500, "internal"));
+  });
   app.notFound((c) => problemResponse(c, new Problem(404, "not_found", "no such route")));
 
   app.post("/demo/chat", async (c) => {

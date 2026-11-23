@@ -217,6 +217,60 @@ describe("createAnthropicProvider completion", () => {
     expect((await nulls.provider.complete(request())).usage).toEqual({ input: 5, output: 6, cacheRead: 0, cacheWrite: 0 });
   });
 
+  it("sums the usage of every attempt", async () => {
+    const attempts = provider(() =>
+      message({
+        content: [text("hi")],
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 5,
+          output_tokens: 7,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [
+            { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 3, cache_creation_input_tokens: 4, type: "message" },
+            { input_tokens: 5, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, type: "message" },
+          ],
+        },
+      }),
+    );
+    expect((await attempts.provider.complete(request())).usage).toEqual({ input: 105, output: 27, cacheRead: 3, cacheWrite: 4 });
+
+    // a count that is missing, null or not a number counts 0
+    const odd = provider(() =>
+      message({
+        content: [text("hi")],
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 5,
+          output_tokens: 7,
+          iterations: [{ input_tokens: 10, output_tokens: "many", cache_read_input_tokens: null }, { output_tokens: 2, cache_creation_input_tokens: 6 }],
+        },
+      }),
+    );
+    expect((await odd.provider.complete(request())).usage).toEqual({ input: 10, output: 2, cacheRead: 0, cacheWrite: 6 });
+  });
+
+  it("uses the top-level usage when there are no iterations", async () => {
+    const none = provider(() =>
+      message({
+        content: [text("hi")],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 5, output_tokens: 7, cache_read_input_tokens: 1, cache_creation_input_tokens: 2, iterations: null },
+      }),
+    );
+    expect((await none.provider.complete(request())).usage).toEqual({ input: 5, output: 7, cacheRead: 1, cacheWrite: 2 });
+
+    const empty = provider(() =>
+      message({
+        content: [text("hi")],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 5, output_tokens: 7, cache_read_input_tokens: 1, cache_creation_input_tokens: 2, iterations: [] },
+      }),
+    );
+    expect((await empty.provider.complete(request())).usage).toEqual({ input: 5, output: 7, cacheRead: 1, cacheWrite: 2 });
+  });
+
   it("passes model output back as the API requires after a fallback", async () => {
     const content = [thinking("a"), toolUse("A"), fallback, thinking("b"), toolUse("B")];
     const after = provider(() => message({ content, stop_reason: "tool_use" }));
