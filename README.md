@@ -253,18 +253,22 @@ Posting a transcript again replaces the session's earlier transcript and result;
 
 ### The reference agent
 
-[`apps/agent`](apps/agent) is Dastar's own booking agent: a person chats, and a model searches availability, holds, and cancels through the same API, key boundary, and session recorder that any outside agent uses, so the API records its calls the way it records anyone's. Before the person sees a reply, each reservation statement the reply declares is checked against what those calls observed and against the reservation's status now; a reply that fails is regenerated, and after three failures it is replaced by a message built from reads of the reservations. The agent only holds: the person confirms with a button the app shows, which sends a single-use token that the model never sees.
+[`apps/agent`](apps/agent) is Dastar's own booking agent: a person chats, and a model searches availability, holds, and cancels through the same API, key boundary, and session recorder that any outside agent uses, so the API records its calls the way it records anyone's. Before the person sees a reply, each reservation statement the reply declares is checked against what those calls observed and against the reservation's status now; a reply that fails is regenerated, and after three failures it is replaced by a message built from reads of the reservations. The agent only holds: the person confirms, through a button that a front end builds from what the agent returns, which sends a single-use token that the model never sees.
 
 It is a separate process that calls the API over HTTP and keeps its own tables in the same database. It reads eight settings, and four more are optional:
 
 - `DATABASE_URL`: the application role's connection string, as for the API.
 - `DASTAR_URL`: the reference API's address, `http://127.0.0.1:8080` here.
 - `DASTAR_VENUE_ID`: the venue the agent serves.
-- `AGENT_KEY` and `AGENT_KEY_ID`: the key the tools run with, which can read, hold, and cancel and nothing else, and its id.
-- `DEMO_CONFIRM_KEY`: a second key, which can read and confirm; the agent reads each hold with it and mints the token the button sends. It must differ from `AGENT_KEY`.
+- `AGENT_KEY`: the key the tools run with, which can read, hold, and cancel and nothing else.
+- `AGENT_KEY_ID`: the id of that key, which `keys:create` prints beside it.
+- `DEMO_CONFIRM_KEY`: a second key, which can read and confirm; the agent reads each hold with it and mints the token the confirm request sends. It must differ from `AGENT_KEY`.
 - `DASTAR_TOKEN_KEY`: 32 bytes in base64, which the agent seals the tokens it keeps with.
 - `ANTHROPIC_API_KEY`: the model provider's key.
-- Optional: `AGENT_MODEL` (default `claude-opus-5-5`), `AGENT_EFFORT` (default `medium`; one of `low`, `medium`, `high`, `xhigh`, `max`), `AGENT_HOST` (default `127.0.0.1`), and `AGENT_PORT` (default `8081`).
+- `AGENT_MODEL`, optional: the model; `claude-opus-5-5` by default.
+- `AGENT_EFFORT`, optional: the model's effort, one of `low`, `medium`, `high`, `xhigh`, and `max`; `medium` by default.
+- `AGENT_HOST`, optional: the address the agent binds; `127.0.0.1` by default.
+- `AGENT_PORT`, optional: the port it listens on; `8081` by default.
 
 With the database and the API from the sections above still running, create the two keys. Each prints a JSON object with its `id` and its `key`: the first one's id goes in `AGENT_KEY_ID` and its key in `AGENT_KEY`, the second one's key in `DEMO_CONFIRM_KEY`. Create the token key with `openssl rand -base64 32`, then start the agent:
 
@@ -324,7 +328,7 @@ The token never reaches the model, a log line, a stored turn, or a recorded call
 
 [`agent-live.yml`](.github/workflows/agent-live.yml) is the live check: it runs the agent against the real model. No push or pull request starts it. It is started by hand, from the repository's Actions tab or with `gh workflow run agent-live.yml -f mode=probe`, with a `mode` of `probe` or `conversations`, and it fails at once, saying so, unless the repository secret `ANTHROPIC_API_KEY` is set. A run costs what its calls to the model cost on that key's account.
 
-- `probe` makes about five requests with the agent's real tools and reply format, canned tool results, and no database, to check that the provider accepts them together.
+- `probe` makes at most six requests with the agent's real tools and reply format, canned tool results, and no database, to check that the provider accepts them together.
 - `conversations`, the default, sets up Postgres 18, the migrations and roles, the demo venue and a schedule for it, the three keys, and the API, then runs five conversations one after another, each in a new session, through the same turn the route runs: book a table; book and then cancel; change the party size; ask after the job has confirmed the hold with its token; ask the agent to confirm. Each is judged on state and not on wording: a live hold whose token confirms it, a recorded cancel and no hold left, one live hold at the new size, a reply claiming the reservation confirmed that is not the fallback, and a reservation still held with no confirm call recorded.
 
 The job uploads `agent-live.json`, with each turn's reply, guardrail outcome, model, and token counts and never a token, and the API's log as `api.log`. It exits 1 unless every conversation passes.
