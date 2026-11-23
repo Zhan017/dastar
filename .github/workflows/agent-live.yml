@@ -1,0 +1,51 @@
+name: agent-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: what to run against the real model
+        type: choice
+        options: [conversations, probe]
+        default: conversations
+
+jobs:
+  live:
+    # the reference agent against the real model, started by hand; no push or pull request runs it
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dastar_owner
+          POSTGRES_PASSWORD: owner
+          POSTGRES_DB: dastar
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dastar_owner -d dastar" --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      OWNER_URL: postgres://dastar_owner:owner@localhost:5432/dastar
+      APP_URL: postgres://dastar_app:app@localhost:5432/dastar
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Check the key is set
+        run: |
+          [ -n "$ANTHROPIC_API_KEY" ] || { echo "the ANTHROPIC_API_KEY repository secret is not set"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - if: inputs.mode == 'probe'
+        run: pnpm --filter @dastar/agent live probe
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-live
+          path: apps/agent/agent-live.json
+          if-no-files-found: warn
