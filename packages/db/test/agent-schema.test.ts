@@ -71,7 +71,9 @@ describe("agent session schema", () => {
     await dropDatabase("agent_schema_test");
   });
 
-  it("every dastar_agent table has row-level security with exactly the venue rule and the reporting read", async () => {
+  it("every dastar_agent table has row-level security with exactly the venue rule, and the reporting read on all but session_hold", async () => {
+    // session_hold keeps encrypted confirm tokens, so reporting has no read of it
+    const ALL_TABLES = [...TABLES, "session_hold"].sort();
     const r = await owner.query(
       `select c.relname::text as relname, c.relrowsecurity,
               array(select pol.polname::text from pg_policy pol where pol.polrelid = c.oid order by pol.polname) as policies
@@ -79,11 +81,11 @@ describe("agent session schema", () => {
         where n.nspname = 'dastar_agent' and c.relkind in ('r', 'p')
         order by c.relname`,
     );
-    expect(r.rows.map((x) => x.relname as string)).toEqual([...TABLES].sort());
+    expect(r.rows.map((x) => x.relname as string)).toEqual(ALL_TABLES);
     for (const row of r.rows) {
       expect(row.relrowsecurity, row.relname).toBe(true);
-      // no other policy widens what any role sees: the venue rule, and reporting's read of every venue
-      expect(row.policies, row.relname).toEqual(["readonly_reads", "venue_scope"]);
+      // no other policy widens what any role sees: the venue rule, and reporting's read of every venue except for session_hold
+      expect(row.policies, row.relname).toEqual(row.relname === "session_hold" ? ["venue_scope"] : ["readonly_reads", "venue_scope"]);
     }
 
     // the policy applies to every command, to dastar_app alone, and tests the table's venue column against the bound venue
@@ -94,9 +96,9 @@ describe("agent session schema", () => {
          from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
         where n.nspname = 'dastar_agent' and pol.polname = 'venue_scope'`,
     );
-    expect(pol.rows.map((x) => x.relname as string).sort()).toEqual([...TABLES].sort());
+    expect(pol.rows.map((x) => x.relname as string).sort()).toEqual(ALL_TABLES);
     const rule = "(venue_id = (NULLIF(current_setting('dastar.venue_id'::text, true), ''::text))::uuid)";
-    for (const t of TABLES) {
+    for (const t of ALL_TABLES) {
       const p = pol.rows.find((x) => x.relname === t);
       expect(p, `${t}: venue_scope`).toMatchObject({ polcmd: "*", roles: ["dastar_app"] });
       expect(p.qual, `${t}: using`).toBe(rule);
@@ -109,7 +111,7 @@ describe("agent session schema", () => {
          from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
         where n.nspname = 'dastar_agent' and pol.polname = 'readonly_reads'`,
     );
-    expect(reads.rows).toHaveLength(TABLES.length);
+    expect(reads.rows.map((x) => x.relname as string).sort()).toEqual([...TABLES].sort());
     for (const x of reads.rows) expect(x, x.relname).toMatchObject({ polcmd: "r", qual: "true", roles: ["dastar_readonly"] });
   });
 
