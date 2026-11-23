@@ -38,7 +38,7 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
 
   const post = createRoute({
     method: "post", path: "/v1/sessions/{id}/audit",
-    summary: "Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB.",
+    summary: "Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. A reference session's transcript is written by the agent app alone, so it is refused.",
     security: [{ Bearer: [] }], middleware: [requireCapability(deps, "read"), bodyLimit({ maxSize: 1024 * 1024, onError: bodyTooLarge })] as const,
     request: { params: IdParam, body: { required: true, content: json(AuditRequestSchema) } },
     responses: { 200: { description: "The audit of the transcript", content: json(AuditSchema) }, ...problemResponses },
@@ -47,6 +47,8 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const key = requireKey(c);
     const sessionId = c.req.valid("param").id.toLowerCase();
     const venueId = await ownSessionVenue(deps, key, sessionId);
+    const session = await deps.dastar.sessions.getSession({ sessionId, venueId });
+    if (session === null || session.kind === "reference") throw new ApiProblem(404, "not_found", "no such session");
     const turns = c.req.valid("json").turns.map(intakeTurn);
     const claimed = [...new Set(turns.flatMap((t) => (t.claims ?? []).map((claim) => claim.reservation_id)))];
     const inputs = await deps.dastar.sessions.auditInputs({ sessionId, venueId, reservationIds: claimed });
