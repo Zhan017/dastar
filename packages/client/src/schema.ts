@@ -1552,7 +1552,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. */
+        /** Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. A reference session's transcript is written by the agent app alone, so it is refused. */
         post: {
             parameters: {
                 query?: never;
