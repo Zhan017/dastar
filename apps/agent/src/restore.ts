@@ -26,7 +26,11 @@ function receiptOf(receipt: unknown): { reservationId: string; status: string } 
 
 const answered = (status: number): boolean => status >= 200 && status < 300;
 
-/** What a recorded hold call came to; null when its answer was recorded in a shape that cannot be read. */
+/**
+ * What a recorded hold call came to; null when its status is recorded as something that is not a number. A 2xx whose
+ * receipt or expiry cannot be read is no answer, as the request may have taken effect, so its key stays and repeating
+ * the request recovers the hold.
+ */
 function outcomeOf(call: RecordedCall): RestoredOutcome | null {
   const status: unknown = call.status;
   if (status === null) return { kind: "unanswered" };
@@ -39,7 +43,7 @@ function outcomeOf(call: RecordedCall): RestoredOutcome | null {
   }
   const receipt = receiptOf(call.receipt);
   const expiresAt: unknown = isObject(call.output) ? call.output["hold_expires_at"] : undefined;
-  if (receipt === null || typeof expiresAt !== "string") return null;
+  if (receipt === null || typeof expiresAt !== "string") return { kind: "unanswered" };
   return { kind: "held", reservationId: receipt.reservationId, status: receipt.status, expiresAt };
 }
 
@@ -47,7 +51,8 @@ function outcomeOf(call: RecordedCall): RestoredOutcome | null {
  * What an earlier session did, read back from its recorded calls: the reservations its holds made and its cancels
  * ended, each once and lowercased in the order first seen, and each hold request with its idempotency key and what its
  * last attempt came to. Calls are read in the order they were begun. The log is data: a call whose recorded fields
- * are of the wrong type is skipped, and nothing here throws.
+ * are of the wrong type is skipped, and nothing here throws. A hold whose request is readable but whose 2xx answer is
+ * not keeps its key as unanswered and makes no reservation.
  */
 export function restoreFromCalls(calls: RecordedCall[]): ToolSessionRestore {
   const created = new Set<string>();

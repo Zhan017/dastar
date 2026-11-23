@@ -82,16 +82,30 @@ describe("restoreFromCalls", () => {
     const calls: RecordedCall[] = [
       call(1, "hold", null, { input: holdInput(undefined) }),
       odd(call(2, "hold", null), { input: 5 }),
-      call(3, "hold", 201, { input: holdInput("k3"), output: { hold_expires_at: EXP }, receipt: { status: "held" } }),
       call(4, "cancel", 200, { input: { reservation_id: R1 }, receipt: null }),
-      call(5, "hold", 201, { input: holdInput("k5"), output: {}, receipt: receipt(R1, "held") }),
       call(6, "hold", null, { input: { ...holdInput("k6"), party_size: "2" } }),
       call(7, "hold", null, { input: { ...holdInput("k7"), assignment: { kind: "table", id: U } } }),
-      odd(call(8, "hold", 201), { input: holdInput("k8"), output: "held", receipt: 3 }),
       odd(call(9, "hold", 409), { input: holdInput("k9"), output: { code: 409 } }),
       odd(call(10, "hold", 201), { input: holdInput("k10"), status: "201" }),
     ];
     expect(restoreFromCalls(calls)).toEqual({ created: [], cancelled: [], holds: [] });
+  });
+
+  it("a hold whose answer cannot be read keeps its key, unanswered, and creates nothing", () => {
+    const calls: RecordedCall[] = [
+      call(3, "hold", 201, { input: holdInput("k3"), output: { hold_expires_at: EXP }, receipt: { status: "held" } }),
+      call(5, "hold", 201, { input: holdInput("k5"), output: {}, receipt: receipt(R1, "held") }),
+      odd(call(8, "hold", 201), { input: holdInput("k8"), output: "held", receipt: 3 }),
+    ];
+    expect(restoreFromCalls(calls)).toEqual({
+      created: [],
+      cancelled: [],
+      holds: [
+        { request, key: "k3", outcome: { kind: "unanswered" } },
+        { request, key: "k5", outcome: { kind: "unanswered" } },
+        { request, key: "k8", outcome: { kind: "unanswered" } },
+      ],
+    });
   });
 
   it("ids are lowercased and created once", () => {
