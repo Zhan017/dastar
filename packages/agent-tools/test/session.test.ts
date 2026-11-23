@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { canonicalHoldRequest } from "@dastar/core";
-import { createToolSession, normalizeHold, type HoldArgs } from "../src/index.js";
+import { createToolSession, normalizeHold, type HoldArgs, type RestoredHold, type ToolSessionRestore } from "../src/index.js";
 import { fakeApi, json, problem } from "./fake-api.js";
 
 const VENUE = "0199a000-0000-7000-8000-000000000001";
@@ -250,5 +250,63 @@ describe("get_reservation and search_availability", () => {
     expect(firstLine(found.text)).toBe("Found 1 slot; the search stopped at a limit, so more may exist.");
     expect(found.structured).toEqual({ slots: [slot], truncated: true });
     expect(firstLine(none.text)).toBe("No slots found for a party of 2 in that window.");
+  });
+});
+
+describe("restore", () => {
+  const FUTURE = EXPIRES;
+  const PAST = "2064-01-07T11:00:00.000Z";
+  const restoredWith = (api: ReturnType<typeof fakeApi>, restore: ToolSessionRestore) =>
+    createToolSession({ client: api.client, venueId: VENUE, now, timeoutMs: 50, restore });
+  const heldHold = (expiresAt: string, status = "held"): RestoredHold => ({
+    request: REQUEST,
+    key: "k-1",
+    outcome: { kind: "held", reservationId: RES, status, expiresAt },
+  });
+
+  it("a restored session cancels what it created before the restore and refuses anything else", async () => {
+    const api = fakeApi(cancelledReceipt());
+    const s = restoredWith(api, { created: [RES.toUpperCase()], cancelled: [], holds: [] });
+    const own = await s.cancel({ reservation_id: RES, reason: "plans changed" });
+    const other = await s.cancel({ reservation_id: RES_B, reason: "not mine" });
+    expect(api.seen).toHaveLength(1);
+    expect(api.seen[0]).toMatchObject({ method: "POST", path: `/v1/reservations/${RES}/cancel` });
+    expect(firstLine(own.text)).toBe(`Cancelled reservation ${RES}.`);
+    expect(other.structured).toEqual({ code: "not_created_in_session", reservation_id: RES_B });
+  });
+
+  it("a restored hold request reuses its key while its hold is live", async () => {
+    const api = fakeApi(held(RES, true), reservation("held"));
+    const s = restoredWith(api, { created: [RES], cancelled: [], holds: [heldHold(FUTURE)] });
+    await s.hold({ ...REQUEST, starts_at: "2064-01-07T16:00:00+00:00", assignment: { kind: "unit", id: UNIT.toUpperCase() } });
+    expect(api.seen[0]!.key).toBe("k-1");
+  });
+
+  it("a restored unanswered request reuses its key; a refused one, a cancelled one, an expired one and an ended one start afresh", async () => {
+    const keyAfter = async (restore: ToolSessionRestore): Promise<string | null> => {
+      const api = fakeApi(held(RES_B));
+      await restoredWith(api, restore).hold(REQUEST);
+      return api.seen[0]!.key;
+    };
+    const none = { created: [], cancelled: [] };
+    expect(await keyAfter({ ...none, holds: [{ request: REQUEST, key: "k-1", outcome: { kind: "unanswered" } }] })).toBe("k-1");
+    const fresh = [
+      await keyAfter({ ...none, holds: [{ request: REQUEST, key: "k-1", outcome: { kind: "refused" } }] }),
+      await keyAfter({ created: [RES], cancelled: [RES.toUpperCase()], holds: [heldHold(FUTURE)] }),
+      await keyAfter({ ...none, holds: [heldHold(PAST)] }),
+      await keyAfter({ ...none, holds: [heldHold(FUTURE, "completed")] }),
+    ];
+    for (const key of fresh) {
+      expect(key).toMatch(UUID);
+      expect(key).not.toBe("k-1");
+    }
+  });
+
+  it("created lists restored ids, then new ones, lowercased, once each", async () => {
+    const api = fakeApi(held(RES_B.toUpperCase()), held(RES_B.toUpperCase(), true), reservation("held", VENUE, RES_B));
+    const s = restoredWith(api, { created: [RES], cancelled: [], holds: [] });
+    await s.hold(REQUEST);
+    await s.hold(REQUEST);
+    expect(s.created()).toEqual([RES, RES_B]);
   });
 });
