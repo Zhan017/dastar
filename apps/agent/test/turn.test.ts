@@ -3,11 +3,11 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { Client } from "pg";
 import { createDastarClient, type DastarClient } from "@dastar/client";
 import { createKey } from "@dastar/api/auth";
-import type { VenueProfile } from "@dastar/db";
+import { scrubText, type VenueProfile } from "@dastar/db";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { makeApi } from "../../api/test/helpers.js";
-import { fallbackReply } from "../src/fallback.js";
+import { fallbackReply, type FallbackRead } from "../src/fallback.js";
 import { TRUNCATED_NOTICE, UNPARSABLE_NOTICE, violationNotice } from "../src/guardrail.js";
 import { loadPrompt } from "../src/prompt.js";
 import type { Completion, CompletionRequest, LLMProvider, ToolOutput } from "../src/provider.js";
@@ -127,6 +127,14 @@ describe("one turn against the reference API", () => {
   async function callRows(sessionId: string): Promise<CallRow[]> {
     const r = await owner.query("select tool, input, status, output, receipt from dastar_agent.tool_call where session_id = $1 order by id", [sessionId]);
     return r.rows as CallRow[];
+  }
+
+  /** What the fallback reads of a reservation, taken from the API's own read of it. */
+  async function readsOf(id: string): Promise<FallbackRead[]> {
+    const read = await staff.GET("/v1/reservations/{id}", { params: { path: { id } } });
+    if (read.data === undefined) throw new Error(`could not read a reservation: HTTP ${read.response.status}`);
+    const { status, starts_at: startsAt, party_size: partySize } = read.data;
+    return [{ reservationId: id, reservation: { status, starts_at: startsAt, party_size: partySize } }];
   }
 
   async function openSession(): Promise<string> {
@@ -525,5 +533,51 @@ describe("one turn against the reference API", () => {
     // every recorded call was made through the agent's client: the demo client's reads and mints are not among them
     const counts = await owner.query("select tool, count(*)::int as n from dastar_agent.tool_call where session_id = $1 group by tool order by tool", [sessionId]);
     expect(counts.rows).toEqual([{ tool: "hold", n: 2 }]);
+  });
+
+  it("the deadline after a hold ends in a fallback that reports the held reservation, and the hold is in the response", async () => {
+    let id = "";
+    const hangs = (req: CompletionRequest): Promise<Completion> => {
+      id = idOf(req);
+      return new Promise<Completion>((_, reject) => { req.signal.addEventListener("abort", () => { reject(new Error("aborted")); }); });
+    };
+    const out = okOf(await runTurn(deps(scripted(toolCall("hold", holdArgs()), hangs), { deadlineMs: 2_000 }), { message: "a table for two" }));
+
+    const reads = await readsOf(id);
+    expect(reads[0]!.reservation?.status).toBe("held");
+    expect(out.response.reply).toEqual(fallbackReply(reads, venue.timezone));
+    expect(out.response.guardrail).toEqual({ fired: true, regenerations: 0, fallback: true });
+    expect(out.response.holds.map((hold) => hold.reservation_id)).toEqual([id]);
+
+    const rows = await turnRows(out.response.session_id);
+    expect(rows[1]!.fell_back).toBe(true);
+    expect(rows[1]!.claims).toEqual(out.response.reply.claims);
+    expect(rows[1]!.content).toBe(scrubText(out.response.reply.message));
+  });
+
+  it("a user turn left unanswered after a hold is closed with the held reservation", async () => {
+    const args = holdArgs();
+    let id = "";
+    const one = okOf(await runTurn(deps(scripted(
+      toolCall("hold", args),
+      (req) => { id = idOf(req); return replyWith(reply("Held.", [claimOf(id, "held", args)])); },
+    )), { message: "a table" }));
+    const sessionId = one.response.session_id;
+
+    const claimed = await api.dastar.sessions.claimTurn({
+      sessionId, venueId: seed.venue, apiKeyId: agentKeyId, content: "are you there?", maxUserTurns: 50, staleAfterMs: 240_000,
+    });
+    expect(claimed.kind).toBe("claimed");
+    await owner.query("update dastar_agent.turn set at = at - interval '241 seconds' where session_id = $1 and seq = 2", [sessionId]);
+
+    const three = okOf(await runTurn(deps(scripted(() => replyWith(reply("Hello.")))), { sessionId, message: "hello again" }));
+    expect(three.response.guardrail).toEqual({ fired: false, regenerations: 0, fallback: false });
+
+    const closing = fallbackReply(await readsOf(id), venue.timezone);
+    const rows = await turnRows(sessionId);
+    expect(rows.map((row) => row.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+    expect(rows[3]!.content).toBe(scrubText(closing.message));
+    expect(rows[3]!.claims).toEqual(closing.claims);
+    expect(rows[3]).toMatchObject({ seq: 3, guardrail_fired: true, fell_back: true, provider_calls: 0 });
   });
 });
