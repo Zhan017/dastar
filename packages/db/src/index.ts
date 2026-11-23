@@ -12,6 +12,9 @@ export type {
   SessionKind, SessionView, RecordedCall, StoredTurn, BeginCallOutcome, AuditInputs, SessionHooks, OpenSessionInput, SessionVenueInput, SessionRef,
   BeginCallInput, CompleteCallInput, AuditInputsInput, StoreAuditInput,
 } from "./commands/sessions.js";
+export type {
+  ClaimTurnInput, ClaimTurnOutcome, TurnRecord, StoreReplyInput, SessionHoldRow, PutSessionHoldInput, VenueProfile,
+} from "./commands/reference.js";
 export type { ListHoldsInput, HoldView } from "./commands/list-holds.js";
 export type { AdminContext, ForceOption, AdminOutcome, StrandedCode, Stranded } from "./commands/admin.js";
 export type { UnitView, ComboView, CreateUnitInput, UpdateUnitInput, CreateComboInput, UpdateComboInput } from "./commands/admin-units.js";

@@ -203,6 +203,19 @@ describe("agent sessions", () => {
     expect((await sessionRow(s.id)).audit).toBeNull();
   });
 
+  it("storeAudit refuses a reference session and leaves its turns", async () => {
+    const id = (await owner.query(
+      "insert into dastar_agent.session (venue_id, api_key_id, kind) values ($1, $2, 'reference') returning id", [A.venue, key],
+    )).rows[0].id as string;
+    await owner.query("insert into dastar_agent.turn (session_id, venue_id, seq, role, content) values ($1, $2, 0, 'user', 'hi')", [id, A.venue]);
+    await expect(d.sessions.storeAudit({ sessionId: id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString() }))
+      .rejects.toMatchObject({ name: "DastarError", code: "not_found" });
+    expect(await turnRows(id)).toMatchObject([{ seq: 0, role: "user", content: "hi" }]);
+    const row = await sessionRow(id);
+    expect(row.audit).toBeNull();
+    expect(row.audited_at).toBeNull();
+  });
+
   it("completeCall stores the outcome once and never overwrites it", async () => {
     const s = await open();
     const id = await begun(s);
