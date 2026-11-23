@@ -8,9 +8,9 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, an audit of any agent's booking claims against what its recorded calls returned, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
+**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, an audit of any agent's booking claims against what its recorded calls returned, a reference agent that books by chat and has each reply checked the same way, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
 
-[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [Audit an agent](#audit-any-agent) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
+[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [Audit an agent](#audit-any-agent) · [Reference agent](#the-reference-agent) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
 [Correctness](CORRECTNESS.md) · [Benchmarks](BENCHMARKS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Decisions](docs/adr/README.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
@@ -251,6 +251,84 @@ What it says:
 
 Posting a transcript again replaces the session's earlier transcript and result; `GET /v1/sessions/{id}/audit` reads the latest, and `GET /v1/sessions/{id}` shows the session's `calls` and `last_seen_at`. A transcript is 1 to 500 turns, with at most 50 claims on a turn. Text and quotes are stored with emails and numbers masked: an email address reads `[email]`, a number of 7 to 15 digits `[phone]`, one of 16 or more `[number]`; ids, ISO dates and times stay. Names are not detected, so redact guest details before posting. A session records up to 10,000 calls. An external session not seen for 30 days is gone, audit included. [LIMITATIONS.md](LIMITATIONS.md) lists what the audit does not cover.
 
+### The reference agent
+
+[`apps/agent`](apps/agent) is Dastar's own booking agent: a person chats, and a model searches availability, holds, and cancels through the same API, key boundary, and session recorder that any outside agent uses, so the API records its calls the way it records anyone's. Before the person sees a reply, each reservation statement the reply declares is checked against what those calls observed and against the reservation's status now; a reply that fails is regenerated, and after three failures it is replaced by a message built from reads of the reservations. The agent only holds: the person confirms with a button the app shows, which sends a single-use token that the model never sees.
+
+It is a separate process that calls the API over HTTP and keeps its own tables in the same database. It reads eight settings, and four more are optional:
+
+- `DATABASE_URL`: the application role's connection string, as for the API.
+- `DASTAR_URL`: the reference API's address, `http://127.0.0.1:8080` here.
+- `DASTAR_VENUE_ID`: the venue the agent serves.
+- `AGENT_KEY` and `AGENT_KEY_ID`: the key the tools run with, which can read, hold, and cancel and nothing else, and its id.
+- `DEMO_CONFIRM_KEY`: a second key, which can read and confirm; the agent reads each hold with it and mints the token the button sends. It must differ from `AGENT_KEY`.
+- `DASTAR_TOKEN_KEY`: 32 bytes in base64, which the agent seals the tokens it keeps with.
+- `ANTHROPIC_API_KEY`: the model provider's key.
+- Optional: `AGENT_MODEL` (default `claude-opus-5-5`), `AGENT_EFFORT` (default `medium`; one of `low`, `medium`, `high`, `xhigh`, `max`), `AGENT_HOST` (default `127.0.0.1`), and `AGENT_PORT` (default `8081`).
+
+With the database and the API from the sections above still running, create the two keys. Each prints a JSON object with its `id` and its `key`: the first one's id goes in `AGENT_KEY_ID` and its key in `AGENT_KEY`, the second one's key in `DEMO_CONFIRM_KEY`. Create the token key with `openssl rand -base64 32`, then start the agent:
+
+```bash
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label agent --capabilities read,hold,cancel --venues 0199a000-0000-7000-8000-000000000001
+DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres pnpm keys:create --label demo --capabilities read,confirm --venues 0199a000-0000-7000-8000-000000000001
+
+export DATABASE_URL=postgres://dastar_app:app@localhost:55432/postgres DASTAR_URL=http://127.0.0.1:8080
+export DASTAR_VENUE_ID=0199a000-0000-7000-8000-000000000001 DASTAR_TOKEN_KEY=$(openssl rand -base64 32)
+export AGENT_KEY=dsk_... AGENT_KEY_ID=the-agent-keys-id DEMO_CONFIRM_KEY=dsk_... ANTHROPIC_API_KEY=the-providers-key
+pnpm --filter @dastar/agent start
+```
+
+Before it listens, on 127.0.0.1:8081, the agent checks that the venue exists, that `AGENT_KEY` reads the venue's holds and is refused both confirming and administering, that `DEMO_CONFIRM_KEY` reads them and can confirm, and that `AGENT_KEY_ID` is the id of `AGENT_KEY`. A failed check prints one line and exits 1; the line about a key names the `keys:create` command that creates the right one. Each start opens one empty audit session to confirm the key's id. `search_availability` finds slots only in a venue with service periods, so add them as in [Agent tools and MCP](#agent-tools-and-mcp). Then ask for a table:
+
+```bash
+curl -s -X POST localhost:8081/demo/chat \
+  -H "content-type: application/json" \
+  -d '{"message":"Please hold a table for 2 on 7 June 2030 at 19:00."}'
+```
+
+The answer, formatted here for reading, with ids and times that differ on every run and the token not shown:
+
+```json
+{
+  "session_id": "0199b2d4-5e6f-7a81-9c03-4d7b1e2a8f56",
+  "reply": {
+    "message": "I've put a hold on a table for 2 at Dastarkhan on Friday 7 June 2030 at 19:00, for 90 minutes. It isn't booked yet. Please confirm it with the button beside this reply before 15:28, venue time, or the hold will run out.",
+    "claims": [
+      { "reservation_id": "0199b2d5-0a3c-7e14-b8d2-6f90a1c47e33", "status": "held", "starts_at": "2030-06-07T14:00:00Z", "party_size": 2 }
+    ]
+  },
+  "holds": [
+    {
+      "reservation_id": "0199b2d5-0a3c-7e14-b8d2-6f90a1c47e33",
+      "party_size": 2,
+      "starts_at": "2030-06-07T14:00:00Z",
+      "duration_minutes": 90,
+      "hold_expires_at": "2026-11-18T10:28:40.502Z",
+      "confirm_token": "…"
+    }
+  ],
+  "guardrail": { "fired": false, "regenerations": 0, "fallback": false }
+}
+```
+
+Send the next message with the `session_id`; a conversation takes up to 50 messages of 1 to 2,000 characters, one at a time, and a message sent while the previous one is still being answered is refused with 409 `turn_in_progress`. Every refusal is Problem Details in the API's shape. `reply` is the model's message and the claims it declared, and `guardrail` says whether a reply was held back, how many times the model was asked again, and whether the message is the fallback. `holds` has one entry for each reservation the conversation holds that is still held, built from a read of the reservation and never from the model's words, so a front end shows its party size, time, and expiry from there. The route has no authentication and binds loopback unless `AGENT_HOST` says otherwise.
+
+The person confirms by sending the entry's token to the confirm route with no key, as a button's request does; here `$TOKEN` holds the entry's `confirm_token`:
+
+```bash
+curl -s -X POST localhost:8080/v1/reservations/0199b2d5-0a3c-7e14-b8d2-6f90a1c47e33/confirm \
+  -H "content-type: application/json" -d '{"confirm_token":"'"$TOKEN"'"}'
+```
+
+The token never reaches the model, a log line, a stored turn, or a recorded call. The agent keeps it encrypted, with AES-256-GCM under `DASTAR_TOKEN_KEY`, in its own table, and returns it in `holds` alone. The conversation is a reference session: its turns are stored with the model that answered, a hash of the prompt, the calls and tokens the turn took, and whether it ended in the fallback, and `POST /v1/sessions/{id}/audit` refuses it, so no key can replace what the agent recorded. [SECURITY.md](SECURITY.md) and [LIMITATIONS.md](LIMITATIONS.md) list what this protects and what it leaves open.
+
+[`agent-live.yml`](.github/workflows/agent-live.yml) is the live check: it runs the agent against the real model. No push or pull request starts it. It is started by hand, from the repository's Actions tab or with `gh workflow run agent-live.yml -f mode=probe`, with a `mode` of `probe` or `conversations`, and it fails at once, saying so, unless the repository secret `ANTHROPIC_API_KEY` is set. A run costs what its calls to the model cost on that key's account.
+
+- `probe` makes about five requests with the agent's real tools and reply format, canned tool results, and no database, to check that the provider accepts them together.
+- `conversations`, the default, sets up Postgres 18, the migrations and roles, the demo venue and a schedule for it, the three keys, and the API, then runs five conversations one after another, each in a new session, through the same turn the route runs: book a table; book and then cancel; change the party size; ask after the job has confirmed the hold with its token; ask the agent to confirm. Each is judged on state and not on wording: a live hold whose token confirms it, a recorded cancel and no hold left, one live hold at the new size, a reply claiming the reservation confirmed that is not the fallback, and a reservation still held with no confirm call recorded.
+
+The job uploads `agent-live.json`, with each turn's reply, guardrail outcome, model, and token counts and never a token, and the API's log as `api.log`. It exits 1 unless every conversation passes.
+
 ## Measure it
 
 Five more harness commands measure what the tests cannot: behavior under load, under pool exhaustion, over time, and during migrations. Each writes a JSON report under `apps/harness/results/` and reads its verdict from the database, not from client timeouts. With the database from the previous sections still running:
@@ -353,6 +431,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Reference API | Thirteen v1 routes, fifteen admin routes for units, combinations, schedules, blackouts, and a venue's keys, hashed keys with capabilities and venue scope, confirmation by key or by single-use token, Problem Details, readiness, an OpenAPI document committed and checked against the routes, a Swagger UI page, and a typed TypeScript client generated from the document |
 | Agent tools | Four tools, `search_availability`, `hold`, `cancel`, and `get_reservation`, with inputs from the committed document and no confirm tool; a session keeps one idempotency key per hold request and cancels only the reservations it created; an MCP server over stdio that refuses keys able to confirm or administer, and records its calls in an audit session when `DASTAR_SESSION_ID` is set |
 | Agent audit | Audit sessions opened by a key that cannot confirm or administer; a `dastar-session` header on nine v1 routes that records each call and its receipt, never a key, confirm token, external reference, cancel reason, or problem detail; transcript intake that masks emails and numbers; a deterministic matcher that sets each declared claim against the session's calls and the reservation's current status, with receipts checked against the audit log; 30-day retention of external sessions; the client's `session` option; `starts_at` on the reservation read and the holds list |
+| Reference agent | `apps/agent`, a separate process that serves `POST /demo/chat` and calls the API over HTTP through the typed client and the agent tools, with a key that can read, hold, and cancel and the session header on every call; a provider interface with an Anthropic adapter; a turn of at most six calls to the model, a deadline of 120 seconds, and a guardrail that sets each declared claim against the session's calls and the reservation's status now, regenerates a failing reply twice, and then answers with a message built from reads; turns stored with their model, prompt hash, and token counts; confirm tokens minted with a second key and kept encrypted; the person confirms with a token and no key; start-up key checks; a live check against the model that is started by hand |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery is still planned.
 
@@ -374,12 +453,12 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Finish agent integration:** a reference agent on the tools, a human confirmation flow, and a judge that finds the booking statements an agent made without declaring them as claims, which the audit does not check yet.
-2. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example.
+1. **Finish agent integration:** a judge that finds the booking statements an agent made without declaring them as claims, which neither the audit nor the reference agent's guardrail checks yet, and the evals that measure the guardrail.
+2. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example with a chat page and authentication and a spend cap on `/demo/chat`.
 
-The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. The confirmation flow and the reference agent are future work; the engine supplies the reservation and token primitives they will use. [Audit any agent](#audit-any-agent) already checks the declared claims of any agent.
+The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. [The reference agent](#the-reference-agent) follows it, and the person's confirmation is a token and no key. [Audit any agent](#audit-any-agent) checks the declared claims of any agent.
 
-The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on are also recorded as [ADRs](docs/adr/README.md).
+The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on, and the one that makes the reference agent an API client, are also recorded as [ADRs](docs/adr/README.md).
 
 ## Explore the code
 
@@ -392,6 +471,7 @@ The [system design](docs/design/design.md) contains the decisions, invariant def
 - [Race and naive harness](apps/harness)
 - [Reference API](apps/api), its [OpenAPI document](apps/api/openapi.json), and the [typed client](packages/client)
 - [Agent tools](packages/agent-tools) and the [MCP server](packages/mcp)
+- [Reference agent](apps/agent), its [prompt](apps/agent/prompts/reference-v1.md), and the [live check](.github/workflows/agent-live.yml)
 - [Sweeper worker](packages/worker)
 - [Correctness](CORRECTNESS.md), [Limitations](LIMITATIONS.md), [Security](SECURITY.md), [Decisions](docs/adr/README.md)
 - [Prototype results and open questions](docs/design/results-2026-09-10-prototype.md)
