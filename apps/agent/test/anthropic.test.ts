@@ -294,9 +294,9 @@ describe("echoContent", () => {
     ]);
   });
 
-  it("works from the last of several fallback blocks and leaves output with none as it is", () => {
+  it("keeps every fallback block where it appeared and leaves output with none as it is", () => {
     const other = { ...fallback, from: { model: "claude-sonnet-5-5" }, to: { model: "claude-haiku-5-5" } };
-    expect(echoContent([thinking("a"), fallback, thinking("b"), toolUse("B"), other, text("c")])).toEqual([other, text("c")]);
+    expect(echoContent([thinking("a"), fallback, thinking("b"), toolUse("B"), other, text("c")])).toEqual([fallback, other, text("c")]);
 
     const plain = [thinking("a"), toolUse("A"), text("t")];
     expect(echoContent(plain)).toEqual(plain);

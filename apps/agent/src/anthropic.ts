@@ -46,9 +46,10 @@ function lastFallback(content: readonly unknown[]): number {
 
 /**
  * The model's output as the next request carries it. After a fallback, the blocks before the last `fallback` block
- * are cut to the text and the server tools' paired calls and results: the thinking, tool calls and any other block
- * there were produced by the model that declined, and the API rejects a turn that carries them forward. The
- * `fallback` block stays where it is, and the blocks after it are unchanged. With no `fallback` block, the output is unchanged.
+ * are cut to the text, the server tools' paired calls and results, and the `fallback` blocks of earlier hops, which
+ * stay where they appeared: the thinking, tool calls and any other block there were produced by the model that
+ * declined, and the API rejects a turn that carries them forward. The last `fallback` block stays where it is, and the
+ * blocks after it are unchanged. With no `fallback` block, the output is unchanged.
  */
 export function echoContent(content: unknown[]): unknown[] {
   const cut = lastFallback(content);
@@ -65,7 +66,7 @@ export function echoContent(content: unknown[]): unknown[] {
 
   const kept = before.filter((block) => {
     if (!isBlock(block)) return false;
-    if (block["type"] === "text") return true;
+    if (block["type"] === "text" || block["type"] === "fallback") return true;
     if (block["type"] === "server_tool_use") return typeof block["id"] === "string" && answered.has(block["id"]);
     return typeof block["tool_use_id"] === "string" && serverCalls.has(block["tool_use_id"]);
   });
