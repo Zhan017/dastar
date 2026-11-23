@@ -73,16 +73,19 @@ const holdsProbe = (client: DastarClient, venueId: string): Probe => ({
   },
 });
 
+/** Asks about the reservation no one has, so it confirms nothing and only learns whether the key may confirm. */
+const confirmTokenProbe = (client: DastarClient, pass: number, refusals: Record<number, string>): Probe => ({
+  method: "POST",
+  path: "/v1/reservations/{id}/confirm-token",
+  run: (signal) => client.POST("/v1/reservations/{id}/confirm-token", { params: { path: { id: NO_RESERVATION } }, body: {}, signal }),
+  pass,
+  refusals,
+});
+
 function probesFor(client: DastarClient, venueId: string): Probe[] {
   return [
     holdsProbe(client, venueId),
-    {
-      method: "POST",
-      path: "/v1/reservations/{id}/confirm-token",
-      run: (signal) => client.POST("/v1/reservations/{id}/confirm-token", { params: { path: { id: NO_RESERVATION } }, body: {}, signal }),
-      pass: 403,
-      refusals: { 404: "the key can confirm reservations, and this server takes only keys that cannot" },
-    },
+    confirmTokenProbe(client, 403, { 404: "the key can confirm reservations, and this server takes only keys that cannot" }),
     {
       method: "GET",
       path: "/admin/venues/{id}/keys",
@@ -122,13 +125,7 @@ export function checkCredential(client: DastarClient, target: CredentialTarget, 
  * must answer 404, as it does for a key that may confirm, not 403. Returns `null` when it may, else the refusal line.
  */
 export function checkConfirmKey(client: DastarClient, target: CredentialTarget, timeoutMs = 10_000): Promise<string | null> {
-  const confirms: Probe = {
-    method: "POST",
-    path: "/v1/reservations/{id}/confirm-token",
-    run: (signal) => client.POST("/v1/reservations/{id}/confirm-token", { params: { path: { id: NO_RESERVATION } }, body: {}, signal }),
-    pass: 404,
-    refusals: { 403: "the key cannot confirm reservations, and DEMO_CONFIRM_KEY must" },
-  };
+  const confirms = confirmTokenProbe(client, 404, { 403: "the key cannot confirm reservations, and DEMO_CONFIRM_KEY must" });
   return firstRefusal([holdsProbe(client, target.venueId), confirms], target, timeoutMs);
 }
 
