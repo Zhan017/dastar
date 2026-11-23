@@ -33,6 +33,12 @@ const manyCalls = (calls: [string, unknown][]): Completion => ({
   model: "fake-model",
 });
 
+/** The model output a completion carries, to pass back; a refusal or truncation has none. */
+function assistantOf(completion: Completion): unknown {
+  if (completion.kind !== "tools" && completion.kind !== "reply") throw new Error(`a ${completion.kind} completion carries no output`);
+  return completion.assistant;
+}
+
 describe("runProbe", () => {
   it("passes a run that calls a tool, replies, and replies again after the notice", async () => {
     const provider = scripted(toolCall("search_availability", search), replyWith(noClaims), replyWith(another));
@@ -56,10 +62,10 @@ describe("runProbe", () => {
       { role: "operator", text: "Now 2026-11-23T10:00:00.000Z; Monday 2026-11-23 15:00 Asia/Almaty UTC+05:00, at Dastarkhan." },
     ]);
     expect(second?.messages.map((m) => m.role)).toEqual(["user", "operator", "provider", "tool_results"]);
-    expect(second?.messages[2]).toEqual({ role: "provider", content: toolCall("search_availability", search).assistant });
+    expect(second?.messages[2]).toEqual({ role: "provider", content: assistantOf(toolCall("search_availability", search)) });
     expect(second?.messages[3]).toMatchObject({ role: "tool_results", results: [{ id: "toolu_fake", isError: false }] });
     expect(third?.messages.map((m) => m.role)).toEqual(["user", "operator", "provider", "tool_results", "provider", "operator"]);
-    expect(third?.messages[4]).toEqual({ role: "provider", content: replyWith(noClaims).assistant });
+    expect(third?.messages[4]).toEqual({ role: "provider", content: assistantOf(replyWith(noClaims)) });
     expect(third?.messages[5]).toEqual({ role: "operator", text: "Reply again in one sentence." });
   });
 

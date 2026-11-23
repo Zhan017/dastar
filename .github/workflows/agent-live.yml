@@ -29,9 +29,10 @@ jobs:
     env:
       OWNER_URL: postgres://dastar_owner:owner@localhost:5432/dastar
       APP_URL: postgres://dastar_app:app@localhost:5432/dastar
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - name: Check the key is set
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           [ -n "$ANTHROPIC_API_KEY" ] || { echo "the ANTHROPIC_API_KEY repository secret is not set"; exit 1; }
       - uses: actions/checkout@v4
@@ -42,6 +43,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - if: inputs.mode == 'probe'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: pnpm --filter @dastar/agent live probe
       - if: always()
         uses: actions/upload-artifact@v4
