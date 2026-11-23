@@ -1,6 +1,7 @@
 /**
  * Package boundaries (system design, section 5): the domain at the bottom, the engine on it, the worker and
- * the reference API on the engine, the harness on all of them. Source only; tests may reach into helpers.
+ * the reference API on the engine, the harness on all of them, and the reference agent on the client, the tools and the engine.
+ * Source only; tests may reach into helpers.
  */
 const pkg = (name) => `^(packages|apps)/${name}/src/`;
 
@@ -53,6 +54,20 @@ module.exports = {
       severity: "error",
       from: { path: pkg("mcp") },
       to: { path: "^(packages|apps)/(core|db|worker|api|harness)/" },
+    },
+    {
+      name: "agent-on-the-contract-and-engine",
+      comment: "the reference agent calls the API over HTTP through the client and the tools, and writes its own tables through the engine; it imports no other host",
+      severity: "error",
+      from: { path: pkg("agent") },
+      to: { path: "^(packages|apps)/(api|worker|harness|mcp)/" },
+    },
+    {
+      name: "nothing-imports-the-agent",
+      comment: "the agent is an app: no package or other app depends on it",
+      severity: "error",
+      from: { pathNot: "^apps/agent/" },
+      to: { path: "^apps/agent/" },
     },
     {
       name: "no-unresolvable",
