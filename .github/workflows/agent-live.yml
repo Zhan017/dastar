@@ -29,6 +29,7 @@ jobs:
     env:
       OWNER_URL: postgres://dastar_owner:owner@localhost:5432/dastar
       APP_URL: postgres://dastar_app:app@localhost:5432/dastar
+      DASTAR_VENUE_ID: 0199a000-0000-7000-8000-000000000001
     steps:
       - name: Check the key is set
         env:
@@ -46,9 +47,75 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: pnpm --filter @dastar/agent live probe
+      - if: inputs.mode == 'conversations'
+        name: Set up the database and the demo venue
+        env:
+          DASTAR_APP_PASSWORD: app
+        run: |
+          pnpm -s migrate --owner-url "$OWNER_URL"
+          pnpm -s roles --owner-url "$OWNER_URL"
+          pnpm -s seed:demo --owner-url "$OWNER_URL"
+      - if: inputs.mode == 'conversations'
+        name: Create the admin, agent and demo keys
+        shell: bash
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+        run: |
+          # each key is read into a variable, masked at once, and passed on through GITHUB_ENV; none is printed
+          make_key() { # label capabilities key-variable [id-variable]
+            local created key
+            created=$(pnpm -s --filter @dastar/api keys:create --label "$1" --capabilities "$2" --venues "$DASTAR_VENUE_ID" | jq -Rn '[inputs | fromjson? | select(type == "object" and has("key"))] | last')
+            key=$(jq -r '.key // empty' <<<"$created")
+            echo "::add-mask::$key"
+            [ -n "$key" ] || { echo "no key was created for $1"; return 1; }
+            echo "$3=$key" >> "$GITHUB_ENV"
+            if [ -n "${4:-}" ]; then
+              echo "$4=$(jq -r '.id' <<<"$created")" >> "$GITHUB_ENV"
+            fi
+          }
+          make_key admin admin ADMIN_KEY
+          make_key agent read,hold,cancel AGENT_KEY AGENT_KEY_ID
+          make_key demo read,confirm DEMO_CONFIRM_KEY
+      - if: inputs.mode == 'conversations'
+        name: Start the API
+        env:
+          HOST: 127.0.0.1
+          PORT: "8080"
+          DATABASE_URL: ${{ env.APP_URL }}
+        run: |
+          pnpm --filter @dastar/api start > api.log 2>&1 &
+          for _ in $(seq 60); do
+            if curl -fs http://127.0.0.1:8080/health/ready > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "the API did not answer /health/ready within 60 seconds"
+          exit 1
+      - if: inputs.mode == 'conversations'
+        name: Add the venue's service periods
+        run: |
+          for day in 1 2 3 4 5 6 7; do
+            curl -fsS -o /dev/null -X POST "http://127.0.0.1:8080/admin/venues/$DASTAR_VENUE_ID/schedules" \
+              -H "authorization: Bearer $ADMIN_KEY" -H "content-type: application/json" \
+              -d '{"day_of_week":'"$day"',"opens":"17:00","closes":"23:00","duration_by_size":{"2":90,"4":120,"8":150}}'
+          done
+      - if: inputs.mode == 'conversations'
+        name: Create the key that seals the confirm tokens
+        run: |
+          token_key=$(openssl rand -base64 32)
+          echo "::add-mask::$token_key"
+          echo "DASTAR_TOKEN_KEY=$token_key" >> "$GITHUB_ENV"
+      - if: inputs.mode == 'conversations'
+        name: Run the five conversations
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASTAR_URL: http://127.0.0.1:8080
+          DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm --filter @dastar/agent live conversations
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agent-live
-          path: apps/agent/agent-live.json
+          path: |
+            apps/agent/agent-live.json
+            api.log
           if-no-files-found: warn

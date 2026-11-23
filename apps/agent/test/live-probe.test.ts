@@ -114,7 +114,7 @@ describe("runProbe", () => {
     expect(lastResult(answered)).toMatchObject({ slots: [{ starts_at: "2026-11-25T14:00:00.000Z" }] });
   });
 
-  it("answers a tool call that comes after the first reply, within the four requests", async () => {
+  it("answers a tool call that comes after the first reply, within the six requests", async () => {
     const provider = scripted(toolCall("search_availability", search), replyWith(noClaims), toolCall("get_reservation", get), replyWith(another));
     const report = await runProbe(provider, prompt, NOW);
 
@@ -165,7 +165,7 @@ describe("runProbe", () => {
     expect(none.requests).toHaveLength(1);
   });
 
-  it("never passes on a refusal or truncation, on a failed request or with no reply in four requests", async () => {
+  it("never passes on a refusal or truncation, on a failed request or with no reply in six requests", async () => {
     const refused: Completion = { kind: "refused", usage: { ...USAGE }, model: "fake-model" };
     const truncated: Completion = { kind: "truncated", usage: { ...USAGE }, model: "fake-model" };
 
@@ -194,17 +194,11 @@ describe("runProbe", () => {
     expect(await runProbe(notAnError, prompt, NOW)).toEqual({ passed: false, reason: "the request failed: gone", requests: [] });
 
     // a model that keeps calling tools never gets to reply
-    const calls = scripted(
-      toolCall("search_availability", search),
-      toolCall("search_availability", search),
-      toolCall("search_availability", search),
-      toolCall("search_availability", search),
-      replyWith(noClaims),
-    );
+    const calls = scripted(...Array.from({ length: 6 }, () => toolCall("search_availability", search)), replyWith(noClaims));
     const capped = await runProbe(calls, prompt, NOW);
-    expect(capped).toMatchObject({ passed: false, reason: "no reply within 4 requests" });
-    expect(capped.requests).toHaveLength(4);
-    expect(calls.requests).toHaveLength(4);
+    expect(capped).toMatchObject({ passed: false, reason: "no reply within 6 requests" });
+    expect(capped.requests).toHaveLength(6);
+    expect(calls.requests).toHaveLength(6);
   });
 });
 

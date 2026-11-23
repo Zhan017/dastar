@@ -1,22 +1,28 @@
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { Pool } from "pg";
 import type { ToolName } from "@dastar/agent-tools";
-import type { components } from "@dastar/client";
+import { createDastarClient, type components } from "@dastar/client";
+import { createDastar } from "@dastar/db";
 import { createAnthropicProvider } from "../src/anthropic.js";
 import { venueClock } from "../src/clock.js";
+import { readAgentConfig } from "../src/config.js";
 import { loadPrompt, renderContext, type LoadedPrompt } from "../src/prompt.js";
 import type { ChatMessage, Completion, LLMProvider, ToolCall, ToolOutput, Usage } from "../src/provider.js";
 import { REPLY_JSON_SCHEMA, parseReply } from "../src/reply.js";
 import { capResult } from "../src/results.js";
+import { checkStartup } from "../src/startup.js";
 import { AGENT_INPUT_SCHEMAS, AGENT_TOOLS, validateArgs } from "../src/tools.js";
+import type { AgentDeps } from "../src/turn.js";
+import { runConversations, type ConversationReport } from "./conversations.js";
 
 type Schemas = components["schemas"];
 
 /** What one run of the probe came to: whether it passed, why not when it did not, and the requests it made, failed runs included. */
 export type ProbeReport = { passed: boolean; reason?: string; requests: { kind: string; model: string; usage: Usage }[] };
 
-/** The most requests a probe makes. */
-const MAX_REQUESTS = 4;
+/** The most requests a probe makes: the most calls to the model one turn makes. */
+const MAX_REQUESTS = 6;
 
 /** The longest a probe may take in all. */
 const PROBE_TIMEOUT_MS = 10 * 60_000;
@@ -202,12 +208,65 @@ export function recordingFetch(base: typeof fetch, into: ResponseRecord[]): type
 /** The model the live check asks when AGENT_MODEL is not set; the agent's own default. */
 const DEFAULT_MODEL = "claude-opus-5-5";
 
+/** What one turn cost, as one line. */
+function turnLine(turn: ConversationReport["turns"][number], n: number): string {
+  const { model, providerCalls, regenerations, fellBack, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = turn.record;
+  return `  turn ${n} model=${model} provider_calls=${providerCalls} regenerations=${regenerations} fell_back=${fellBack} input=${inputTokens} output=${outputTokens} cache_read=${cacheReadTokens} cache_write=${cacheWriteTokens}`;
+}
+
+/** The five conversations against the running API and the real model: one line for each, and for each turn what it cost. */
+async function runConversationsMode(env: Record<string, string | undefined>): Promise<number> {
+  const configured = readAgentConfig(env);
+  if (!configured.ok) {
+    console.error(`dastar-agent: ${configured.line}`);
+    return 1;
+  }
+  const { config } = configured;
+  const startedAt = new Date().toISOString();
+
+  // pg-pool requires a listener for an idle client's error, or the process dies with it
+  const pool = new Pool({ connectionString: config.databaseUrl, application_name: "dastar-agent-live" });
+  pool.on("error", (error) => {
+    console.error(`pool error: ${error.message}`);
+  });
+  const dastar = createDastar({ pool, cancellerConnectionString: config.databaseUrl });
+  try {
+    const checked = await checkStartup({ config, dastar });
+    if (!checked.ok) {
+      console.error(`dastar-agent: ${checked.line}`);
+      return 1;
+    }
+
+    const responses: ResponseRecord[] = [];
+    const deps: AgentDeps = {
+      dastar,
+      provider: createAnthropicProvider({ apiKey: config.anthropicApiKey, model: config.model, effort: config.effort, fetch: recordingFetch(globalThis.fetch, responses) }),
+      agentClient: (sessionId) => createDastarClient({ baseUrl: config.dastarUrl, key: config.agentKey, session: sessionId }),
+      demoClient: createDastarClient({ baseUrl: config.dastarUrl, key: config.demoConfirmKey }),
+      venue: checked.venue,
+      agentKeyId: config.agentKeyId,
+      tokenKey: config.tokenKey,
+      prompt: loadPrompt(),
+    };
+    const conversations = await runConversations(deps, { dastarUrl: config.dastarUrl });
+
+    writeFileSync("agent-live.json", `${JSON.stringify({ mode: "conversations", model: config.model, started_at: startedAt, conversations, responses }, null, 2)}\n`);
+    for (const { name, passed, reason, turns } of conversations) {
+      console.log(`${name} ${passed ? "passed" : `failed: ${reason ?? "no reason given"}`}`);
+      turns.forEach((turn, i) => {
+        console.log(turnLine(turn, i + 1));
+      });
+    }
+    return conversations.every((conversation) => conversation.passed) ? 0 : 1;
+  } finally {
+    await dastar.close().catch(() => undefined);
+    await pool.end().catch(() => undefined);
+  }
+}
+
 async function main(args: string[], env: Record<string, string | undefined>): Promise<number> {
   const [mode] = args;
-  if (mode === "conversations") {
-    console.error("conversations are not built yet");
-    return 2;
-  }
+  if (mode === "conversations") return await runConversationsMode(env);
   if (mode !== "probe") {
     console.error("usage: live.ts probe | conversations");
     return 2;
