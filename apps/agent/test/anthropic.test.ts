@@ -39,7 +39,7 @@ const request = (overrides: Partial<CompletionRequest> = {}): CompletionRequest 
   messages: [{ role: "user", text: "a table for two" }],
   tools: AGENT_TOOLS,
   replySchema: REPLY_JSON_SCHEMA,
-  signal: new AbortController().signal,
+  signal: AbortSignal.any([]), // follows no other signal, so it never aborts
   ...overrides,
 });
 
@@ -261,9 +261,7 @@ describe("createAnthropicProvider completion", () => {
   it("the signal aborts the request", async () => {
     const { fetch: fetchFn, sent } = fakeFetch(() => message({ content: [text("hi")], stop_reason: "end_turn" }));
     const p = createAnthropicProvider({ apiKey: "test-key", model: "claude-opus-5-5", effort: "medium", fetch: fetchFn, maxRetries: 0 });
-    const controller = new AbortController();
-    controller.abort();
-    await expect(p.complete(request({ signal: controller.signal }))).rejects.toThrow();
+    await expect(p.complete(request({ signal: AbortSignal.abort() }))).rejects.toThrow();
     expect(sent).toHaveLength(0);
   });
 });

@@ -9,7 +9,7 @@ const request = (overrides: Partial<CompletionRequest> = {}): CompletionRequest 
   messages: [{ role: "user", text: "a table for two" }],
   tools: AGENT_TOOLS,
   replySchema: REPLY_JSON_SCHEMA,
-  signal: new AbortController().signal,
+  signal: AbortSignal.any([]), // follows no other signal, so it never aborts
   ...overrides,
 });
 
