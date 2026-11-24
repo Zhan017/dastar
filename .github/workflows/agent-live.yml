@@ -56,7 +56,7 @@ jobs:
           pnpm -s roles --owner-url "$OWNER_URL"
           pnpm -s seed:demo --owner-url "$OWNER_URL"
       - if: inputs.mode == 'conversations'
-        name: Create the admin, agent and demo keys
+        name: Create the agent and demo keys
         shell: bash
         env:
           DATABASE_URL: ${{ env.APP_URL }}
