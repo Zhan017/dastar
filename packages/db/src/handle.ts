@@ -9,8 +9,12 @@ import { getReservation, findReservationVenue, currentStatuses, type GetInput, t
 import {
   openSession, sessionVenue, getSession, beginCall, completeCall, auditInputs, storeAudit, getAudit,
   type SessionView, type BeginCallOutcome, type AuditInputs, type SessionHooks, type OpenSessionInput, type SessionVenueInput, type SessionRef,
-  type BeginCallInput, type CompleteCallInput, type AuditInputsInput, type StoreAuditInput,
+  type BeginCallInput, type CompleteCallInput, type AuditInputsInput, type StoreAuditInput, type StoredTurn,
 } from "./commands/sessions.js";
+import {
+  openReferenceSession, claimTurn, storeReply, readTurns, listSessionHolds, putSessionHold, venueProfile,
+  type ClaimTurnInput, type ClaimTurnOutcome, type StoreReplyInput, type SessionHoldRow, type PutSessionHoldInput, type VenueProfile,
+} from "./commands/reference.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
 import { purgeRetained, type RetentionBatch } from "./commands/retention.js";
@@ -56,7 +60,8 @@ export type DastarOptions = {
 export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" | "mintConfirmToken" | "getReservation" | "findReservationVenue" | "listHolds" | "availability" | "expireDue" | "purgeRetained"
   | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo"
   | "listSchedules" | "createSchedule" | "updateSchedule" | "listBlackouts" | "createBlackout" | "updateBlackout"
-  | "currentStatuses" | "openSession" | "sessionVenue" | "getSession" | "beginCall" | "completeCall" | "auditInputs" | "storeAudit" | "getAudit";
+  | "currentStatuses" | "openSession" | "sessionVenue" | "getSession" | "beginCall" | "completeCall" | "auditInputs" | "storeAudit" | "getAudit"
+  | "openReferenceSession" | "claimTurn" | "storeReply" | "readTurns" | "listSessionHolds" | "putSessionHold" | "venueProfile";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 /**
@@ -110,10 +115,22 @@ export interface DastarSessions {
   completeCall(input: CompleteCallInput): Promise<void>;
   /** The session's calls in order, each receipt checked against the audit log, with the current status of the listed reservations, in one snapshot. */
   auditInputs(input: AuditInputsInput): Promise<AuditInputs>;
-  /** Replaces the session's turns and stores the audit's result; `not_found` for a session of another venue or one that is not live. */
+  /** Replaces the session's turns and stores the audit's result; `not_found` for a session of another venue, one that is not live, or a reference session. */
   storeAudit(input: StoreAuditInput, hooks?: SessionHooks): Promise<void>;
   /** The result of the session's latest audit; null before the first. */
   getAudit(input: SessionRef): Promise<unknown | null>;
+  /** A new reference session for the key in the venue; `not_found` when the venue does not exist. */
+  openReferenceSession(input: OpenSessionInput): Promise<SessionView>;
+  /** Takes the session's next user turn: `missing` for a session that is not the key's reference session in the venue, `busy` or `stale` while the last turn is an unanswered user turn, `full` at the limit of user turns. */
+  claimTurn(input: ClaimTurnInput, hooks?: SessionHooks): Promise<ClaimTurnOutcome>;
+  /** Stores the assistant turn answering the user turn before it, with its record, once; false when the seq is taken or the turn before it is not a user turn. */
+  storeReply(input: StoreReplyInput): Promise<boolean>;
+  /** The session's turns in seq order; empty for a session of another venue or one that is gone. */
+  readTurns(input: SessionRef): Promise<StoredTurn[]>;
+  /** The encrypted confirm token of each reservation the session holds; empty for a session of another venue or one that is gone. */
+  listSessionHolds(input: SessionRef): Promise<SessionHoldRow[]>;
+  /** Keeps the encrypted confirm token of a reservation the session holds, replacing the token already kept for that pair. */
+  putSessionHold(input: PutSessionHoldInput): Promise<void>;
 }
 
 export interface Dastar {
@@ -143,6 +160,8 @@ export interface Dastar {
    * 10 minutes later. Needs the worker role, like `expireDue`.
    */
   purgeRetained(opts?: { limit?: number }): Promise<RetentionBatch>;
+  /** The venue's name and time zone; null when there is no such venue. */
+  venueProfile(venueId: string): Promise<VenueProfile | null>;
   admin: DastarAdmin;
   sessions: DastarSessions;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
@@ -347,6 +366,7 @@ export function createDastar(opts: DastarOptions): Dastar {
     availability: (input) => run("availability", null, (c) => availability(c, input, snapshots)),
     expireDue: (o) => run("expireDue", null, (c) => expireDue(c, o)),
     purgeRetained: (o) => run("purgeRetained", null, (c) => purgeRetained(c, o)),
+    venueProfile: (venueId) => run("venueProfile", null, (c) => venueProfile(c, venueId)),
     admin: {
       listUnits: (venueId) => run("listUnits", null, (c) => listUnits(c, venueId)),
       createUnit: (ctx, input) => run("createUnit", ctx.traceId, (c) => createUnit(c, ctx, input)),
@@ -370,6 +390,12 @@ export function createDastar(opts: DastarOptions): Dastar {
       auditInputs: (input) => run("auditInputs", null, (c) => auditInputs(c, input)),
       storeAudit: (input, hooks) => run("storeAudit", null, (c) => storeAudit(c, input, hooks)),
       getAudit: (input) => run("getAudit", null, (c) => getAudit(c, input)),
+      openReferenceSession: (input) => run("openReferenceSession", null, (c) => openReferenceSession(c, input)),
+      claimTurn: (input, hooks) => run("claimTurn", null, (c) => claimTurn(c, input, hooks)),
+      storeReply: (input) => run("storeReply", null, (c) => storeReply(c, input)),
+      readTurns: (input) => run("readTurns", null, (c) => readTurns(c, input)),
+      listSessionHolds: (input) => run("listSessionHolds", null, (c) => listSessionHolds(c, input)),
+      putSessionHold: (input) => run("putSessionHold", null, (c) => putSessionHold(c, input)),
     },
     close: async () => {
       const p = cancellerPromise;

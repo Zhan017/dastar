@@ -25,9 +25,20 @@ describe("the tool definitions", () => {
     expect(d.cancel).toContain("only reservations this session created");
   });
 
-  it("include no confirm tool, and no source file names a confirm route", () => {
+  it("include no confirm tool; no tool source names a confirm route, and the start-up probes ask the confirm-token route only about a reservation that does not exist, behind an import no tool makes", () => {
     expect(TOOLS.some((t) => t.name.includes("confirm"))).toBe(false);
     const dir = fileURLToPath(new URL("../src/", import.meta.url));
-    for (const f of readdirSync(dir)) expect(readFileSync(dir + f, "utf8"), f).not.toMatch(/\/confirm|confirm[-_]token/);
+    const sources = readdirSync(dir).map((f) => ({ f, text: readFileSync(dir + f, "utf8") }));
+    for (const { f, text } of sources) {
+      if (f !== "startup.ts") expect(text, f).not.toMatch(/\/confirm|confirm[-_]token/);
+    }
+    const startup = sources.find((s) => s.f === "startup.ts")!.text;
+    const calls = startup.split("\n").filter((line) => line.includes('client.POST("/v1/reservations/{id}/confirm-token"'));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('client.POST("/v1/reservations/{id}/confirm-token", { params: { path: { id: NO_RESERVATION } }');
+    expect(startup).toContain('const NO_RESERVATION = "00000000-0000-0000-0000-000000000000";');
+    for (const { f, text } of sources) {
+      if (f !== "index.ts") expect(text, f).not.toContain("./startup.js");
+    }
   });
 });

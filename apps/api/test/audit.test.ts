@@ -279,6 +279,33 @@ describe("transcript intake and the audit", () => {
     expect((await read(S, null)).status).toBe(401);
   });
 
+  it("a reference session of the key is 404 no such session, and its turns stay", async () => {
+    const S = (await owner.query(
+      "insert into dastar_agent.session (venue_id, api_key_id, kind) values ($1, $2, 'reference') returning id", [A.venue, agent.id],
+    )).rows[0].id as string;
+    await owner.query("insert into dastar_agent.turn (session_id, venue_id, seq, role, content) values ($1, $2, 0, 'user', 'hi')", [S, A.venue]);
+
+    const posted = await post(S, { turns: [{ role: "user", text: "hello" }] });
+    expect(posted.status).toBe(404);
+    expect(await json(posted)).toMatchObject({ code: "not_found", detail: "no such session" });
+    expect(await turnCount(S)).toBe(1);
+    expect(await auditedAt(S)).toBeNull();
+
+    const got = await send("GET", `/v1/sessions/${S}`, { key: agent });
+    expect(got.status).toBe(200);
+    expect(await json(got)).toMatchObject({ id: S, kind: "reference" });
+  });
+
+  it("a session that is not live when the post reads it is 404 no such session", async () => {
+    const S = await openSession();
+    const app = withHandle({ sessions: { ...api.dastar.sessions, getSession: () => Promise.resolve(null) } });
+    const r = await send("POST", `/v1/sessions/${S}/audit`, { app, key: agent, body: { turns: [{ role: "user", text: "hi" }] } });
+    expect(r.status).toBe(404);
+    expect(await json(r)).toMatchObject({ code: "not_found", detail: "no such session" });
+    expect(await turnCount(S)).toBe(0);
+    expect(await auditedAt(S)).toBeNull();
+  });
+
   it("a receipt altered after it was recorded is listed unverified", async () => {
     const S = await openSession();
     const first = await placeHold(agent, { session: S });

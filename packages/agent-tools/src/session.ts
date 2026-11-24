@@ -51,6 +51,18 @@ export function normalizeHold(args: HoldArgs): { body: HoldArgs; intent: string 
   return { body, intent };
 }
 
+/** What the last attempt at a recorded hold request came to, as plain data: a held outcome carries its expiry as an ISO time. */
+export type RestoredOutcome =
+  | { kind: "unanswered" }
+  | { kind: "refused" }
+  | { kind: "held"; reservationId: string; status: string; expiresAt: string };
+
+/** One hold request an earlier session made, the idempotency key it was on, and what its last attempt came to. */
+export type RestoredHold = { request: HoldArgs; key: string; outcome: RestoredOutcome };
+
+/** What an earlier session did, as plain data: the reservations it created and cancelled, and its hold requests in the order they were made. */
+export type ToolSessionRestore = { created: string[]; cancelled: string[]; holds: RestoredHold[] };
+
 export type ToolSessionOptions = {
   client: DastarClient;
   venueId: string;
@@ -58,6 +70,8 @@ export type ToolSessionOptions = {
   now?: () => number;
   /** How long one request may take before it counts as unanswered. */
   timeoutMs?: number;
+  /** What an earlier session did, so this one cancels its reservations and reuses its idempotency keys. */
+  restore?: ToolSessionRestore;
 };
 
 export type ToolSession = {
@@ -66,6 +80,8 @@ export type ToolSession = {
   hold(args: HoldArgs): Promise<ToolResult>;
   cancel(args: CancelArgs): Promise<ToolResult>;
   getReservation(args: GetReservationArgs): Promise<ToolResult>;
+  /** The reservations this session created, restored ones first, lowercased, each once. */
+  created(): string[];
   /** Runs the named tool; the caller has checked `args` against that tool's input schema. */
   call(name: ToolName, args: unknown): Promise<ToolResult>;
 };
@@ -124,9 +140,16 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
   const venueId = opts.venueId.toLowerCase();
   const now = opts.now ?? Date.now;
   const timeoutMs = opts.timeoutMs ?? 10_000;
-  const created = new Set<string>();
-  const cancelledIds = new Set<string>();
+  const created = new Set<string>((opts.restore?.created ?? []).map((id) => id.toLowerCase()));
+  const cancelledIds = new Set<string>((opts.restore?.cancelled ?? []).map((id) => id.toLowerCase()));
   const entries = new Map<string, KeyEntry>();
+  for (const { request, key, outcome } of opts.restore?.holds ?? []) {
+    const last: Outcome =
+      outcome.kind === "held"
+        ? { kind: "held", reservationId: outcome.reservationId.toLowerCase(), status: outcome.status, expiresAt: Date.parse(outcome.expiresAt) }
+        : outcome;
+    entries.set(normalizeHold(request).intent, { key, last });
+  }
 
   /**
    * Runs one request under its own deadline. A rejection is a timeout when the deadline passed, whatever error it carries.
@@ -248,5 +271,5 @@ export function createToolSession(opts: ToolSessionOptions): ToolSession {
     }
   }
 
-  return { venueId, searchAvailability, hold, cancel, getReservation, call };
+  return { venueId, searchAvailability, hold, cancel, getReservation, created: () => [...created], call };
 }

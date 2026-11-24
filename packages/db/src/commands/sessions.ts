@@ -28,13 +28,13 @@ export type CompleteCallInput = SessionRef & { callId: number; status: number; o
 export type AuditInputsInput = SessionRef & { reservationIds: string[] };
 export type StoreAuditInput = SessionRef & { turns: StoredTurn[]; result: unknown; auditedAt: string };
 
-const SESSION_COLUMNS = "id, venue_id, kind, started_at, last_seen_at, call_count, audited_at";
+export const SESSION_COLUMNS = "id, venue_id, kind, started_at, last_seen_at, call_count, audited_at";
 
-type SessionRow = {
+export type SessionRow = {
   id: string; venue_id: string; kind: SessionKind; started_at: Date; last_seen_at: Date; call_count: number; audited_at: Date | null;
 };
 
-function toView(row: SessionRow): SessionView {
+export function toView(row: SessionRow): SessionView {
   return {
     id: row.id, venueId: row.venue_id, kind: row.kind, startedAt: new Date(row.started_at).toISOString(),
     lastSeenAt: new Date(row.last_seen_at).toISOString(), calls: row.call_count,
@@ -46,7 +46,7 @@ function toView(row: SessionRow): SessionView {
  * Runs `fn` in one transaction bound to the venue. A read takes one repeatable-read snapshot; a write runs at the
  * default level, so a statement that waited on a row lock reads what the other transaction committed.
  */
-async function inVenue<T>(client: ClientBase, venueId: string, mode: "read" | "write", fn: () => Promise<T>): Promise<T> {
+export async function inVenue<T>(client: ClientBase, venueId: string, mode: "read" | "write", fn: () => Promise<T>): Promise<T> {
   await client.query(mode === "read" ? "begin isolation level repeatable read read only" : "begin");
   try {
     await bindVenue(client, venueId);
@@ -190,13 +190,14 @@ export async function auditInputs(client: ClientBase, input: AuditInputsInput): 
 /**
  * Stores an audit: the result and its time on the session, and the transcript's turns in place of the earlier post's.
  * The session's row is locked first, as `beginCall` does, so the two serialize on that row and on nothing else.
- * `not_found` for a session of another venue, one that is gone, and one no longer live.
+ * `not_found` for a session of another venue, one that is gone, one no longer live, and a reference session, whose turns
+ * are the agent's own record and no audit replaces them.
  */
 export async function storeAudit(client: ClientBase, input: StoreAuditInput, hooks: SessionHooks = {}): Promise<void> {
   await inVenue(client, input.venueId, "write", async () => {
     const u = await client.query(
       `update dastar_agent.session set audit = $3::jsonb, audited_at = $4::timestamptz
-        where id = $1 and venue_id = $2 and dastar_agent.session_live(kind, last_seen_at)`,
+        where id = $1 and venue_id = $2 and kind = 'external' and dastar_agent.session_live(kind, last_seen_at)`,
       [input.sessionId, input.venueId, JSON.stringify(input.result ?? null), input.auditedAt],
     );
     if (u.rowCount !== 1) throw new DastarError("not_found", "session not found");
