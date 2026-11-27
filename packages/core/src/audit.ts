@@ -113,20 +113,23 @@ function seen(c: LoggedCall, previous: ReadonlyMap<string, Obs>): Seen[] {
   }
 }
 
-export type ObservedReservation = { id: string; starts_at?: string; party_size?: number };
-
-/** Each reservation the completed calls showed, read as auditSession reads them, in the order first seen; start and party size from the latest observation that has each. */
-export function observedReservations(calls: readonly LoggedCall[]): ObservedReservation[] {
+/** The calls that have a parseable completion time, in completion order, then call id: the order every observation is read in. */
+function completedInOrder(calls: readonly LoggedCall[]): { c: LoggedCall; ms: number }[] {
   const completed: { c: LoggedCall; ms: number }[] = [];
   for (const c of [...calls].sort((a, b) => a.id - b.id)) {
     const ms = typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN;
     if (!Number.isNaN(ms)) completed.push({ c, ms });
   }
-  completed.sort((a, b) => a.ms - b.ms || a.c.id - b.c.id);
+  return completed.sort((a, b) => a.ms - b.ms || a.c.id - b.c.id);
+}
 
+export type ObservedReservation = { id: string; starts_at?: string; party_size?: number };
+
+/** Each reservation the completed calls showed, read as auditSession reads them, in the order first seen; start and party size from the latest observation that has each. */
+export function observedReservations(calls: readonly LoggedCall[]): ObservedReservation[] {
   const latest = new Map<string, Obs>();
   const out = new Map<string, ObservedReservation>();
-  for (const { c, ms } of completed) {
+  for (const { c, ms } of completedInOrder(calls)) {
     for (const s of seen(c, latest)) {
       latest.set(s.id, { call: c.id, tool: c.tool, at: c.completedAt as string, ms, status: s.status, ...s.attrs });
       const entry = out.get(s.id) ?? { id: s.id };
@@ -199,12 +202,7 @@ export function auditSession(input: AuditInput): AuditResult {
   const current = new Map(Object.entries(input.current).map(([id, status]): [string, string] => [id.toLowerCase(), status]));
 
   const byId = [...calls].sort((a, b) => a.id - b.id);
-  const completed: { c: LoggedCall; ms: number }[] = [];
-  for (const c of byId) {
-    const ms = typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN;
-    if (!Number.isNaN(ms)) completed.push({ c, ms });
-  }
-  completed.sort((a, b) => a.ms - b.ms || a.c.id - b.c.id);
+  const completed = completedInOrder(calls);
   const lastMs = completed.length === 0 ? NaN : completed[completed.length - 1]!.ms;
 
   const observations = new Map<string, Obs[]>();
