@@ -33,6 +33,8 @@ describe("the judge's prompt file", () => {
     // the rules of the system prompt: every status, and the three blocks as data
     for (const status of CLAIM_STATUSES) expect(system).toContain(status);
     for (const tag of ["<reservations>", "<user_turn>", "<assistant_turn>"]) expect(system).toContain(tag);
+    // the prompt names the six-character escape the blocks carry for "<"
+    expect(system).toContain(LESS_THAN);
 
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(promptHash(system, template, [], JUDGE_REPLY_SCHEMA)).toBe(hash);
