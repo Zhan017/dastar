@@ -9,7 +9,7 @@ The application connects as `dastar_app`. Migrations run as `dastar_owner`, whic
 What `dastar_app` cannot do:
 
 - Change or drop any constraint, trigger, or function. It owns nothing.
-- Delete or truncate any table. It has no DELETE or TRUNCATE grant.
+- Truncate any table, or delete from any table but `dastar_agent.turn`. It has no TRUNCATE grant, and its one DELETE grant is on that table, because a new post of a transcript replaces a session's turns.
 - Write the audit log. The audit trigger is the only writer; direct inserts, updates, deletes, and truncates are refused.
 - Write a turn's `judge_result`, by insert or by update. Only `dastar_judge` does (see The judge).
 - Flip a unit row's `active` flag or delete a unit row. Only the sync trigger writes that column.
