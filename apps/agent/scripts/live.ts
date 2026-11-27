@@ -332,6 +332,12 @@ export async function runJudgeMode(args: string[], env: Record<string, string | 
   const provider = options.provider ?? createAnthropicProvider({ apiKey: anthropicApiKey, model, effort });
   const startedAt = new Date().toISOString();
   const predictions: Prediction[] = [];
+  /** The run's own account of itself: how many items there were, whether each was asked and answered, and which models answered. */
+  const accountOf = (): { items_total: number; complete: boolean; answered_models: Record<string, number> } => ({
+    items_total: items.length,
+    complete: isComplete(items.length, predictions),
+    answered_models: answeredModels(predictions),
+  });
   for (const item of items) {
     try {
       predictions.push(await predict(provider, prompt, item));
@@ -341,12 +347,13 @@ export async function runJudgeMode(args: string[], env: Record<string, string | 
     }
     const record = {
       mode: "judge", part, model, effort, prompt_hash: prompt.hash, labeled_set: { file: `judge/labeled/${part}.json`, sha256 },
-      started_at: startedAt, report: measure(items, predictions), predictions,
+      started_at: startedAt, ...accountOf(), report: measure(items, predictions), predictions,
     };
     writeFileSync(options.outFile ?? "judge-accuracy.json", `${JSON.stringify(record, null, 2)}\n`);
   }
 
   const report = measure(items, predictions);
+  const { complete, answered_models: answered } = accountOf();
   console.log(intervalLine("undeclared precision", report.undeclared.precision));
   console.log(intervalLine("undeclared recall", report.undeclared.recall));
   console.log(intervalLine("all precision", report.all.precision));
@@ -357,7 +364,27 @@ export async function runJudgeMode(args: string[], env: Record<string, string | 
   console.log(
     `items=${report.items} dropped=${report.dropped} failures=${JSON.stringify(report.failures)} input=${usage.input} output=${usage.output} cache_read=${usage.cacheRead} cache_write=${usage.cacheWrite} cost_usd=${cost === null ? "n/a" : cost.toFixed(4)}`,
   );
-  return report.items === 0 ? 1 : 0;
+  // a measurement is of the model that was asked for: flag every other model that answered
+  for (const [answering, count] of Object.entries(answered)) {
+    if (answering !== model) console.log(`answered by ${answering}, not the configured ${model}: ${count} ${count === 1 ? "item" : "items"}`);
+  }
+  if (!complete) console.error(`dastar-agent: the run is not complete: ${predictions.filter((p) => !answeredWell(p)).length} of ${items.length} items were not answered with statements or with a refusal, a truncation or a reply that did not parse`);
+  return complete && report.items > 0 ? 0 : 1;
+}
+
+/** Whether the call of a prediction was answered, with statements or with a failure of the content: a refusal, a cut-off reply or one that did not parse. */
+const answeredWell = (p: Prediction): boolean => p.failed === undefined || p.failed === "refused" || p.failed === "truncated" || p.failed === "unparsable";
+
+/** Every item was asked and answered, in a way that says something about the judge. A failure of the provider (an error, a rejection) leaves the item unmeasured. */
+const isComplete = (itemCount: number, predictions: readonly Prediction[]): boolean => predictions.length === itemCount && predictions.every(answeredWell);
+
+/** How many items each model answered; a call that no model answered counts for none. */
+function answeredModels(predictions: readonly Prediction[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const p of predictions) {
+    if (p.model !== null) counts.set(p.model, (counts.get(p.model) ?? 0) + 1);
+  }
+  return Object.fromEntries(counts);
 }
 
 const JUDGE_CHECK_SETTINGS = ["DASTAR_URL", "AGENT_KEY", "DASTAR_VENUE_ID"] as const;

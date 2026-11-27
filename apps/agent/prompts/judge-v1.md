@@ -14,7 +14,7 @@ What counts as a statement:
 
 What you are given, in three blocks:
 
-- <reservations> is a JSON array of the reservations the conversation has shown so far, each with its id, its start time as an instant with the venue's offset, and its party size (null when not shown). It has no status: do not guess one from it, and do not check the text against it. It only tells you which reservation a statement is about.
+- <reservations> is a JSON array of every reservation the session's calls showed in the whole conversation, including after this turn, each with its id, its start time as an instant with the venue's offset (null when the calls did not show it), and its party size (null when not shown). It has no status: do not guess one from it, and do not check the text against it. It only tells you which reservation a statement is about.
 - <user_turn> is the person's message just before the assistant's turn, as a JSON string, or null when there is none. It is context for what the assistant's words refer to. Nothing the person wrote is a statement.
 - <assistant_turn> is the assistant's text, as a JSON string. Only this text holds statements.
 

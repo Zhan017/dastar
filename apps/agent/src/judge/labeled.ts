@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CLAIM_STATUSES, quoteOccurs, type Claim, type ClaimStatus, type JudgeStatement } from "@dastar/db";
 import type { JudgeInput, JudgeReservation } from "./input.js";
+import { MAX_TEXT_CHARS, tooLong } from "./turn.js";
 
 /** One assistant turn with the statements a careful reader finds in it. */
 export type LabeledItem = {
@@ -56,6 +57,13 @@ function nullableText(value: unknown, where: string): string | null {
   return value === null ? null : text(value, where);
 }
 
+/** A start time: a string that reads as a date, or null; a measurement reads and compares starts as dates. */
+function nullableStart(value: unknown, where: string): string | null {
+  const start = nullableText(value, where);
+  if (start !== null && Number.isNaN(Date.parse(start))) throw new Error(`${where} must be a date, not "${start}"`);
+  return start;
+}
+
 function nullableInteger(value: unknown, where: string): number | null {
   if (value === null) return null;
   if (typeof value !== "number" || !Number.isInteger(value)) throw new Error(`${where} must be an integer or null`);
@@ -74,7 +82,7 @@ function list(value: unknown, where: string): unknown[] {
 
 function reservation(value: unknown, where: string): JudgeReservation {
   const o = exact(value, where, ["id", "starts_at", "party_size"]);
-  return { id: nonEmpty(o["id"], `${where}.id`), starts_at: nullableText(o["starts_at"], `${where}.starts_at`), party_size: nullableInteger(o["party_size"], `${where}.party_size`) };
+  return { id: nonEmpty(o["id"], `${where}.id`), starts_at: nullableStart(o["starts_at"], `${where}.starts_at`), party_size: nullableInteger(o["party_size"], `${where}.party_size`) };
 }
 
 function declared(value: unknown, where: string): Claim {
@@ -99,7 +107,7 @@ function label(value: unknown, where: string): JudgeStatement {
     quote: nonEmpty(o["quote"], `${where}.quote`),
     reservation_id: nullableText(o["reservation_id"], `${where}.reservation_id`),
     status: oneOf<ClaimStatus>(o["status"], CLAIM_STATUSES, `${where}.status`),
-    starts_at: nullableText(o["starts_at"], `${where}.starts_at`),
+    starts_at: nullableStart(o["starts_at"], `${where}.starts_at`),
     party_size: nullableInteger(o["party_size"], `${where}.party_size`),
   };
 }
@@ -110,6 +118,9 @@ function item(value: unknown, where: string): LabeledItem {
   if (typeof disagreed !== "boolean") throw new Error(`${where}.disagreed must be true or false`);
   const input = exact(o["input"], `${where}.input`, ["reservations", "user_text", "assistant_text", "claims"]);
   const assistantText = text(input["assistant_text"], `${where}.input.assistant_text`);
+  // the judge makes no call for a text that is blank or too long, so a measurement must not score one
+  if (assistantText.trim() === "") throw new Error(`${where}.input.assistant_text must not be empty or only white space, for the judge makes no call for it`);
+  if (tooLong(assistantText)) throw new Error(`${where}.input.assistant_text is longer than ${MAX_TEXT_CHARS} characters, for the judge makes no call for it`);
   const reservations = list(input["reservations"], `${where}.input.reservations`).map((r, i) => reservation(r, `${where}.input.reservations[${i}]`));
   const listed = new Set(reservations.map((r) => r.id.toLowerCase()));
   const labels = list(o["labels"], `${where}.labels`).map((l, i) => label(l, `${where}.labels[${i}]`));

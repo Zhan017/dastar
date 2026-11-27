@@ -8,7 +8,8 @@ import type { JudgeStatement } from "@dastar/db";
 import { runJudgeMode } from "../scripts/live.js";
 import { loadLabeled, type LabeledItem } from "../src/judge/labeled.js";
 import { PRICES_PER_MTOK, measure, predict, wilson, type Prediction } from "../src/judge/measure.js";
-import { JUDGE_REPLY_SCHEMA, loadJudgePrompt } from "../src/judge/prompt.js";
+import { JUDGE_REPLY_SCHEMA, judgeRequest, loadJudgePrompt } from "../src/judge/prompt.js";
+import { MAX_TEXT_CHARS } from "../src/judge/turn.js";
 import type { Completion } from "../src/provider.js";
 import { USAGE, replyWith, scripted, type Step } from "./fake-provider.js";
 
@@ -182,18 +183,44 @@ describe("a quote not in the text is dropped and counted", () => {
 });
 
 describe("predict", () => {
-  it("sorts a failed call: the key refused throws, a request refused and a failure that may pass are stored, with no retry", async () => {
+  it("sorts a failed call: a provider that cannot serve the judge throws, a request refused and a failure that may pass are stored, with no retry", async () => {
     const item = fixtureItems()[0]!;
-    const provider = scripted(failing(401), failing(403), failing(400), failing(429), failing(), failing(500));
+    // an error as the SDK's APIError carries it: the status, and the API's parsed body on `error`; its own text must not get into the message
+    const apiError = (status: number, type: string, details?: unknown): Step => () => {
+      throw Object.assign(new Error("sk-ant-secret"), {
+        status, error: { type: "error", error: { type, message: "sk-ant-secret", ...(details === undefined ? {} : { details }) } },
+      });
+    };
+    const provider = scripted(
+      failing(401), failing(403), apiError(402, "billing_error"), apiError(404, "not_found_error"),
+      apiError(429, "rate_limit_error", { error_code: "enforced_spend_limit_reached" }),
+      failing(400), failing(429), failing(), failing(500),
+    );
 
-    await expect(predict(provider, prompt, item)).rejects.toThrow("the model provider refused the key (HTTP 401 or 403)");
-    await expect(predict(provider, prompt, item)).rejects.toThrow("the model provider refused the key");
+    await expect(predict(provider, prompt, item)).rejects.toThrow("the model provider refused the requests (HTTP 401)");
+    await expect(predict(provider, prompt, item)).rejects.toThrow("the model provider refused the requests (HTTP 403)");
+    await expect(predict(provider, prompt, item)).rejects.toThrow("the model provider refused the requests (HTTP 402, billing_error)");
+    await expect(predict(provider, prompt, item)).rejects.toThrow("the model provider refused the requests (HTTP 404, not_found_error)");
+    // the message is the status and the API's error type: nothing of the error's own text
+    await expect(predict(provider, prompt, item)).rejects.toThrow(/^the model provider refused the requests \(HTTP 429, rate_limit_error, enforced_spend_limit_reached\)$/);
     const nothing = { kept: [], dropped: 0, model: null, usage: null };
     expect(await predict(provider, prompt, item)).toEqual({ item: "a", ...nothing, failed: "provider_rejected" });
+    // a 429 that is not the spend cap may pass
     expect(await predict(provider, prompt, item)).toEqual({ item: "a", ...nothing, failed: "provider_error" });
     expect(await predict(provider, prompt, item)).toEqual({ item: "a", ...nothing, failed: "provider_error" });
     expect(await predict(provider, prompt, item)).toEqual({ item: "a", ...nothing, failed: "provider_error" });
-    expect(provider.requests).toHaveLength(6);
+    expect(provider.requests).toHaveLength(9);
+  });
+
+  it("builds the request with the function the judge builds its own with", async () => {
+    const item = fixtureItems()[0]!;
+    const provider = scripted(answer());
+    await predict(provider, prompt, item);
+    const [sent] = provider.requests;
+    const { signal, ...rest } = judgeRequest(prompt, item.input, AbortSignal.timeout(1_000));
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect({ ...sent, signal: undefined }).toEqual({ ...rest, signal: undefined });
+    expect(sent?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("stores a refusal, a truncation and a reply that does not parse as failed, with the model that answered and its tokens", async () => {
@@ -256,6 +283,39 @@ describe("loadLabeled", () => {
     expect(loadLabeled(fileWith("upper.json", [named])).items).toHaveLength(1);
     named.labels[0]!.reservation_id = null;
     expect(loadLabeled(fileWith("none.json", [named])).items).toHaveLength(1);
+  });
+
+  it("refuses an item whose assistant text the judge makes no call for: one that is empty or only white space, or longer than the judge reads", () => {
+    const item = fixtureItems()[0]!;
+    // no label can quote a blank text, so the items are written with no labels: the refusal is of the text alone
+    const withText = (assistant_text: string): unknown[] => [{ ...item, input: { ...item.input, assistant_text }, labels: [] }];
+
+    for (const blank of ["", " ", "\n\t  \n"]) {
+      expect(() => loadLabeled(fileWith("blank.json", withText(blank))), JSON.stringify(blank)).toThrow(
+        /item 0\.input\.assistant_text must not be empty or only white space, for the judge makes no call for it/,
+      );
+    }
+    expect(() => loadLabeled(fileWith("long.json", withText("x".repeat(MAX_TEXT_CHARS + 1))))).toThrow(
+      /item 0\.input\.assistant_text is longer than 8000 characters, for the judge makes no call for it/,
+    );
+    // the limit is the judge's: 8,000 characters are read, and a character is a whole code point
+    expect(loadLabeled(fileWith("exact.json", withText("y".repeat(MAX_TEXT_CHARS)))).items).toHaveLength(1);
+    expect(loadLabeled(fileWith("wide.json", withText("\u{1F37D}".repeat(5_000)))).items).toHaveLength(1);
+  });
+
+  it("refuses a reservation's or a label's start that is not a date, and takes null and an offset date", () => {
+    const item = fixtureItems()[0]!;
+    const reservationAt = (starts_at: string | null): unknown[] => [{ ...item, input: { ...item.input, reservations: [{ id: RESERVATION_A, starts_at, party_size: 2 }] } }];
+    const labelAt = (starts_at: string | null): unknown[] => [{ ...item, labels: [{ ...item.labels[0], starts_at }] }];
+
+    expect(() => loadLabeled(fileWith("reservation-start.json", reservationAt("next Friday evening")))).toThrow(
+      /item 0\.input\.reservations\[0\]\.starts_at must be a date, not "next Friday evening"/,
+    );
+    expect(() => loadLabeled(fileWith("label-start.json", labelAt("19h")))).toThrow(/item 0\.labels\[0\]\.starts_at must be a date, not "19h"/);
+    for (const fine of [null, "2064-01-07T19:00:00+05:00", "2064-01-07T14:00:00Z"]) {
+      expect(loadLabeled(fileWith("fine-reservation.json", reservationAt(fine))).items).toHaveLength(1);
+      expect(loadLabeled(fileWith("fine-label.json", labelAt(fine))).items).toHaveLength(1);
+    }
   });
 
   it("refuses an unknown field, a value of the wrong kind, and a file that is not a list of items", () => {
@@ -354,7 +414,12 @@ describe("the judge mode of the live script", () => {
 
     const text = readFileSync(outFile, "utf8");
     const record = JSON.parse(text) as Record<string, unknown>;
-    expect(Object.keys(record)).toEqual(["mode", "part", "model", "effort", "prompt_hash", "labeled_set", "started_at", "report", "predictions"]);
+    expect(Object.keys(record)).toEqual([
+      "mode", "part", "model", "effort", "prompt_hash", "labeled_set", "started_at", "items_total", "complete", "answered_models", "report", "predictions",
+    ]);
+    // both items were asked and answered, by the configured model
+    expect(record).toMatchObject({ items_total: 2, complete: true, answered_models: { "claude-opus-5-5": 2 } });
+    expect(JSON.parse(seen[0]!)).toMatchObject({ items_total: 2, complete: false, answered_models: { "claude-opus-5-5": 1 } });
     expect(record).toMatchObject({
       mode: "judge", part: "dev", model: "claude-opus-5-5", effort: "medium", prompt_hash: prompt.hash,
       labeled_set: { file: "judge/labeled/dev.json", sha256: createHash("sha256").update(readFileSync(FIXTURE)).digest("hex") },
@@ -392,11 +457,42 @@ describe("the judge mode of the live script", () => {
     expect(lines(log)[6]).toBe("items=0 dropped=0 failures={\"refused\":1,\"provider_error\":1} input=100 output=20 cache_read=10 cache_write=5 cost_usd=0.0008");
   });
 
+  it("exits 1 and records the run as not complete when the provider fails on one item, however many others were measured", async () => {
+    const { log, error } = spies();
+    const outFile = written("one-failed.json");
+    expect(await runJudgeMode(["--part", "dev"], ENV, { provider: scripted(FIXTURE_ANSWERS()[0]!, failing(500)), labeledDir: dir, outFile })).toBe(1);
+
+    const record = JSON.parse(readFileSync(outFile, "utf8")) as { items_total: number; complete: boolean; answered_models: Record<string, number>; report: ReturnType<typeof measure> };
+    // the first item was measured, and the run is still not a measurement of the part
+    expect(record.report.items).toBe(1);
+    expect(record.report.failures).toEqual({ provider_error: 1 });
+    expect(record).toMatchObject({ items_total: 2, complete: false, answered_models: { "claude-opus-5-5": 1 } });
+    expect(lines(error)).toEqual(["dastar-agent: the run is not complete: 1 of 2 items were not answered with statements or with a refusal, a truncation or a reply that did not parse"]);
+    expect(lines(log)).toHaveLength(7);
+  });
+
+  it("counts a refusal as an answer, so a run with one is complete and exits 0, and the printed summary flags a model that is not the configured one", async () => {
+    const { log, error } = spies();
+    const outFile = written("refusal-and-other-model.json");
+    const other: Completion = { ...FIXTURE_ANSWERS()[1]!, model: "another-model" };
+    expect(await runJudgeMode(["--part", "dev"], ENV, { provider: scripted(refusal, other), labeledDir: dir, outFile })).toBe(0);
+
+    const record = JSON.parse(readFileSync(outFile, "utf8")) as { complete: boolean; answered_models: Record<string, number>; report: ReturnType<typeof measure> };
+    expect(record.complete).toBe(true);
+    expect(record.answered_models).toEqual({ "claude-opus-5-5": 1, "another-model": 1 });
+    expect(record.report.failures).toEqual({ refused: 1 });
+    expect(error).not.toHaveBeenCalled();
+    const printed = lines(log);
+    expect(printed).toHaveLength(8);
+    expect(printed[7]).toBe("answered by another-model, not the configured claude-opus-5-5: 1 item");
+    expect(printed.slice(0, 7).join("\n")).not.toContain("answered by");
+  });
+
   it("ends with one line and exit 1 when the provider refuses the key, keeping the items finished before it", async () => {
     const { log, error } = spies();
     const outFile = written("refused-key.json");
     expect(await runJudgeMode(["--part", "dev"], ENV, { provider: scripted(FIXTURE_ANSWERS()[0]!, failing(401)), labeledDir: dir, outFile })).toBe(1);
-    expect(lines(error)).toEqual(["dastar-agent: the model provider refused the key (HTTP 401 or 403)"]);
+    expect(lines(error)).toEqual(["dastar-agent: the model provider refused the requests (HTTP 401)"]);
     expect(log).not.toHaveBeenCalled();
     expect((JSON.parse(readFileSync(outFile, "utf8")) as { predictions: unknown[] }).predictions).toHaveLength(1);
   });
