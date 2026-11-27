@@ -7,7 +7,7 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packag
 import { seedKey, seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { bearer, makeApi } from "../../api/test/helpers.js";
 import { loadJudgePrompt } from "../src/judge/prompt.js";
-import type { JudgeDeps } from "../src/judge/turn.js";
+import { newPace, type JudgeDeps } from "../src/judge/turn.js";
 import type { Completion, CompletionRequest, LLMProvider } from "../src/provider.js";
 import { PLANTED_ASSISTANT_TEXT, PLANTED_USER_TEXT, runJudgeCheck, type JudgeCheckReport } from "../scripts/judge-check.js";
 import { replyWith, scripted } from "./fake-provider.js";
@@ -84,7 +84,7 @@ describe("the judge's live check", () => {
     });
 
   const deps = (provider: LLMProvider): JudgeDeps => ({
-    dastar: j, provider, prompt, model: "configured-model", effort: "medium", accuracy: [], dailyCalls: 500, transient: new Map(),
+    dastar: j, provider, prompt, model: "configured-model", effort: "medium", accuracy: [], dailyCalls: 500, transient: new Map(), pace: newPace(),
   });
 
   const statement = (quote: string, id: string | null, status: string) => ({ quote, reservation_id: id, status, starts_at: null, party_size: null });

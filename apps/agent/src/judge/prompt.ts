@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { CLAIM_STATUSES } from "@dastar/db";
 import { promptHash, readPromptFile, renderTemplate } from "../prompt.js";
+import type { CompletionRequest } from "../provider.js";
 import type { JsonSchema } from "../tools.js";
 import type { JudgeInput } from "./input.js";
 
@@ -58,4 +59,15 @@ export function renderJudgeMessage(template: string, input: JudgeInput): string 
     { reservations: block(input.reservations), user_turn: block(input.user_text), assistant_turn: block(input.assistant_text) },
     "message template",
   );
+}
+
+/** The request that asks the model for the statements of one turn: no tools, the system prompt, the message for the input, and the reply's schema. The judge and its measurement both send exactly this. */
+export function judgeRequest(prompt: LoadedJudgePrompt, input: JudgeInput, signal: AbortSignal): CompletionRequest {
+  return {
+    system: prompt.system,
+    messages: [{ role: "user", text: renderJudgeMessage(prompt.template, input) }],
+    tools: [],
+    replySchema: JUDGE_REPLY_SCHEMA,
+    signal,
+  };
 }

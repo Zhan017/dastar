@@ -4,13 +4,18 @@ import { createDastar, type Dastar } from "@dastar/db";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedKey, seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { judgeBatch, judgeOnce, startJudge, type BatchOutcome, type RunningJudge } from "../src/judge/loop.js";
-import { main, redact, secretsOf } from "../src/judge/main.js";
+import { batchLogger, main, redact, secretsOf } from "../src/judge/main.js";
 import { loadJudgePrompt } from "../src/judge/prompt.js";
-import type { JudgeDeps } from "../src/judge/turn.js";
+import { PAUSE_MAX_MS, newPace, type JudgeDeps, type Sleep } from "../src/judge/turn.js";
 import type { Completion, LLMProvider } from "../src/provider.js";
 import { replyWith, scripted, USAGE, type Step } from "./fake-provider.js";
 
 const withStatus = (status: number): Error => Object.assign(new Error("x"), { status });
+/** A sleep that takes no time and records each wait; a wait that a stop ends is recorded too. */
+function recordedSleep(): { sleep: Sleep; waits: number[] } {
+  const waits: number[] = [];
+  return { waits, sleep: async (ms) => { waits.push(ms); await new Promise<void>((resolve) => setImmediate(resolve)); } };
+}
 /** A step whose call fails: with an error carrying the status, or with none. */
 const failing = (status?: number): Step => () => {
   throw status === undefined ? new Error("connection reset") : withStatus(status);
@@ -53,7 +58,7 @@ describe("the judge's batches, loop and command", () => {
   });
 
   const deps = (provider: LLMProvider, over: Partial<JudgeDeps> = {}): JudgeDeps => ({
-    dastar: j, provider, prompt, model: "configured-model", effort: "medium", accuracy: [], dailyCalls: 500, transient: new Map(), ...over,
+    dastar: j, provider, prompt, model: "configured-model", effort: "medium", accuracy: [], dailyCalls: 500, transient: new Map(), pace: newPace(), ...over,
   });
 
   /** The judge's handle, with the size of each read of the due turns recorded. */
@@ -172,7 +177,7 @@ describe("the judge's batches, loop and command", () => {
 
     // a new process: no failures remembered, and a provider with no step left
     const restarted = scripted();
-    const total = await judgeOnce(deps(restarted, { dailyCalls: 2, transient: new Map() }), 10);
+    const total = await judgeOnce(deps(restarted, { dailyCalls: 2, transient: new Map(), pace: newPace() }), 10);
 
     expect(total).toMatchObject({ judged: 0, capped: true });
     expect(restarted.requests).toHaveLength(0);
@@ -185,18 +190,100 @@ describe("the judge's batches, loop and command", () => {
     const a = turnIds[0]!;
     const b = turnIds[1]!;
     const handle = counted();
-    // the first turn fails in each of three batches; the second is judged in the first
-    const provider = scripted(failing(503), noStatements(), failing(500), failing(429));
+    const { sleep, waits } = recordedSleep();
+    // the first turn fails in each of three batches, and a failure ends its batch, so the second turn waits behind it
+    const provider = scripted(failing(503), failing(500), failing(429), noStatements());
 
-    const total = await judgeOnce(deps(provider, { dastar: handle.dastar }), 10);
+    const total = await judgeOnce(deps(provider, { dastar: handle.dastar, sleep }), 10);
 
-    expect(handle.reads).toEqual([2, 1, 1, 0]);
+    expect(handle.reads).toEqual([2, 2, 2, 1, 0]);
     expect(total).toMatchObject({ judged: 1, failed: 1, retried: 2, capped: false });
     expect(total.usage).toEqual(USAGE);
     expect(await stored(a)).toEqual({ outcome: "failed", judged_at: expect.any(String), prompt_hash: prompt.hash, reason: "provider_error" });
     expect(await stored(b)).toMatchObject({ outcome: "judged" });
     expect(provider.requests).toHaveLength(4);
     expect(await dayCalls()).toBe(4);
+    // a wait before each call that follows a failure, longer each time; the read that found nothing waited for nothing
+    expect(waits).toEqual([30_000, 60_000, 120_000]);
+  });
+
+  it("a transient failure stops the batch: the next turn in it gets no call", async () => {
+    const { turnIds } = await seedTurns(["one", "two", "three"]);
+    const provider = scripted(failing(503), noStatements(), noStatements());
+    const d = deps(provider);
+
+    const batch = await judgeBatch(d, 10);
+
+    expect(batch).toEqual({ size: 3, judged: 0, failed: 0, discarded: 0, retried: 1, capped: false, pauseMs: 30_000, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+    expect(provider.requests).toHaveLength(1);
+    expect(await dayCalls()).toBe(1);
+    for (const id of turnIds) expect(await stored(id)).toBeNull();
+    expect(d.pace).toEqual({ failures: 1, rejections: 0, pauseMs: 30_000 });
+
+    // the third failure of a turn stores it, and that also ends its batch
+    const third = deps(scripted(failing(500), failing(500), failing(500), noStatements()), { transient: new Map([[turnIds[0]!, 2]]) });
+    const stored3 = await judgeBatch(third, 10);
+    expect(stored3).toMatchObject({ size: 3, failed: 1, retried: 0, pauseMs: 30_000 });
+    expect(await stored(turnIds[0]!)).toMatchObject({ outcome: "failed", reason: "provider_error" });
+    expect(await stored(turnIds[1]!)).toBeNull();
+  });
+
+  it("the pauses run 30 s, 60 s, 120 s, 240 s and 480 s, then stay at 600 s", async () => {
+    await seedTurns(["a", "b", "c"]);
+    const { sleep, waits } = recordedSleep();
+    // seven failures in a row: a fails three times and is stored, b the same, c fails once; then c is answered
+    const provider = scripted(...Array.from({ length: 7 }, () => failing(503)), noStatements());
+
+    const total = await judgeOnce(deps(provider, { sleep }), 10);
+
+    // each wait comes before the call after the failure that set it
+    expect(waits).toEqual([30_000, 60_000, 120_000, 240_000, 480_000, PAUSE_MAX_MS, PAUSE_MAX_MS]);
+    expect(PAUSE_MAX_MS).toBe(600_000);
+    expect(provider.requests).toHaveLength(8);
+    expect(total).toMatchObject({ judged: 1, failed: 2, retried: 5 });
+    expect(await unjudged()).toBe(0);
+  });
+
+  it("an answered call resets the pause: the wait after the next failure is 30 s again", async () => {
+    await seedTurns(["a", "b", "c"]);
+    const { sleep, waits } = recordedSleep();
+    // a fails twice (30, 60), is answered; b fails (30 again), then is answered; c is answered
+    const provider = scripted(failing(503), failing(503), noStatements(), failing(503), noStatements(), noStatements());
+
+    const total = await judgeOnce(deps(provider, { sleep }), 10);
+
+    expect(waits).toEqual([30_000, 60_000, 30_000]);
+    expect(total).toMatchObject({ judged: 3, failed: 0, retried: 3 });
+  });
+
+  it("judgeOnce with a provider that fails twice and then answers judges the turn, after the two pauses", async () => {
+    const { turnIds } = await seedTurns(["one"]);
+    const { sleep, waits } = recordedSleep();
+    const provider = scripted(failing(503), failing(), noStatements());
+
+    const total = await judgeOnce(deps(provider, { sleep }), 10);
+
+    expect(waits).toEqual([30_000, 60_000]);
+    expect(total).toMatchObject({ judged: 1, failed: 0, retried: 2 });
+    expect(await stored(turnIds[0]!)).toMatchObject({ outcome: "judged" });
+    expect(provider.requests).toHaveLength(3);
+  });
+
+  it("a turn whose call times out three times is stored as provider_error", async () => {
+    const { turnIds } = await seedTurns(["one"]);
+    const { sleep, waits } = recordedSleep();
+    const timesOut: Step = (request) => new Promise<Completion>((_, reject) => {
+      request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });
+    });
+    const provider = scripted(timesOut, timesOut, timesOut);
+
+    const total = await judgeOnce(deps(provider, { sleep, callTimeoutMs: 20 }), 10);
+
+    expect(total).toMatchObject({ judged: 0, failed: 1, retried: 2 });
+    expect(await stored(turnIds[0]!)).toEqual({ outcome: "failed", judged_at: expect.any(String), prompt_hash: prompt.hash, reason: "provider_error" });
+    expect(provider.requests).toHaveLength(3);
+    // two waits, before the second and the third call; none after the third, for nothing was due
+    expect(waits).toEqual([30_000, 60_000]);
   });
 
   it("judgeOnce stops on a fatal error and leaves the rows null", async () => {
@@ -206,10 +293,53 @@ describe("the judge's batches, loop and command", () => {
 
     const total = await judgeOnce(deps(provider, { dastar: handle.dastar }), 10);
 
-    expect(total).toMatchObject({ size: 3, judged: 0, failed: 0, capped: false, fatal: "the model provider refused the judge's key (HTTP 401)" });
+    expect(total).toMatchObject({ size: 3, judged: 0, failed: 0, capped: false, fatal: "the model provider refused the judge's requests (HTTP 401)" });
     expect(handle.reads).toEqual([3]);
     expect(provider.requests).toHaveLength(1);
     expect(await unjudged()).toBe(3);
+  });
+
+  it("judgeOnce stops on a 402 or a 404 with the rows left null, where they would have been stored one after another as rejected", async () => {
+    for (const status of [402, 404]) {
+      await owner.query("delete from dastar_agent.session");
+      await seedTurns(["one", "two", "three"]);
+      const provider = scripted(failing(status));
+
+      const total = await judgeOnce(deps(provider), 10);
+
+      expect(total.fatal, String(status)).toBe(`the model provider refused the judge's requests (HTTP ${status})`);
+      expect(total).toMatchObject({ judged: 0, failed: 0 });
+      expect(provider.requests).toHaveLength(1);
+      expect(await unjudged()).toBe(3);
+    }
+  });
+
+  it("judgeOnce ends fatal when three turns in a row are stored as rejected, with the rest left null", async () => {
+    const { turnIds } = await seedTurns(["one", "two", "three", "four", "five"]);
+    const handle = counted();
+    const provider = scripted(failing(400), failing(400), failing(400), noStatements());
+
+    const total = await judgeOnce(deps(provider, { dastar: handle.dastar }), 10);
+
+    expect(total.fatal).toBe("the model provider rejected 3 turns in a row with no answered call between them (HTTP 400); the judge stops, and the turns after them stay with no result");
+    expect(total).toMatchObject({ judged: 0, failed: 3 });
+    expect(handle.reads).toEqual([5]);
+    expect(provider.requests).toHaveLength(3);
+    for (const id of turnIds.slice(0, 3)) expect(await stored(id)).toMatchObject({ outcome: "failed", reason: "provider_rejected" });
+    for (const id of turnIds.slice(3)) expect(await stored(id)).toBeNull();
+  });
+
+  it("a rejected turn, an answered call and a rejected turn do not end it", async () => {
+    const { turnIds } = await seedTurns(["one", "two", "three", "four"]);
+    const provider = scripted(failing(400), noStatements(), failing(400), noStatements());
+
+    const total = await judgeOnce(deps(provider), 10);
+
+    expect(total.fatal).toBeUndefined();
+    expect(total).toMatchObject({ judged: 2, failed: 2 });
+    expect(await unjudged()).toBe(0);
+    expect(await stored(turnIds[0]!)).toMatchObject({ reason: "provider_rejected" });
+    expect(await stored(turnIds[2]!)).toMatchObject({ reason: "provider_rejected" });
   });
 
   it("the loop judges on its ticks, counts a failed batch and carries on, and stop ends it", async () => {
@@ -264,31 +394,62 @@ describe("the judge's batches, loop and command", () => {
   });
 
   it("the loop takes another batch within a tick only while a batch is full and none of its turns asked for a retry", async () => {
-    await seedTurns(["one", "two", "three"]);
-    // the first turn fails and the second is judged: a full batch with a retry; the next tick judges the first and the third
-    const provider = scripted(failing(503), noStatements(), noStatements(), noStatements());
-    let thirdBatch: () => void = () => undefined;
-    const reachedThird = new Promise<void>((resolve) => { thirdBatch = resolve; });
+    await seedTurns(["one", "two", "three", "four"]);
+    // the first turn fails, and a failure ends its batch: a full batch with a retry; the next tick judges all four
+    const provider = scripted(failing(503), noStatements(), noStatements(), noStatements(), noStatements());
+    const { sleep, waits } = recordedSleep();
+    let fourthBatch: () => void = () => undefined;
+    const reachedFourth = new Promise<void>((resolve) => { fourthBatch = resolve; });
     const batches: { tick: number; size: number; judged: number; retried: number }[] = [];
 
-    const running: RunningJudge = startJudge(deps(provider), { everyMs: 10, limit: 2, drain: true }, {
+    const running: RunningJudge = startJudge(deps(provider, { sleep }), { everyMs: 10, limit: 2, drain: true }, {
       onBatch: (batch) => {
         batches.push({ tick: running.stats.ticks, size: batch.size, judged: batch.judged, retried: batch.retried });
-        if (batches.length >= 3) thirdBatch();
+        if (batches.length >= 4) fourthBatch();
       },
     });
-    await reachedThird;
+    await reachedFourth;
     await running.stop();
 
-    // tick 1 ends after its full batch with a retry; tick 2 takes a full batch, then a read that finds nothing
-    expect(batches.slice(0, 3)).toEqual([
-      { tick: 1, size: 2, judged: 1, retried: 1 },
+    // tick 1 ends after its full batch with a retry; tick 2 takes two full batches, then a read that finds nothing
+    expect(batches.slice(0, 4)).toEqual([
+      { tick: 1, size: 2, judged: 0, retried: 1 },
+      { tick: 2, size: 2, judged: 2, retried: 0 },
       { tick: 2, size: 2, judged: 2, retried: 0 },
       { tick: 2, size: 0, judged: 0, retried: 0 },
     ]);
     expect(running.stats.retried).toBe(1);
-    expect(running.stats.judged).toBe(3);
+    expect(running.stats.judged).toBe(4);
     expect(await unjudged()).toBe(0);
+    // the wait after the failed tick is the pause, which is longer than the interval
+    expect(waits[0]).toBe(30_000);
+  });
+
+  it("the loop waits the larger of the interval and the pause, and a stop ends the pause at once", async () => {
+    await seedTurns(["one"]);
+    // the interval is longer than the first pause, and shorter than the second
+    const provider = scripted(failing(503), failing(503), noStatements());
+    const waits: number[] = [];
+    let paused: () => void = () => undefined;
+    const reachedPause = new Promise<void>((resolve) => { paused = resolve; });
+    // each wait is recorded; the first two pass at once, and the third waits for the stop alone
+    const sleep: Sleep = (ms, signal) => {
+      waits.push(ms);
+      if (waits.length < 2) return Promise.resolve();
+      paused();
+      return new Promise<void>((resolve) => { signal.addEventListener("abort", () => resolve(), { once: true }); });
+    };
+
+    const running = startJudge(deps(provider, { sleep }), { everyMs: 45_000, limit: 10, drain: true });
+    await reachedPause;
+    // stopping must not wait out the 60 s pause: the call returns because the wait was aborted
+    await running.stop();
+    await running.finished;
+
+    expect(waits).toEqual([45_000, 60_000]);
+    expect(running.stats).toMatchObject({ ticks: 2, retried: 2, judged: 0 });
+    expect(provider.requests).toHaveLength(2);
+    expect(await unjudged()).toBe(1);
   });
 
   it("a fatal error ends the loop with stats.fatal", async () => {
@@ -301,13 +462,71 @@ describe("the judge's batches, loop and command", () => {
     const running = startJudge(deps(provider), { everyMs: 600_000, limit: 10, drain: true }, { onBatch: (batch) => { seen.push(batch); } });
     await running.finished;
 
-    expect(running.stats.fatal).toBe("the model provider refused the judge's key (HTTP 403)");
+    expect(running.stats.fatal).toBe("the model provider refused the judge's requests (HTTP 403)");
     expect(running.stats).toMatchObject({ ticks: 1, batches: 1, judged: 0, failed: 0, errors: 0 });
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.fatal).toBe("the model provider refused the judge's key (HTTP 403)");
+    expect(seen[0]?.fatal).toBe("the model provider refused the judge's requests (HTTP 403)");
     expect(provider.requests).toHaveLength(1);
     expect(await stored(turnId)).toBeNull();
     await running.stop();
+  });
+
+  describe("the loop's batch lines", () => {
+    const outcome = (over: Partial<BatchOutcome> = {}): BatchOutcome => ({
+      size: 0, judged: 0, failed: 0, discarded: 0, retried: 0, capped: false, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, ...over,
+    });
+    const logged = (): { lines: [string, Record<string, unknown>][]; log: (msg: string, fields: Record<string, unknown>) => void } => {
+      const lines: [string, Record<string, unknown>][] = [];
+      return { lines, log: (msg, fields) => { lines.push([msg, fields]); } };
+    };
+
+    it("three capped ticks give one capped line and no batch line", async () => {
+      await seedTurns(["one", "two", "three"]);
+      const { lines, log } = logged();
+      const log3 = batchLogger(log);
+      const seen: BatchOutcome[] = [];
+      let third: () => void = () => undefined;
+      const reached = new Promise<void>((resolve) => { third = resolve; });
+
+      // a cap of no calls: every tick reads the three due turns and finds the day's calls used up
+      const running = startJudge(deps(scripted(), { dailyCalls: 0 }), { everyMs: 5, limit: 10, drain: true }, {
+        onBatch: (batch) => {
+          seen.push(batch);
+          log3(batch);
+          if (seen.length >= 3) third();
+        },
+      });
+      await reached;
+      await running.stop();
+
+      expect(seen.slice(0, 3).map((b) => [b.size, b.capped, b.judged])).toEqual([[3, true, 0], [3, true, 0], [3, true, 0]]);
+      expect(lines.filter(([msg]) => msg === "batch")).toEqual([]);
+      expect(lines.filter(([msg]) => msg === "capped")).toEqual([["capped", { due: 3 }]]);
+      expect(await unjudged()).toBe(3);
+    });
+
+    it("writes a batch line only for a batch that did something, and a capped line again only after one has", () => {
+      const { lines, log } = logged();
+      const onBatch = batchLogger(log);
+      const names = (): string[] => lines.map(([msg]) => msg);
+
+      onBatch(outcome()); // nothing due
+      onBatch(outcome({ size: 4, discarded: 1 })); // something
+      onBatch(outcome({ size: 4, retried: 1, pauseMs: 30_000 })); // something, and a pause
+      expect(names()).toEqual(["batch", "batch"]);
+      expect(lines[1]![1]).toMatchObject({ retried: 1, pause_ms: 30_000 });
+
+      onBatch(outcome({ size: 3, judged: 2, capped: true })); // did something and then ran out: both lines
+      onBatch(outcome({ size: 1, capped: true })); // still out
+      onBatch(outcome({ size: 1, capped: true }));
+      expect(names()).toEqual(["batch", "batch", "batch", "capped"]);
+
+      onBatch(outcome({ size: 2, failed: 1 })); // the day rolled over and a batch did something
+      onBatch(outcome({ size: 1, capped: true })); // out again
+      onBatch(outcome({ size: 1, capped: true }));
+      expect(names()).toEqual(["batch", "batch", "batch", "capped", "batch", "capped"]);
+      expect(lines.at(-1)![1]).toEqual({ due: 1 });
+    });
   });
 
   describe("main", () => {

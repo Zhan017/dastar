@@ -1,9 +1,9 @@
 import { isDeclared, screenStatements, statementClaim, type Interval, type JudgeFailure, type Rates, type StatementClaim } from "@dastar/db";
 import type { Completion, LLMProvider, Usage } from "../provider.js";
 import type { LabeledItem } from "./labeled.js";
-import { JUDGE_REPLY_SCHEMA, renderJudgeMessage, type LoadedJudgePrompt } from "./prompt.js";
+import { judgeRequest, type LoadedJudgePrompt } from "./prompt.js";
 import { parseJudgeReply } from "./reply.js";
-import { CALL_TIMEOUT_MS, classifyProviderError } from "./turn.js";
+import { CALL_TIMEOUT_MS, classifyProviderError, describeProviderError } from "./turn.js";
 
 /** Dollars per million tokens, by the model that answered; a model that is not here has no cost. */
 export const PRICES_PER_MTOK: Readonly<Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>> = {
@@ -34,9 +34,10 @@ export type Prediction = {
 };
 
 /**
- * Asks the model for the statements in one item, once, as the judge asks for a turn's. A key the provider refuses
- * throws; any other failure of the call, a refusal, a truncation and a reply that does not parse come back as a failed
- * prediction.
+ * Asks the model for the statements in one item, once, as the judge asks for a turn's: the request is built by the same
+ * function. A provider that cannot serve the judge (the key refused, the account's billing or spend cap, a model it has
+ * not) throws, naming the status and the API's error type; any other failure of the call, a refusal, a truncation and a
+ * reply that does not parse come back as a failed prediction.
  */
 export async function predict(provider: LLMProvider, prompt: LoadedJudgePrompt, item: LabeledItem, timeoutMs: number = CALL_TIMEOUT_MS): Promise<Prediction> {
   const { input } = item;
@@ -46,16 +47,10 @@ export async function predict(provider: LLMProvider, prompt: LoadedJudgePrompt, 
 
   let completion: Completion;
   try {
-    completion = await provider.complete({
-      system: prompt.system,
-      messages: [{ role: "user", text: renderJudgeMessage(prompt.template, input) }],
-      tools: [],
-      replySchema: JUDGE_REPLY_SCHEMA,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    completion = await provider.complete(judgeRequest(prompt, input, AbortSignal.timeout(timeoutMs)));
   } catch (error) {
     const kind = classifyProviderError(error);
-    if (kind === "config") throw new Error("the model provider refused the key (HTTP 401 or 403)");
+    if (kind === "config") throw new Error(`the model provider refused the requests (${describeProviderError(error)})`);
     return failed(kind === "rejected" ? "provider_rejected" : "provider_error");
   }
 

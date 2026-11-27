@@ -7,7 +7,7 @@ import { loadAccuracy } from "./accuracy.js";
 import { readJudgeConfig, type JudgeConfig } from "./config.js";
 import { judgeOnce, startJudge, type BatchOutcome } from "./loop.js";
 import { loadJudgePrompt } from "./prompt.js";
-import type { JudgeDeps } from "./turn.js";
+import { newPace, type JudgeDeps } from "./turn.js";
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -66,6 +66,7 @@ const tokens = (usage: Usage): Record<string, number> => ({
 
 const counts = (b: BatchOutcome): Record<string, unknown> => ({
   size: b.size, judged: b.judged, failed: b.failed, discarded: b.discarded, retried: b.retried, capped: b.capped, tokens: tokens(b.usage),
+  ...(b.pauseMs !== undefined ? { pause_ms: b.pauseMs } : {}),
 });
 
 /** The judge's connection pool, named as the judge's own, with the listener pg-pool requires for an idle client's error (or the process dies with it). */
@@ -82,7 +83,27 @@ export function judgeDepsOf(config: JudgeConfig, dastar: Dastar): JudgeDeps {
   // no retries in the SDK: each request the judge sends is one call counted against the day, and the three failures of a turn are three requests
   const provider = createAnthropicProvider({ apiKey: config.anthropicApiKey, model: config.model, effort: config.effort, maxRetries: 0 });
   return {
-    dastar, provider, prompt: loadJudgePrompt(), model: config.model, effort: config.effort, accuracy: loadAccuracy(), dailyCalls: config.dailyCalls, transient: new Map(),
+    dastar, provider, prompt: loadJudgePrompt(), model: config.model, effort: config.effort, accuracy: loadAccuracy(), dailyCalls: config.dailyCalls,
+    transient: new Map(), pace: newPace(),
+  };
+}
+
+/**
+ * What the loop writes for each batch. A batch that judged, failed, discarded or retried something is a `batch` line; one
+ * that did none of them is not, so a tick with nothing due, or with the day's calls used up, writes nothing. The day's calls
+ * running out is one `capped` line, and the next only after a batch has done something since.
+ */
+export function batchLogger(log: (msg: string, fields: Record<string, unknown>) => void): (batch: BatchOutcome) => void {
+  let capped = false;
+  return (batch) => {
+    if (batch.judged + batch.failed + batch.discarded + batch.retried > 0) {
+      capped = false;
+      log("batch", counts(batch));
+    }
+    if (batch.capped && !capped) {
+      capped = true;
+      log("capped", { due: batch.size });
+    }
   };
 }
 
@@ -117,9 +138,7 @@ export async function main(args: string[], env: Record<string, string | undefine
     }
 
     const running = startJudge(deps, { everyMs: config.everyMs, limit: config.limit, drain: true }, {
-      onBatch: (batch) => {
-        if (batch.size > 0) logInfo("batch", counts(batch));
-      },
+      onBatch: batchLogger(logInfo),
       onError: (error) => {
         logError("judge tick failed", error, secrets);
       },

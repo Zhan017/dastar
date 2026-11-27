@@ -3,7 +3,7 @@ import type { Effort } from "../config.js";
 import type { Completion, LLMProvider, Usage } from "../provider.js";
 import { stampFor, type AccuracyEntry } from "./accuracy.js";
 import { buildJudgeInput } from "./input.js";
-import { JUDGE_REPLY_SCHEMA, renderJudgeMessage, type LoadedJudgePrompt } from "./prompt.js";
+import { judgeRequest, type LoadedJudgePrompt } from "./prompt.js";
 import { parseJudgeReply } from "./reply.js";
 
 /** The most characters of an assistant turn the judge reads; a longer one is stored as failed, with no call. */
@@ -15,7 +15,56 @@ export const CALL_TIMEOUT_MS = 60_000;
 /** The failures of one turn, in one process, after which the turn is stored as failed instead of tried again. */
 export const TRANSIENT_LIMIT = 3;
 
+/** How long the process waits before its next call after a failure that may pass; each further failure in a row doubles it, up to PAUSE_MAX_MS. */
+export const PAUSE_BASE_MS = 30_000;
+export const PAUSE_MAX_MS = 600_000;
+
+/** The turns in a row, in one process, stored as rejected with no answered call between them, after which the process stops. */
+export const REJECTION_LIMIT = 3;
+
+/** The error code the provider gives a 429 that is the account's spend cap, which no retry beats until access resumes. */
+const SPEND_LIMIT_CODE = "enforced_spend_limit_reached";
+
 const NO_USAGE: JudgeUsage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+
+/** The pause after `failures` failures that may pass, in a row: 30 s, doubled by each further one, at most 10 minutes. */
+export function pauseAfter(failures: number): number {
+  return Math.min(PAUSE_MAX_MS, PAUSE_BASE_MS * 2 ** Math.max(0, failures - 1));
+}
+
+/** What a process learns of the provider as it goes; the caller keeps one for the life of the process. */
+export type JudgePace = {
+  /** Failures that may pass, in a row, since a call was last answered. */
+  failures: number;
+  /** Turns stored as rejected, in a row, with no call answered between them. */
+  rejections: number;
+  /** How long the process owes the provider before its next call; 0 when it owes none. */
+  pauseMs: number;
+};
+
+export const newPace = (): JudgePace => ({ failures: 0, rejections: 0, pauseMs: 0 });
+
+/** Waits `ms`, or less when `signal` aborts; it never rejects. Injected so that a test uses no real time. */
+export type Sleep = (ms: number, signal: AbortSignal) => Promise<void>;
+
+export const realSleep: Sleep = (ms, signal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /** The HTTP status an error carries, or undefined for an error that has no numeric one. */
 function statusOf(error: unknown): number | undefined {
@@ -24,15 +73,58 @@ function statusOf(error: unknown): number | undefined {
   return typeof status === "number" && Number.isInteger(status) ? status : undefined;
 }
 
+/** The parsed body of the provider's answer, which the SDK keeps on the error as `error`; the API's own error object sits inside it. */
+function bodyOf(error: unknown): Record<string, unknown> | undefined {
+  if (typeof error !== "object" || error === null || !("error" in error)) return undefined;
+  const { error: body } = error;
+  return isRecord(body) ? body : undefined;
+}
+
+/** The `details` of the answer's error, read where the body keeps it (`error.error.details`) or one level inside (`error.error.error.details`). */
+function detailsOf(error: unknown): Record<string, unknown> | undefined {
+  const body = bodyOf(error);
+  if (body === undefined) return undefined;
+  if (isRecord(body["details"])) return body["details"];
+  const inner = body["error"];
+  return isRecord(inner) && isRecord(inner["details"]) ? inner["details"] : undefined;
+}
+
+/** Whether the answer is the account's spend cap: a 429 whose details carry the spend-limit error code. */
+function spendLimitReached(error: unknown): boolean {
+  return detailsOf(error)?.["error_code"] === SPEND_LIMIT_CODE;
+}
+
+/** The API's error type ("billing_error", "not_found_error"), when the answer's body names one in the plain form types take. */
+function errorTypeOf(error: unknown): string | undefined {
+  const body = bodyOf(error);
+  if (body === undefined) return undefined;
+  const inner = body["error"];
+  for (const type of [isRecord(inner) ? inner["type"] : undefined, body["type"]]) {
+    if (typeof type === "string" && type !== "error" && /^[a-z][a-z_]{0,63}$/.test(type)) return type;
+  }
+  return undefined;
+}
+
+/** What a failed call says of itself for a log line: its HTTP status and, when the answer names one, the API's error type. Never the key, the request or the transcript. */
+export function describeProviderError(error: unknown): string {
+  const status = statusOf(error);
+  const type = errorTypeOf(error);
+  const code = spendLimitReached(error) ? SPEND_LIMIT_CODE : undefined;
+  return [status === undefined ? "no HTTP status" : `HTTP ${status}`, type, code].filter((part) => part !== undefined).join(", ");
+}
+
 /**
- * What a failed provider call says about the next step. "config": the key is refused (401, 403), which no turn can
- * fix. "transient": the provider or the network failed (408, 409, 429, 5xx, a timeout, an error with no status), so
- * the same request may succeed later. "rejected": any other status, to which the same request would get the same answer.
+ * What a failed provider call says about the next step. "config": the account or the key cannot be served, and no turn
+ * can fix it: 401 and 403 (the key is refused), 402 (billing), 404 (the model is wrong or unavailable) and a 429 that is
+ * the account's spend cap. "transient": the provider or the network failed (408, 409, any other 429, 5xx, a timeout, an
+ * error with no status), so the same request may succeed later. "rejected": any other status, to which the same request
+ * would get the same answer.
  */
 export function classifyProviderError(error: unknown): "config" | "transient" | "rejected" {
   const status = statusOf(error);
   if (status === undefined) return "transient";
-  if (status === 401 || status === 403) return "config";
+  if (status === 401 || status === 402 || status === 403 || status === 404) return "config";
+  if (status === 429 && spendLimitReached(error)) return "config";
   if (status === 408 || status === 409 || status === 429 || status >= 500) return "transient";
   return "rejected";
 }
@@ -49,23 +141,29 @@ export type JudgeDeps = {
   dailyCalls: number;
   /** The failures so far of each turn that failed in a way that may pass, by turn id; kept by the caller for the life of the process. */
   transient: Map<number, number>;
+  /** What the process has learned of the provider so far: its failures and rejections in a row, and the pause it owes; kept by the caller for the life of the process. */
+  pace: JudgePace;
   /** How long a provider call may take; CALL_TIMEOUT_MS when absent. */
   callTimeoutMs?: number;
+  /** How the process waits out a pause; `realSleep` when absent. */
+  sleep?: Sleep;
 };
 
 /**
  * What judging one due turn came to: a result stored, the turn gone or already judged (discarded), the turn left for a
- * later pass (retry, or capped by the day's calls), or a provider that refuses the key (fatal), which ends the process.
+ * later pass (retry, or capped by the day's calls), or a provider that cannot serve the judge (fatal), which ends the
+ * process. A turn stored as failed carries `fatal` too when its failure was the last the process takes.
  */
 export type TurnVerdict =
-  | { kind: "judged" | "failed"; usage: Usage | null }
+  | { kind: "judged"; usage: Usage | null }
+  | { kind: "failed"; usage: Usage | null; fatal?: string }
   | { kind: "discarded" }
   | { kind: "retry" }
   | { kind: "capped" }
   | { kind: "fatal"; line: string };
 
 /** Whether the text is longer than MAX_TEXT_CHARS characters, a character being a whole code point. */
-function tooLong(text: string): boolean {
+export function tooLong(text: string): boolean {
   return text.length > MAX_TEXT_CHARS && Array.from(text).length > MAX_TEXT_CHARS;
 }
 
@@ -104,27 +202,36 @@ async function judgeTurn(deps: JudgeDeps, due: DueTurn): Promise<TurnVerdict> {
   if (tooLong(source.text)) return fail("too_long");
   if (source.text.trim() === "") return store(assemble(source.readAt, {}, [], deps.model, NO_USAGE), { kind: "judged", usage: null });
 
-  const message = renderJudgeMessage(prompt.template, input);
   if (!(await judge.takeCall({ cap: deps.dailyCalls }))) return { kind: "capped" };
 
+  const { pace } = deps;
   let completion: Completion;
   try {
-    completion = await deps.provider.complete({
-      system: prompt.system,
-      messages: [{ role: "user", text: message }],
-      tools: [],
-      replySchema: JUDGE_REPLY_SCHEMA,
-      signal: AbortSignal.timeout(deps.callTimeoutMs ?? CALL_TIMEOUT_MS),
-    });
+    completion = await deps.provider.complete(judgeRequest(prompt, input, AbortSignal.timeout(deps.callTimeoutMs ?? CALL_TIMEOUT_MS)));
   } catch (error) {
     const kind = classifyProviderError(error);
-    if (kind === "config") return { kind: "fatal", line: `the model provider refused the judge's key (HTTP ${statusOf(error)})` };
-    if (kind === "rejected") return fail("provider_rejected");
+    if (kind === "config") return { kind: "fatal", line: `the model provider refused the judge's requests (${describeProviderError(error)})` };
+    if (kind === "rejected") {
+      const stored = await fail("provider_rejected");
+      if (stored.kind !== "failed") return stored;
+      // a provider that rejects every request is answering for the account or the request's shape, not for the turn: stop before the queue is stored as rejected
+      pace.rejections += 1;
+      if (pace.rejections < REJECTION_LIMIT) return stored;
+      return { ...stored, fatal: `the model provider rejected ${REJECTION_LIMIT} turns in a row with no answered call between them (${describeProviderError(error)}); the judge stops, and the turns after them stay with no result` };
+    }
+    // a failure that may pass: the process owes the provider a pause before its next call, longer for each failure in a row
+    pace.failures += 1;
+    pace.pauseMs = pauseAfter(pace.failures);
     const failures = (deps.transient.get(due.turnId) ?? 0) + 1;
     if (failures >= TRANSIENT_LIMIT) return fail("provider_error");
     deps.transient.set(due.turnId, failures);
     return { kind: "retry" };
   }
+
+  // the call was answered, whatever the answer says: the provider is serving, so no pause is owed and no rejection counts against it
+  pace.failures = 0;
+  pace.rejections = 0;
+  pace.pauseMs = 0;
 
   if (completion.kind === "refused" || completion.kind === "truncated") return fail(completion.kind, completion);
   const statements = completion.kind === "reply" ? parseJudgeReply(completion.text) : null;

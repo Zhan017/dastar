@@ -1,5 +1,5 @@
 import type { Usage } from "../provider.js";
-import { judgeOne, type JudgeDeps } from "./turn.js";
+import { judgeOne, realSleep, type JudgeDeps } from "./turn.js";
 
 /** What one read of the due turns came to: how many were read and what became of each one that was taken up. */
 export type BatchOutcome = {
@@ -8,8 +8,10 @@ export type BatchOutcome = {
   retried: number;
   /** The day's calls ran out; the turns after the one that found it were not taken up. */
   capped: boolean;
-  /** The line of the error that ended the batch: the provider refused the key. */
+  /** The line of the error that ended the batch: the provider cannot serve the judge, or rejected one turn after another. */
   fatal?: string;
+  /** Set when a call failed in a way that may pass, which ended the batch: how long the process waits before its next call. */
+  pauseMs?: number;
   /** The tokens of the calls whose answer was stored. */
   usage: Usage;
 };
@@ -26,13 +28,24 @@ function addUsage(into: Usage, usage: Usage | null): void {
 
 /**
  * Reads up to `limit` due turns and judges them one at a time. It stops at the first turn that finds the day's calls used
- * up or a provider that refuses the key, and between turns once `stopped` says so.
+ * up, a provider that cannot serve the judge, or a call that failed in a way that may pass (the provider is struggling,
+ * so no further call is made in the batch, and the batch says how long to wait before the next), and between turns once
+ * `stopped` says so. When the process owes a pause from an earlier batch, `wait` is called with its length before the
+ * first turn is judged, if any turn is due.
  */
-export async function judgeBatch(deps: JudgeDeps, limit: number, stopped: () => boolean = () => false): Promise<BatchOutcome> {
+export async function judgeBatch(
+  deps: JudgeDeps, limit: number, stopped: () => boolean = () => false, wait?: (ms: number) => Promise<void>,
+): Promise<BatchOutcome> {
   const due = await deps.dastar.judge.dueTurns({ limit });
   const outcome: BatchOutcome = { size: due.length, judged: 0, failed: 0, discarded: 0, retried: 0, capped: false, usage: noUsage() };
+  if (due.length > 0 && wait !== undefined && deps.pace.pauseMs > 0) {
+    const owed = deps.pace.pauseMs;
+    deps.pace.pauseMs = 0;
+    await wait(owed);
+  }
   for (const turn of due) {
     if (stopped()) break;
+    const failures = deps.pace.failures;
     const verdict = await judgeOne(deps, turn);
     switch (verdict.kind) {
       case "judged":
@@ -42,6 +55,10 @@ export async function judgeBatch(deps: JudgeDeps, limit: number, stopped: () => 
       case "failed":
         outcome.failed += 1;
         addUsage(outcome.usage, verdict.usage);
+        if (verdict.fatal !== undefined) {
+          outcome.fatal = verdict.fatal;
+          return outcome;
+        }
         break;
       case "discarded":
         outcome.discarded += 1;
@@ -56,19 +73,28 @@ export async function judgeBatch(deps: JudgeDeps, limit: number, stopped: () => 
         outcome.fatal = verdict.line;
         return outcome;
     }
+    // a call of this turn failed in a way that may pass, whether the turn is left for later or stored as failed by its third failure
+    if (deps.pace.failures > failures) {
+      outcome.pauseMs = deps.pace.pauseMs;
+      return outcome;
+    }
   }
   return outcome;
 }
 
 /**
  * Judges what is due and returns the totals of every batch. It takes batches until none is due, the day's calls run
- * out, or the provider refuses the key; a turn left for a later pass comes back in the next batch, until its third
- * failure stores it.
+ * out, or the provider cannot serve the judge; a turn left for a later pass comes back in the next batch, until its
+ * third failure stores it. After a call that failed in a way that may pass it waits, before the next batch's first turn,
+ * the pause the failure set, which `deps.sleep` takes (30 s, doubling with each failure in a row, 10 minutes at most).
  */
 export async function judgeOnce(deps: JudgeDeps, limit: number): Promise<BatchOutcome> {
   const total: BatchOutcome = { size: 0, judged: 0, failed: 0, discarded: 0, retried: 0, capped: false, usage: noUsage() };
+  const sleep = deps.sleep ?? realSleep;
+  // nothing ends a run to completion early
+  const never = new AbortController().signal;
   for (;;) {
-    const batch = await judgeBatch(deps, limit);
+    const batch = await judgeBatch(deps, limit, () => false, (ms) => sleep(ms, never));
     total.size += batch.size;
     total.judged += batch.judged;
     total.failed += batch.failed;
@@ -122,7 +148,9 @@ export function startJudge(deps: JudgeDeps, config: JudgeLoopConfig, hooks: Judg
     config, ticks: 0, batches: 0, judged: 0, failed: 0, discarded: 0, retried: 0, errors: 0, capped: 0, usage: noUsage(),
   };
   let stopped = false;
-  let wake: (() => void) | null = null;
+  // aborted by stop(), so that a wait, a pause included, ends at once
+  const stopping = new AbortController();
+  const sleep = deps.sleep ?? realSleep;
   const loop = (async (): Promise<void> => {
     while (!stopped) {
       stats.ticks += 1;
@@ -141,8 +169,9 @@ export function startJudge(deps: JudgeDeps, config: JudgeLoopConfig, hooks: Judg
             stats.fatal = batch.fatal;
             return;
           }
-          // a batch with a turn left for later waits for the next tick; so does one that found the day's calls used up
-          const more = batch.size === config.limit && batch.retried === 0 && !batch.capped;
+          // a batch with a turn left for later waits for the next tick; so does one that found the day's calls used up,
+          // and one that ended at a call that failed in a way that may pass
+          const more = batch.size === config.limit && batch.retried === 0 && !batch.capped && batch.pauseMs === undefined;
           if (!config.drain || !more || stopped) break;
         }
       } catch (e) {
@@ -151,11 +180,11 @@ export function startJudge(deps: JudgeDeps, config: JudgeLoopConfig, hooks: Judg
       }
       // a stop that arrived during the tick must not wait out the interval
       if (stopped) break;
-      await new Promise<void>((res) => {
-        const t = setTimeout(res, config.everyMs);
-        wake = () => { clearTimeout(t); res(); };
-      });
+      // the next tick comes after the interval, or after the pause a failure that may pass set when that is longer
+      const pause = deps.pace.pauseMs;
+      await sleep(Math.max(config.everyMs, pause), stopping.signal);
+      deps.pace.pauseMs = 0;
     }
   })();
-  return { stats, stop: async () => { stopped = true; wake?.(); await loop; }, finished: loop };
+  return { stats, stop: async () => { stopped = true; stopping.abort(); await loop; }, finished: loop };
 }

@@ -5,24 +5,69 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packag
 import { seedKey, seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import type { AccuracyEntry } from "../src/judge/accuracy.js";
 import { loadJudgePrompt, renderJudgeMessage, JUDGE_REPLY_SCHEMA } from "../src/judge/prompt.js";
-import { CALL_TIMEOUT_MS, MAX_TEXT_CHARS, TRANSIENT_LIMIT, classifyProviderError, judgeOne, type JudgeDeps } from "../src/judge/turn.js";
+import {
+  CALL_TIMEOUT_MS, MAX_TEXT_CHARS, PAUSE_MAX_MS, REJECTION_LIMIT, TRANSIENT_LIMIT, classifyProviderError, describeProviderError, judgeOne, newPace, pauseAfter, tooLong,
+  type JudgeDeps,
+} from "../src/judge/turn.js";
 import type { Completion, LLMProvider } from "../src/provider.js";
 import { replyWith, scripted, toolCall, USAGE, type Step } from "./fake-provider.js";
 
 type Seeded = { session: string; turnId: number; due: DueTurn };
 
 const withStatus = (status: number): Error => Object.assign(new Error("x"), { status });
+/** An error as the SDK's APIError carries it: the status, and the API's parsed body on `error`. */
+const withBody = (status: number, body: unknown): Error => Object.assign(new Error("x"), { status, error: body });
+/** The body the API sends for an error: its type and message, and the details when there are any. */
+const apiBody = (type: string, details?: unknown): unknown => ({ type: "error", error: { type, message: "m", ...(details === undefined ? {} : { details }) } });
+const SPEND = { error_code: "enforced_spend_limit_reached" };
 /** A step whose call fails: with an error carrying the status, or with none. */
 const failing = (status?: number): Step => () => {
   throw status === undefined ? new Error("connection reset") : withStatus(status);
 };
 
 describe("classifyProviderError", () => {
-  it("sorts a status into the key being refused, a failure that may pass, and a request that is refused", () => {
-    expect(classifyProviderError(withStatus(401))).toBe("config");
-    expect(classifyProviderError(withStatus(403))).toBe("config");
+  it("sorts a status into the account or key being refused, a failure that may pass, and a request that is refused", () => {
+    for (const status of [401, 402, 403, 404]) expect(classifyProviderError(withStatus(status)), String(status)).toBe("config");
     for (const status of [408, 409, 429, 500, 502, 503, 529, 599]) expect(classifyProviderError(withStatus(status)), String(status)).toBe("transient");
-    for (const status of [400, 402, 404, 413, 422, 418]) expect(classifyProviderError(withStatus(status)), String(status)).toBe("rejected");
+    for (const status of [400, 413, 422, 418]) expect(classifyProviderError(withStatus(status)), String(status)).toBe("rejected");
+  });
+
+  it("takes a 429 that is the account's spend cap as the account refused, wherever the body keeps its details, and any other 429 as one that may pass", () => {
+    // the SDK keeps the parsed body on `.error`; the code is read at error.error.details and at error.error.error.details
+    expect(classifyProviderError(withBody(429, apiBody("rate_limit_error", SPEND)))).toBe("config");
+    expect(classifyProviderError(withBody(429, { details: SPEND }))).toBe("config");
+    expect(classifyProviderError(withBody(429, { type: "error", error: { type: "rate_limit_error", details: SPEND } }))).toBe("config");
+    expect(classifyProviderError(withBody(429, apiBody("rate_limit_error")))).toBe("transient");
+    expect(classifyProviderError(withBody(429, apiBody("rate_limit_error", { error_code: "something_else" })))).toBe("transient");
+    expect(classifyProviderError(withBody(429, apiBody("rate_limit_error", "enforced_spend_limit_reached")))).toBe("transient");
+    expect(classifyProviderError(withBody(429, "enforced_spend_limit_reached"))).toBe("transient");
+    expect(classifyProviderError(withBody(429, null))).toBe("transient");
+    expect(classifyProviderError(withStatus(429))).toBe("transient");
+    // the code belongs to a 429: on another status it changes nothing
+    expect(classifyProviderError(withBody(500, apiBody("api_error", SPEND)))).toBe("transient");
+    expect(classifyProviderError(withBody(400, apiBody("invalid_request_error", SPEND)))).toBe("rejected");
+  });
+
+  it("describes a failure by its status and the API's error type, and by nothing else of the answer", () => {
+    expect(describeProviderError(withStatus(401))).toBe("HTTP 401");
+    expect(describeProviderError(withBody(402, apiBody("billing_error")))).toBe("HTTP 402, billing_error");
+    expect(describeProviderError(withBody(404, apiBody("not_found_error")))).toBe("HTTP 404, not_found_error");
+    expect(describeProviderError(withBody(429, apiBody("rate_limit_error", SPEND)))).toBe("HTTP 429, rate_limit_error, enforced_spend_limit_reached");
+    // a type that is not a plain identifier is left out, so no text of the answer's own gets into a line
+    expect(describeProviderError(withBody(402, { type: "error", error: { type: "Bill me at sk-ant-1234" } }))).toBe("HTTP 402");
+    expect(describeProviderError(withBody(402, { type: "error", error: { message: "sk-ant-1234 over the limit" } }))).toBe("HTTP 402");
+    expect(describeProviderError(new Error("sk-ant-1234"))).toBe("no HTTP status");
+  });
+
+  it("paces failures that may pass: 30 s, doubling, at most 10 minutes", () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 50, 5_000].map(pauseAfter)).toEqual([30_000, 60_000, 120_000, 240_000, 480_000, PAUSE_MAX_MS, PAUSE_MAX_MS, PAUSE_MAX_MS, PAUSE_MAX_MS]);
+    expect(PAUSE_MAX_MS).toBe(600_000);
+  });
+
+  it("counts a text's characters as whole code points", () => {
+    expect(tooLong("x".repeat(MAX_TEXT_CHARS))).toBe(false);
+    expect(tooLong("x".repeat(MAX_TEXT_CHARS + 1))).toBe(true);
+    expect(tooLong("\u{1F37D}".repeat(5_000))).toBe(false);
   });
 
   it("takes an error with no numeric status as one that may pass", () => {
@@ -60,7 +105,7 @@ describe("judging one turn", () => {
 
   /** The deps of a judgment: the judge's own handle, a model that is not the one that answers, and no accuracy entries. */
   const deps = (provider: LLMProvider, over: Partial<JudgeDeps> = {}): JudgeDeps => ({
-    dastar: j, provider, prompt, model: "configured-model", effort: "medium", accuracy: [], dailyCalls: 500, transient: new Map(), ...over,
+    dastar: j, provider, prompt, model: "configured-model", effort: "medium", accuracy: [], dailyCalls: 500, transient: new Map(), pace: newPace(), ...over,
   });
 
   /** A reservation of the venue held for a day, written by the owner (a reservation is written held with its unit row); returns its id. */
@@ -268,18 +313,105 @@ describe("judging one turn", () => {
     }
   });
 
-  it("401 and 403 are fatal and leave the row null", async () => {
-    for (const status of [401, 403]) {
+  it("401, 402, 403 and 404 are fatal and leave the row null", async () => {
+    for (const status of [401, 402, 403, 404]) {
       const { turnId, due } = await seedTurn(TEXT);
       const before = await dayCalls();
       const transient = new Map<number, number>();
-      expect(await judgeOne(deps(scripted(failing(status)), { transient }), due)).toEqual({
-        kind: "fatal", line: `the model provider refused the judge's key (HTTP ${status})`,
-      });
+      const d = deps(scripted(failing(status)), { transient });
+      expect(await judgeOne(d, due)).toEqual({ kind: "fatal", line: `the model provider refused the judge's requests (HTTP ${status})` });
       expect(await stored(turnId)).toBeNull();
       expect(transient.size).toBe(0);
+      expect(d.pace).toEqual({ failures: 0, rejections: 0, pauseMs: 0 });
       expect(await dayCalls()).toBe(before + 1);
     }
+  });
+
+  it("a fatal line names the status and the API's error type, and carries nothing else of the answer", async () => {
+    const cases: [Error, string][] = [
+      [withBody(402, apiBody("billing_error")), "HTTP 402, billing_error"],
+      [withBody(404, apiBody("not_found_error")), "HTTP 404, not_found_error"],
+      [withBody(429, apiBody("rate_limit_error", SPEND)), "HTTP 429, rate_limit_error, enforced_spend_limit_reached"],
+    ];
+    for (const [error, said] of cases) {
+      const { turnId, due } = await seedTurn(TEXT);
+      const verdict = await judgeOne(deps(scripted(() => { throw Object.assign(error, { message: `sk-ant-secret ${TEXT}` }); })), due);
+      expect(verdict, said).toEqual({ kind: "fatal", line: `the model provider refused the judge's requests (${said})` });
+      expect(JSON.stringify(verdict)).not.toContain("sk-ant-secret");
+      expect(JSON.stringify(verdict)).not.toContain(TEXT);
+      expect(await stored(turnId)).toBeNull();
+    }
+  });
+
+  it("a 429 that is the spend cap is fatal, and any other 429 leaves the row null for a later call", async () => {
+    const capped = await seedTurn(TEXT);
+    const spend = deps(scripted(() => { throw withBody(429, apiBody("rate_limit_error", SPEND)); }));
+    expect(await judgeOne(spend, capped.due)).toMatchObject({ kind: "fatal" });
+    expect(await stored(capped.turnId)).toBeNull();
+    expect(spend.pace).toEqual({ failures: 0, rejections: 0, pauseMs: 0 });
+
+    const busy = await seedTurn(TEXT);
+    const plain = deps(scripted(() => { throw withBody(429, apiBody("rate_limit_error")); }));
+    expect(await judgeOne(plain, busy.due)).toEqual({ kind: "retry" });
+    expect(await stored(busy.turnId)).toBeNull();
+  });
+
+  it("a failure that may pass sets the pause the process owes, doubling with each in a row, and an answered call clears it", async () => {
+    const d = deps(scripted(failing(503), failing(), failing(429), statementsReply(), failing(500)));
+    const turns = await Promise.all([seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT)]);
+    const paces: unknown[] = [];
+    for (const t of turns) {
+      await judgeOne(d, t.due);
+      paces.push({ ...d.pace });
+    }
+    expect(paces).toEqual([
+      { failures: 1, rejections: 0, pauseMs: 30_000 },
+      { failures: 2, rejections: 0, pauseMs: 60_000 },
+      { failures: 3, rejections: 0, pauseMs: 120_000 },
+      { failures: 0, rejections: 0, pauseMs: 0 },
+      { failures: 1, rejections: 0, pauseMs: 30_000 },
+    ]);
+  });
+
+  it("three turns in a row stored as rejected end the process, and a call answered between them does not count them together", async () => {
+    expect(REJECTION_LIMIT).toBe(3);
+    const rejected = { outcome: "failed", judged_at: expect.any(String), prompt_hash: prompt.hash, reason: "provider_rejected" };
+    const bad = withBody(400, apiBody("invalid_request_error"));
+    const reject = (): never => { throw bad; };
+
+    // three in a row: each is stored, and the third carries the line that ends the process
+    const a = await seedTurn(TEXT); const b = await seedTurn(TEXT); const c = await seedTurn(TEXT); const after = await seedTurn(TEXT);
+    const run = deps(scripted(reject, reject, reject, statementsReply()));
+    expect(await judgeOne(run, a.due)).toEqual({ kind: "failed", usage: null });
+    expect(await judgeOne(run, b.due)).toEqual({ kind: "failed", usage: null });
+    const third = await judgeOne(run, c.due);
+    expect(third).toMatchObject({ kind: "failed", usage: null });
+    expect(third.kind === "failed" ? third.fatal : undefined).toBe(
+      "the model provider rejected 3 turns in a row with no answered call between them (HTTP 400, invalid_request_error); the judge stops, and the turns after them stay with no result",
+    );
+    for (const t of [a, b, c]) expect(await stored(t.turnId)).toEqual(rejected);
+    expect(await stored(after.turnId)).toBeNull();
+
+    // rejected, answered, rejected, rejected: no three in a row
+    const d = deps(scripted(reject, statementsReply(), reject, reject, reject));
+    const seeded = await Promise.all([seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT)]);
+    const verdicts: Awaited<ReturnType<typeof judgeOne>>[] = [];
+    for (const t of seeded) verdicts.push(await judgeOne(d, t.due));
+    expect(verdicts.map((v) => v.kind)).toEqual(["failed", "judged", "failed", "failed", "failed"]);
+    expect(verdicts.map((v) => (v.kind === "failed" ? v.fatal !== undefined : false))).toEqual([false, false, false, false, true]);
+    expect(d.pace.rejections).toBe(3);
+  });
+
+  it("a failure that may pass between two rejections neither ends nor restarts the count", async () => {
+    const reject = (): never => { throw withStatus(400); };
+    const d = deps(scripted(reject, failing(503), reject, reject));
+    const seeded = await Promise.all([seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT), seedTurn(TEXT)]);
+    const kinds: string[] = [];
+    for (const t of seeded) {
+      const v = await judgeOne(d, t.due);
+      kinds.push(v.kind === "failed" && v.fatal !== undefined ? "fatal" : v.kind);
+    }
+    expect(kinds).toEqual(["failed", "retry", "failed", "fatal"]);
   });
 
   it("a 400 is stored at once as provider_rejected", async () => {
