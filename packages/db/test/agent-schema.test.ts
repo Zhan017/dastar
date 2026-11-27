@@ -71,9 +71,10 @@ describe("agent session schema", () => {
     await dropDatabase("agent_schema_test");
   });
 
-  it("every dastar_agent table has row-level security with exactly the venue rule, and the reporting read on all but session_hold", async () => {
-    // session_hold keeps encrypted confirm tokens, so reporting has no read of it
-    const ALL_TABLES = [...TABLES, "session_hold"].sort();
+  it("every dastar_agent table has row-level security, the venue rule on all but judge_day, and the reporting read on all but session_hold and judge_day", async () => {
+    // session_hold keeps encrypted confirm tokens, so reporting has no read of it; judge_day is the judge's own counter, with no policy at all
+    const VENUE_TABLES = [...TABLES, "session_hold"].sort();
+    const ALL_TABLES = [...VENUE_TABLES, "judge_day"].sort();
     const r = await owner.query(
       `select c.relname::text as relname, c.relrowsecurity,
               array(select pol.polname::text from pg_policy pol where pol.polrelid = c.oid order by pol.polname) as policies
@@ -84,8 +85,9 @@ describe("agent session schema", () => {
     expect(r.rows.map((x) => x.relname as string)).toEqual(ALL_TABLES);
     for (const row of r.rows) {
       expect(row.relrowsecurity, row.relname).toBe(true);
-      // no other policy widens what any role sees: the venue rule, and reporting's read of every venue except for session_hold
-      expect(row.policies, row.relname).toEqual(row.relname === "session_hold" ? ["venue_scope"] : ["readonly_reads", "venue_scope"]);
+      // no other policy widens what any role sees: the venue rule, and reporting's read of every venue except for session_hold; judge_day has none
+      const expectedPolicies = row.relname === "judge_day" ? [] : row.relname === "session_hold" ? ["venue_scope"] : ["readonly_reads", "venue_scope"];
+      expect(row.policies, row.relname).toEqual(expectedPolicies);
     }
 
     // the policy applies to every command, to dastar_app alone, and tests the table's venue column against the bound venue
@@ -96,9 +98,9 @@ describe("agent session schema", () => {
          from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
         where n.nspname = 'dastar_agent' and pol.polname = 'venue_scope'`,
     );
-    expect(pol.rows.map((x) => x.relname as string).sort()).toEqual(ALL_TABLES);
+    expect(pol.rows.map((x) => x.relname as string).sort()).toEqual(VENUE_TABLES);
     const rule = "(venue_id = (NULLIF(current_setting('dastar.venue_id'::text, true), ''::text))::uuid)";
-    for (const t of ALL_TABLES) {
+    for (const t of VENUE_TABLES) {
       const p = pol.rows.find((x) => x.relname === t);
       expect(p, `${t}: venue_scope`).toMatchObject({ polcmd: "*", roles: ["dastar_app"] });
       expect(p.qual, `${t}: using`).toBe(rule);
@@ -177,7 +179,7 @@ describe("agent session schema", () => {
   it("each role has exactly its grant", async () => {
     const expected: Record<string, Record<string, { privileges: string[]; update: string[] }>> = {
       dastar_app: {
-        session: { privileges: ["SELECT", "INSERT"], update: ["last_seen_at", "call_count", "audit", "audited_at"] },
+        session: { privileges: ["SELECT", "INSERT"], update: ["last_seen_at", "call_count", "audit", "audited_at", "judge_requested"] },
         tool_call: { privileges: ["SELECT", "INSERT"], update: ["status", "output", "receipt", "completed_at"] },
         turn: { privileges: ["SELECT", "INSERT", "DELETE"], update: [] },
       },

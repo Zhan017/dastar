@@ -29,6 +29,7 @@ export async function setup() {
   await t.query("alter role dastar_app password 'app'");
   await t.query("alter role dastar_worker password 'worker'");
   await t.query("alter role dastar_readonly password 'readonly'");
+  await t.query("alter role dastar_judge password 'judge'");
   await t.query(await readFile(join(here, "..", "test-sql", "clock_override.sql"), "utf8"));
   await t.end();
 

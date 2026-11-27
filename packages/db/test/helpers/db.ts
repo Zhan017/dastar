@@ -9,7 +9,7 @@ function hostport(): string {
   return process.env.DASTAR_TEST_PG_HOSTPORT!;
 }
 
-export type Conn = { owner: string; app: string; worker: string; readonly: string; name: string };
+export type Conn = { owner: string; app: string; worker: string; readonly: string; judge: string; name: string };
 
 function connectionsFor(name: string): Conn {
   const hp = hostport();
@@ -19,6 +19,7 @@ function connectionsFor(name: string): Conn {
     app: `postgres://dastar_app:app@${hp}/${name}`,
     worker: `postgres://dastar_worker:worker@${hp}/${name}`,
     readonly: `postgres://dastar_readonly:readonly@${hp}/${name}`,
+    judge: `postgres://dastar_judge:judge@${hp}/${name}`,
   };
 }
 

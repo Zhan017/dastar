@@ -119,7 +119,11 @@ if (command === "race") {
   console.log(`migrate: applied ${r.applied.length} file(s)${r.applied.length ? ": " + r.applied.join(", ") : ""}`);
 } else if (command === "roles") {
   // passwords come from the environment, never from flags, so they stay out of the process list
-  const passwords = { dastar_app: process.env.DASTAR_APP_PASSWORD, dastar_worker: process.env.DASTAR_WORKER_PASSWORD };
+  const passwords = {
+    dastar_app: process.env.DASTAR_APP_PASSWORD,
+    dastar_worker: process.env.DASTAR_WORKER_PASSWORD,
+    dastar_judge: process.env.DASTAR_JUDGE_PASSWORD,
+  };
   const owner = new Client({ connectionString: need("owner-url") });
   owner.on("error", () => undefined);
   await owner.connect();
@@ -130,7 +134,7 @@ if (command === "race") {
     set.push(role);
   }
   await owner.end();
-  if (set.length === 0) { console.error("set DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD, or both"); await exit(2); }
+  if (set.length === 0) { console.error("set one or more of DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD and DASTAR_JUDGE_PASSWORD"); await exit(2); }
   console.log(`roles: password set for ${set.join(", ")}`);
 } else if (command === "seed-demo") {
   const owner = new Client({ connectionString: need("owner-url") });
@@ -260,7 +264,7 @@ if (command === "race") {
   console.error([
     "usage:",
     "  migrate --owner-url <url>",
-    "  roles --owner-url <url>   (sets the passwords in DASTAR_APP_PASSWORD and DASTAR_WORKER_PASSWORD)",
+    "  roles --owner-url <url>   (sets the passwords in DASTAR_APP_PASSWORD, DASTAR_WORKER_PASSWORD and DASTAR_JUDGE_PASSWORD)",
     "  seed --owner-url <url> [--units 6] [--combos 2]",
     "  seed-demo --owner-url <url>   (the demo venue from packages/db/seed/demo-venue.sql, fixed ids, idempotent)",
     "  race --owner-url <url> --app-url <url> [--n 500]",
