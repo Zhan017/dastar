@@ -72,6 +72,18 @@ describe("createAnthropicProvider request", () => {
     expect(body).not.toHaveProperty("thinking");
   });
 
+  it("a request with no tools carries neither tools nor tool_choice", async () => {
+    const { provider: p, sent } = provider(() => message({ content: [text("{}")], stop_reason: "end_turn" }));
+    await p.complete(request({ tools: [] }));
+
+    const body = sent[0]?.body ?? {};
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(body["system"]).toEqual([{ type: "text", text: "You book tables.", cache_control: { type: "ephemeral" } }]);
+    expect(body["output_config"]).toEqual({ effort: "medium", format: { type: "json_schema", schema: REPLY_JSON_SCHEMA } });
+    expect(body["messages"]).toEqual([{ role: "user", content: "a table for two" }]);
+  });
+
   it("asks for the refusal fallback on the models that take it, and not on others", async () => {
     expect([...FALLBACK_MODELS].sort()).toEqual(["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5"]);
     expect(FALLBACK_BETA).toBe("server-side-fallback-2026-07-01");

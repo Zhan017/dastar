@@ -162,7 +162,7 @@ function toCompletion(response: BetaMessage): Completion {
 }
 
 /**
- * The model behind the agent, reached through the Messages API with strict tools and a JSON reply. The request sets no
+ * The model behind the agent, reached through the Messages API with strict tools (none when the request lists none) and a JSON reply. The request sets no
  * thinking field, so the model's own default applies: its answers may carry thinking blocks, which are passed back
  * unchanged within the turn.
  */
@@ -177,13 +177,18 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LLMProv
         max_tokens: MAX_TOKENS,
         system: [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }],
         messages: buildMessages(request.messages),
-        tools: request.tools.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          input_schema: tool.inputSchema as BetaToolInputSchema,
-          strict: true,
-        })),
-        tool_choice: { type: "auto" },
+        // a request with no tools sends neither the list nor a choice among them
+        ...(request.tools.length > 0
+          ? {
+              tools: request.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.inputSchema as BetaToolInputSchema,
+                strict: true,
+              })),
+              tool_choice: { type: "auto" as const },
+            }
+          : {}),
         output_config: { effort: opts.effort, format: { type: "json_schema", schema: request.replySchema } },
         ...(fallbacks ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
       };

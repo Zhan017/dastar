@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { PROMPT_FILE, loadPrompt, promptHash, renderContext } from "../src/prompt.js";
+import { PROMPT_FILE, loadPrompt, promptHash, readPromptFile, renderContext, renderTemplate } from "../src/prompt.js";
 import { REPLY_JSON_SCHEMA } from "../src/reply.js";
 import { AGENT_TOOLS } from "../src/tools.js";
 
@@ -82,5 +82,45 @@ describe("renderContext", () => {
     expect(renderContext("{{venue}} {{utc}}", { ...values, venue: "{{utc}}" })).toBe("{{utc}} 2064-01-07T16:00:00.000Z");
     expect(() => renderContext("{{nothing}}", values)).toThrow("nothing");
     expect(() => renderContext("{{toString}}", values)).toThrow("toString");
+  });
+});
+
+describe("renderTemplate", () => {
+  it("fills each placeholder once and leaves a value that looks like one", () => {
+    expect(renderTemplate("{{a}} and {{b}} and {{a}}", { a: "{{b}}", b: "two" })).toBe("{{b}} and two and {{b}}");
+    expect(renderTemplate("no placeholders", {})).toBe("no placeholders");
+    expect(() => renderTemplate("{{nothing}}", { a: "x" })).toThrow("nothing");
+    expect(() => renderTemplate("{{toString}}", {})).toThrow("toString");
+  });
+});
+
+describe("readPromptFile", () => {
+  it("splits at its marker and refuses a file without exactly one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-prompt-file-"));
+    try {
+      const write = (name: string, text: string) => {
+        const file = join(dir, name);
+        writeFileSync(file, text);
+        return file;
+      };
+      const marker = "<!-- elsewhere -->";
+      expect(readPromptFile(write("ok.md", `\nFirst.\n\nSecond.\n${marker}\nA {{b}}.\n\n`), marker)).toEqual({ system: "First.\n\nSecond.", template: "A {{b}}." });
+      expect(readPromptFile(write("crlf.md", `One.\r\n${marker}\r\nTwo.\r\n`), marker)).toEqual({ system: "One.", template: "Two." });
+
+      // the marker of another prompt is not this one's
+      const other = write("other.md", `One.\n${MARKER}\nTwo.\n`);
+      expect(() => readPromptFile(other, marker)).toThrow(other);
+
+      for (const [name, text] of [["none.md", "Say hello.\n"], ["two.md", `A\n${marker}\nB\n${marker}\nC\n`], ["inline.md", `A ${marker} B\n`]] as const) {
+        const file = write(name, text);
+        expect(() => readPromptFile(file, marker), name).toThrow(file);
+      }
+      for (const [name, text] of [["no-system.md", `${marker}\nB\n`], ["no-template.md", `A\n${marker}\n`]] as const) {
+        const file = write(name, text);
+        expect(() => readPromptFile(file, marker), name).toThrow(file);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
