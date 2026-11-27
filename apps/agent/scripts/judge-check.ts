@@ -105,6 +105,8 @@ async function checkReference(pool: Pool, venueId: string): Promise<{ reference:
       reference.findings.push({ ...found, session_id: row.session_id, seq: row.seq });
     }
   }
+  // with no turn to read, "every reference turn is judged" would hold of nothing: a check on no data does not pass
+  if (reference.turns === 0) problem = "no reference turn to check";
   return { reference, ...(problem !== undefined ? { problem } : {}) };
 }
 

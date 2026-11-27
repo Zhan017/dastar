@@ -229,7 +229,9 @@ export async function runConversations(
     try {
       report.judge_inputs = await run.judgeInputs();
     } catch (error) {
-      if (report.passed) report = { name, passed: false, reason: `the judge input could not be read: ${messageOf(error)}`, turns: run.turns, judge_inputs: [] };
+      const unread = `the judge input could not be read: ${messageOf(error)}`;
+      // a conversation that already failed keeps its own reason, with the read's error after it
+      report = { name, passed: false, reason: report.passed ? unread : `${report.reason ?? "no reason given"}; ${unread}`, turns: run.turns, judge_inputs: [] };
     }
     reports.push(report);
     onReport?.(report);

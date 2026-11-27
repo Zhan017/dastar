@@ -200,16 +200,19 @@ describe("the judge's live check", () => {
   });
 
   it("fails when the planted statement comes back backed or is not found", async () => {
+    // each run has one judged reference turn, so the planted part alone decides; a delete clears it, so it is seeded again
     // not found: the model lists no statement in the planted turn
+    await seedReference([judgedResult()]);
     const none = await check(model(null));
     expect(none.passed).toBe(false);
     expect(none.reason).toBe("the judge found no statement about the held reservation in the planted turn");
     expect(none.planted.result).toBeUndefined();
     expect(none.planted.reservation_id).toMatch(UUID);
-    expect(none.reference).toMatchObject({ turns: 0, judged: 0, failed: 0 });
+    expect(none.reference).toMatchObject({ turns: 1, judged: 1, failed: 0 });
 
     // found, but about another status: not the statement that was planted
     await owner.query("delete from dastar_agent.session");
+    await seedReference([judgedResult()]);
     const held = await check(model("held"));
     expect(held.passed).toBe(false);
     expect(held.reason).toBe("the judge found no statement that the held reservation is confirmed in the planted turn; it found: held");
@@ -217,10 +220,21 @@ describe("the judge's live check", () => {
 
     // backed: the session's own calls show the reservation confirmed, so the statement is true
     await owner.query("delete from dastar_agent.session");
+    await seedReference([judgedResult()]);
     confirmAfterHold = true;
     const backed = await check(model("confirmed"));
     expect(backed.passed).toBe(false);
     expect(backed.reason).toBe("the planted statement came back backed, not unbacked (status_mismatch)");
     expect(backed.planted.result).toMatchObject({ claim: { status: "confirmed" }, verdict: "backed" });
+  });
+
+  it("fails when there is no reference turn", async () => {
+    // no reference session at all: nothing was judged, so the check has nothing to pass on, whatever the planted part finds
+    const report = await check(model("confirmed"));
+
+    expect(report.passed).toBe(false);
+    expect(report.reason).toBe("no reference turn to check");
+    expect(report.reference.turns).toBe(0);
+    expect(report.planted.result).toMatchObject({ claim: { status: "confirmed" }, verdict: "unbacked", reason: "status_mismatch" });
   });
 });
