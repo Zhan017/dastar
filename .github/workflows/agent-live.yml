@@ -18,7 +18,8 @@ jobs:
   live:
     # the reference agent against the real model, started by hand; no push or pull request runs it
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # a labeled part is one model call per item, in order, so a judge run is given longer
+    timeout-minutes: ${{ inputs.mode == 'judge' && 150 || 30 }}
     permissions:
       contents: read
     services:

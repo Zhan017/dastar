@@ -107,9 +107,11 @@ describe("measures the fixture with a scripted provider", () => {
 
     // the two matched pairs: item a's start is the same instant in another offset, so it agrees; item b's label has a start the prediction left out
     expect(report.field_agreement).toEqual(wilson(1, 2));
-    // item b is the one measured item labeled in two passes, and its passes agreed; the refused item's passes did not and are left out
-    expect(report.label_agreement).toEqual(wilson(1, 1));
-    expect(report.label_agreement.value).toBe(1);
+    // the labeling passes are a property of the labels: both two-pass items count, the refused one too. Item b's passes agreed; item c's did not
+    expect(report.label_agreement).toEqual(wilson(1, 2));
+    expect(report.label_agreement).toMatchObject({ value: 0.5, k: 1, n: 2 });
+    // and an item with no prediction at all counts as well
+    expect(measure(items, []).label_agreement).toMatchObject({ k: 1, n: 2 });
 
     expect(report.failures).toEqual({ refused: 1 });
     expect(report.dropped).toBe(0);
@@ -245,6 +247,15 @@ describe("loadLabeled", () => {
     // a quote is found without regard to case or runs of whitespace
     moved.labels[0]!.quote = "A TABLE for 2\n held   for you";
     expect(loadLabeled(fileWith("spaced.json", [moved])).items).toHaveLength(1);
+
+    // a label may only name a reservation its item lists, read without case; a label with no reservation is always fine
+    const named = structuredClone(items[0]!);
+    named.labels[0]!.reservation_id = "0199a000-0000-7000-8000-0000000000ff";
+    expect(() => loadLabeled(fileWith("unlisted.json", [named]))).toThrow(/item 0\.labels\[0\] names a reservation that is not in the item's input\.reservations/);
+    named.labels[0]!.reservation_id = RESERVATION_A.toUpperCase();
+    expect(loadLabeled(fileWith("upper.json", [named])).items).toHaveLength(1);
+    named.labels[0]!.reservation_id = null;
+    expect(loadLabeled(fileWith("none.json", [named])).items).toHaveLength(1);
   });
 
   it("refuses an unknown field, a value of the wrong kind, and a file that is not a list of items", () => {

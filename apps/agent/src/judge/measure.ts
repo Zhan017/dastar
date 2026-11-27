@@ -106,7 +106,8 @@ const priceOf = (model: string | null): { input: number; output: number; cacheRe
 /**
  * The agreement of the predictions with the labels, item by item. A prediction matches a label with the same
  * reservation (none to none) and status, one to one, the labels in order each taking the first prediction not yet
- * taken. An item whose call failed is counted in `failures` and in no rate, and an item with no prediction is not measured.
+ * taken. An item whose call failed is counted in `failures` and in no rate but the label agreement, which is over the
+ * labels and so over every two-pass item; an item with no prediction is not measured.
  */
 export function measure(items: readonly LabeledItem[], predictions: readonly Prediction[]): AccuracyReport {
   const byItem = new Map(predictions.map((p): [string, Prediction] => [p.item, p]));
@@ -125,6 +126,12 @@ export function measure(items: readonly LabeledItem[], predictions: readonly Pre
   const passes = tally();
 
   for (const item of items) {
+    // the agreement of the two labeling passes is a property of the labels: every two-pass item counts, whatever its call did
+    if (item.labeled_by === "two-pass") {
+      passes.n++;
+      if (!item.disagreed) passes.k++;
+    }
+
     const prediction = byItem.get(item.id);
     if (prediction === undefined) continue;
 
@@ -180,10 +187,6 @@ export function measure(items: readonly LabeledItem[], predictions: readonly Pre
       if (label === undefined || found === undefined) continue;
       fields.n++;
       if (sameStart(label.starts_at, found.starts_at) && label.party_size === found.party_size) fields.k++;
-    }
-    if (item.labeled_by === "two-pass") {
-      passes.n++;
-      if (!item.disagreed) passes.k++;
     }
   }
 

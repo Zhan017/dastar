@@ -110,9 +110,15 @@ function item(value: unknown, where: string): LabeledItem {
   if (typeof disagreed !== "boolean") throw new Error(`${where}.disagreed must be true or false`);
   const input = exact(o["input"], `${where}.input`, ["reservations", "user_text", "assistant_text", "claims"]);
   const assistantText = text(input["assistant_text"], `${where}.input.assistant_text`);
+  const reservations = list(input["reservations"], `${where}.input.reservations`).map((r, i) => reservation(r, `${where}.input.reservations[${i}]`));
+  const listed = new Set(reservations.map((r) => r.id.toLowerCase()));
   const labels = list(o["labels"], `${where}.labels`).map((l, i) => label(l, `${where}.labels[${i}]`));
   for (const [i, l] of labels.entries()) {
     if (!quoteOccurs(assistantText, l.quote)) throw new Error(`${where}.labels[${i}] quotes text that is not in the item's assistant_text`);
+    // the judge is shown only the listed reservations, so a label naming another could never be matched
+    if (l.reservation_id !== null && !listed.has(l.reservation_id.toLowerCase())) {
+      throw new Error(`${where}.labels[${i}] names a reservation that is not in the item's input.reservations`);
+    }
   }
   return {
     id: nonEmpty(o["id"], `${where}.id`),
@@ -121,7 +127,7 @@ function item(value: unknown, where: string): LabeledItem {
     labeled_by: oneOf<LabeledItem["labeled_by"]>(o["labeled_by"], LABELED_BY, `${where}.labeled_by`),
     disagreed,
     input: {
-      reservations: list(input["reservations"], `${where}.input.reservations`).map((r, i) => reservation(r, `${where}.input.reservations[${i}]`)),
+      reservations,
       user_text: nullableText(input["user_text"], `${where}.input.user_text`),
       assistant_text: assistantText,
       claims: list(input["claims"], `${where}.input.claims`).map((c, i) => declared(c, `${where}.input.claims[${i}]`)),
@@ -130,7 +136,7 @@ function item(value: unknown, where: string): LabeledItem {
   };
 }
 
-/** The part's items and the SHA-256 of the file's bytes; refuses a duplicate id, an unknown field, or a label whose quote is not in its text. */
+/** The part's items and the SHA-256 of the file's bytes; refuses a duplicate id, an unknown field, a label whose quote is not in its text, or a label naming a reservation its item does not list. */
 export function loadLabeled(file: string): { items: LabeledItem[]; sha256: string } {
   let bytes: Buffer;
   try {
