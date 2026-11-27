@@ -25,6 +25,8 @@ export type { AvailabilityInput, AvailabilityResult } from "./commands/availabil
 export { PUBLISHED_OUTBOX_RETENTION_DAYS, EXTERNAL_SESSION_RETENTION_DAYS, type RetentionBatch } from "./commands/retention.js";
 export { BOUNDS, restaurantHost, type RankingStrategy, type Slot } from "@dastar/core";
 export {
-  CLAIM_STATUSES, auditSession, scrubText,
+  CLAIM_STATUSES, auditSession, scrubText, observedReservations, quoteOccurs, statementClaim, isDeclared, screenStatements, assembleJudgment, summarizeJudgments,
   type Claim, type AuditTurn, type AuditResult, type ClaimResult, type Observed, type UnbackedReason, type AuditReceipt, type LoggedCall, type AuditInput,
+  type ClaimStatus, type ObservedReservation, type JudgeStatement, type StatementClaim, type JudgedStatement, type StatementResult, type Interval, type Rates,
+  type JudgeAccuracy, type JudgeUsage, type JudgeFailure, type JudgedResult, type FailedResult, type JudgeResult, type UndeclaredSummary, type AssemblyInput,
 } from "@dastar/core";

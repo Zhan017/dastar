@@ -113,6 +113,31 @@ function seen(c: LoggedCall, previous: ReadonlyMap<string, Obs>): Seen[] {
   }
 }
 
+export type ObservedReservation = { id: string; starts_at?: string; party_size?: number };
+
+/** Each reservation the completed calls showed, read as auditSession reads them, in the order first seen; start and party size from the latest observation that has each. */
+export function observedReservations(calls: readonly LoggedCall[]): ObservedReservation[] {
+  const completed: { c: LoggedCall; ms: number }[] = [];
+  for (const c of [...calls].sort((a, b) => a.id - b.id)) {
+    const ms = typeof c.completedAt === "string" ? Date.parse(c.completedAt) : NaN;
+    if (!Number.isNaN(ms)) completed.push({ c, ms });
+  }
+  completed.sort((a, b) => a.ms - b.ms || a.c.id - b.c.id);
+
+  const latest = new Map<string, Obs>();
+  const out = new Map<string, ObservedReservation>();
+  for (const { c, ms } of completed) {
+    for (const s of seen(c, latest)) {
+      latest.set(s.id, { call: c.id, tool: c.tool, at: c.completedAt as string, ms, status: s.status, ...s.attrs });
+      const entry = out.get(s.id) ?? { id: s.id };
+      if (s.attrs.starts_at !== undefined) entry.starts_at = s.attrs.starts_at;
+      if (s.attrs.party_size !== undefined) entry.party_size = s.attrs.party_size;
+      out.set(s.id, entry);
+    }
+  }
+  return [...out.values()];
+}
+
 /** A held reservation whose hold ran out at or before the given instant has expired, whether or not anything wrote that down. */
 function effectiveStatus(o: Obs, atMs: number): string {
   return o.status === "held" && o.hold_expires_at !== undefined && Date.parse(o.hold_expires_at) <= atMs ? "expired" : o.status;
@@ -149,7 +174,7 @@ function latestReceipts(list: readonly Recorded[], atMs: number): { receipts: Au
   return { receipts: list.slice(from, end).map((r) => r.receipt), omitted: from };
 }
 
-function sameInstant(a: string, b: string): boolean {
+export function sameInstant(a: string, b: string): boolean {
   const x = Date.parse(a);
   const y = Date.parse(b);
   return Number.isNaN(x) || Number.isNaN(y) ? a === b : x === y;
