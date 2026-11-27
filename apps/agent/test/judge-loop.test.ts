@@ -4,7 +4,7 @@ import { createDastar, type Dastar } from "@dastar/db";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedKey, seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { judgeBatch, judgeOnce, startJudge, type BatchOutcome, type RunningJudge } from "../src/judge/loop.js";
-import { main } from "../src/judge/main.js";
+import { main, redact, secretsOf } from "../src/judge/main.js";
 import { loadJudgePrompt } from "../src/judge/prompt.js";
 import type { JudgeDeps } from "../src/judge/turn.js";
 import type { Completion, LLMProvider } from "../src/provider.js";
@@ -379,6 +379,52 @@ describe("the judge's batches, loop and command", () => {
       expect(everything).not.toContain(conn.judge);
       expect(fetchStub).not.toHaveBeenCalled();
       expect(await stored(turnId)).toMatchObject({ outcome: "judged", statements: [] });
+    });
+
+    it("main logs a database failure with the URL, its password and the key taken out", async () => {
+      const fetchStub = vi.fn();
+      vi.stubGlobal("fetch", fetchStub);
+      const { out, err } = capture();
+      // nothing listens on port 1, so the first read of the database fails at once
+      const url = "postgres://dastar_judge:s3cret-judge-pw@127.0.0.1:1/dastar";
+
+      expect(await main(["--once"], judgeEnv({ DATABASE_URL: url }))).toBe(1);
+
+      expect(err).toHaveLength(1);
+      expect(JSON.parse(err[0]!)).toMatchObject({ level: "error", msg: "the judge stopped", error: expect.any(String) });
+      const everything = [...out, ...err].join("\n");
+      expect(everything).not.toContain("s3cret-judge-pw");
+      expect(everything).not.toContain(url);
+      expect(everything).not.toContain(FAKE_KEY);
+      expect(fetchStub).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("redact", () => {
+    const REDACTED = "[redacted]";
+
+    it("takes out the whole URL, its password as written and as decoded, and the key", () => {
+      const url = "postgres://dastar_judge:p%40ss%2Fw0rd@db.example:5432/dastar";
+      const secrets = secretsOf(url, "sk-test-key");
+      expect(secrets).toEqual(expect.arrayContaining([url, "p%40ss%2Fw0rd", "p@ss/w0rd", "sk-test-key"]));
+
+      const message = `could not connect to ${url}: password p@ss/w0rd and p%40ss%2Fw0rd refused, key sk-test-key`;
+      const out = redact(message, secrets);
+      expect(out).toBe(`could not connect to ${REDACTED}: password ${REDACTED} and ${REDACTED} refused, key ${REDACTED}`);
+      for (const secret of secrets) expect(out).not.toContain(secret);
+
+      // the host and the role are not secrets
+      expect(redact("connect ECONNREFUSED db.example:5432 as dastar_judge", secrets)).toBe("connect ECONNREFUSED db.example:5432 as dastar_judge");
+    });
+
+    it("leaves a message unchanged for an empty or absent secret and a URL with no password", () => {
+      expect(secretsOf("postgres://dastar_judge@db.example/dastar", "")).toEqual(["postgres://dastar_judge@db.example/dastar"]);
+      expect(secretsOf(undefined, undefined)).toEqual([]);
+      expect(secretsOf("not a url", undefined)).toEqual(["not a url"]);
+      const message = "connect ECONNREFUSED db.example:5432";
+      expect(redact(message, [""])).toBe(message);
+      expect(redact(message, secretsOf("postgres://dastar_judge@db.example/dastar", ""))).toBe(message);
+      expect(redact(message, [])).toBe(message);
     });
   });
 });

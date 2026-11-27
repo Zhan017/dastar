@@ -11,9 +11,42 @@ import type { JudgeDeps } from "./turn.js";
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** One JSON line on stderr; an error is reported by its message alone. */
-function logError(msg: string, error: unknown): void {
-  process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", msg, error: messageOf(error) })}\n`);
+const REDACTED = "[redacted]";
+
+/** The password of a connection URL as written in it and as decoded; empty when the URL has none or is not a URL. */
+function passwordsOf(databaseUrl: string): string[] {
+  let password: string;
+  try {
+    password = new URL(databaseUrl).password;
+  } catch {
+    return [];
+  }
+  let decoded = password;
+  try {
+    decoded = decodeURIComponent(password);
+  } catch {
+    // a password that is not valid percent-encoding is kept as written
+  }
+  return [password, decoded];
+}
+
+/** What a log line must never carry: the connection URL, its password and the model key. Absent and empty values are left out. */
+export function secretsOf(databaseUrl: string | undefined, apiKey: string | undefined): string[] {
+  const secrets = [...(databaseUrl === undefined ? [] : [databaseUrl, ...passwordsOf(databaseUrl)]), ...(apiKey === undefined ? [] : [apiKey])];
+  return secrets.filter((secret) => secret !== "");
+}
+
+/** The text with each occurrence of each secret replaced; the longest first, so a URL goes whole before its password does. */
+export function redact(text: string, secrets: readonly string[]): string {
+  return [...secrets]
+    .filter((secret) => secret !== "")
+    .sort((a, b) => b.length - a.length)
+    .reduce((out, secret) => out.replaceAll(secret, REDACTED), text);
+}
+
+/** One JSON line on stderr; an error is reported by its message alone, with the secrets taken out. */
+function logError(msg: string, error: unknown, secrets: readonly string[]): void {
+  process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", msg, error: redact(messageOf(error), secrets) })}\n`);
 }
 
 /** One JSON line on stdout. */
@@ -45,12 +78,13 @@ export async function main(args: string[], env: Record<string, string | undefine
   const configured = readJudgeConfig(env);
   if (!configured.ok) return refuse(configured.line);
   const { config } = configured;
+  const secrets = secretsOf(config.databaseUrl, config.anthropicApiKey);
   const once = args.includes("--once");
 
   // pg-pool requires a listener for an idle client's error, or the process dies with it
   const pool = new Pool({ connectionString: config.databaseUrl, application_name: "dastar-judge" });
   pool.on("error", (error) => {
-    logError("pool error", error);
+    logError("pool error", error, secrets);
   });
   const dastar = createDastar({ pool });
   try {
@@ -79,7 +113,7 @@ export async function main(args: string[], env: Record<string, string | undefine
         if (batch.size > 0) logInfo("batch", counts(batch));
       },
       onError: (error) => {
-        logError("judge tick failed", error);
+        logError("judge tick failed", error, secrets);
       },
     });
     const stop = (): void => {
@@ -95,7 +129,7 @@ export async function main(args: string[], env: Record<string, string | undefine
     }
     return running.stats.fatal === undefined ? 0 : refuse(running.stats.fatal);
   } catch (error) {
-    logError("the judge stopped", error);
+    logError("the judge stopped", error, secrets);
     return 1;
   } finally {
     await dastar.close().catch(() => undefined);
@@ -107,7 +141,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   try {
     process.exitCode = await main(process.argv.slice(2), process.env);
   } catch (error) {
-    logError("the judge stopped", error);
+    logError("the judge stopped", error, secretsOf(process.env["DATABASE_URL"]?.trim(), process.env["ANTHROPIC_API_KEY"]?.trim()));
     process.exitCode = 1;
   }
 }
