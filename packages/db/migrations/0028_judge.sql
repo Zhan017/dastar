@@ -22,6 +22,11 @@ grant usage on schema dastar, dastar_agent to dastar_judge;
 
 grant select on dastar_agent.session, dastar_agent.tool_call, dastar_agent.turn to dastar_judge;
 grant update (judge_result) on dastar_agent.turn to dastar_judge;
+
+-- The application writes turns and never a result, by insert or by update, so its insert grant on turn is by column and leaves out id (generated) and judge_result. A column added to turn later needs its own insert grant.
+revoke insert on dastar_agent.turn from dastar_app;
+grant insert (session_id, venue_id, seq, role, content, claims, guardrail_fired, at, model, prompt_hash, provider_calls, regenerations, fell_back, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms) on dastar_agent.turn to dastar_app;
+
 grant select (id, venue_id, status, hold_expires_at) on dastar.reservation to dastar_judge;
 grant select (id, timezone) on dastar.venue to dastar_judge;
 

@@ -181,7 +181,7 @@ describe("agent session schema", () => {
       dastar_app: {
         session: { privileges: ["SELECT", "INSERT"], update: ["last_seen_at", "call_count", "audit", "audited_at", "judge_requested"] },
         tool_call: { privileges: ["SELECT", "INSERT"], update: ["status", "output", "receipt", "completed_at"] },
-        turn: { privileges: ["SELECT", "INSERT", "DELETE"], update: [] },
+        turn: { privileges: ["SELECT", "DELETE"], update: [] }, // its insert is by column, in judge-schema.test.ts
       },
       dastar_worker: {
         session: { privileges: ["SELECT", "DELETE"], update: [] },

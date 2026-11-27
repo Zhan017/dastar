@@ -225,10 +225,28 @@ describe("judge schema", () => {
     expect(await bound(app, A.venue, () => failure(() => app.query(
       "update dastar_agent.turn set judge_result = '{}'::jsonb where id = $1", [externalA.assistant],
     )))).toMatchObject({ code: "42501" });
+    // nor by insert: a turn that names judge_result is refused, and no turn is written at seq 5
+    expect(await bound(app, A.venue, () => failure(() => app.query(
+      "insert into dastar_agent.turn(session_id, venue_id, seq, role, content, judge_result) values ($1, $2, 5, 'assistant', 'hello', '{}'::jsonb)",
+      [externalA.session, A.venue],
+    )))).toMatchObject({ code: "42501" });
+    expect((await owner.query("select count(*)::int as n from dastar_agent.turn where session_id = $1 and seq = 5", [externalA.session])).rows[0].n).toBe(0);
     // the other venue's session is out of its sight
     const other = await bound(app, A.venue, () => app.query("update dastar_agent.session set judge_requested = true where id = $1", [externalB.session]));
     expect(other.rowCount).toBe(0);
     expect((await owner.query("select judge_requested from dastar_agent.session where id = $1", [externalA.session])).rows[0].judge_requested).toBe(false);
+  });
+
+  it("dastar_app may insert every column of turn but id and judge_result", async () => {
+    const held = await owner.query(
+      `select column_name::text as col from information_schema.column_privileges
+        where table_schema = 'dastar_agent' and table_name = 'turn' and grantee = 'dastar_app' and privilege_type = 'INSERT'`,
+    );
+    const all = await owner.query(
+      "select column_name::text as col from information_schema.columns where table_schema = 'dastar_agent' and table_name = 'turn'",
+    );
+    const want = (all.rows.map((r) => r.col as string)).filter((c) => c !== "id" && c !== "judge_result").sort();
+    expect(held.rows.map((r) => r.col as string).sort()).toEqual(want);
   });
 
   it("judge_requested is boolean, not null, default false", async () => {
