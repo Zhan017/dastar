@@ -1,6 +1,6 @@
 export * from "./errors.js";
 export * from "./migrate.js";
-export { createDastar, type Dastar, type DastarOptions, type DastarCommand, type DastarAdmin, type DastarSessions, type AcquireInfo } from "./handle.js";
+export { createDastar, type Dastar, type DastarOptions, type DastarCommand, type DastarAdmin, type DastarSessions, type DastarJudge, type AcquireInfo } from "./handle.js";
 export type { Assignment, HoldInput, HoldHooks, HoldOutcome, Receipt } from "./commands/hold.js";
 export type { ConfirmInput, ConfirmHooks } from "./commands/confirm.js";
 export type { CancelInput, CancelHooks } from "./commands/cancel.js";
@@ -15,6 +15,9 @@ export type {
 export type {
   ClaimTurnInput, ClaimTurnOutcome, TurnRecord, StoreReplyInput, SessionHoldRow, PutSessionHoldInput, VenueProfile,
 } from "./commands/reference.js";
+export type {
+  DueTurn, DueTurnsInput, JudgeSource, JudgeSourceInput, JudgeCurrent, JudgeCurrentInput, StoreJudgmentInput, TakeCallInput,
+} from "./commands/judge.js";
 export type { ListHoldsInput, HoldView } from "./commands/list-holds.js";
 export type { AdminContext, ForceOption, AdminOutcome, StrandedCode, Stranded } from "./commands/admin.js";
 export type { UnitView, ComboView, CreateUnitInput, UpdateUnitInput, CreateComboInput, UpdateComboInput } from "./commands/admin-units.js";

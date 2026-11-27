@@ -15,6 +15,10 @@ import {
   openReferenceSession, claimTurn, storeReply, readTurns, listSessionHolds, putSessionHold, venueProfile,
   type ClaimTurnInput, type ClaimTurnOutcome, type StoreReplyInput, type SessionHoldRow, type PutSessionHoldInput, type VenueProfile,
 } from "./commands/reference.js";
+import {
+  dueTurns, judgeSource, judgeCurrent, storeJudgment, takeCall, canJudge,
+  type DueTurn, type DueTurnsInput, type JudgeSource, type JudgeSourceInput, type JudgeCurrent, type JudgeCurrentInput, type StoreJudgmentInput, type TakeCallInput,
+} from "./commands/judge.js";
 import { listHolds, type ListHoldsInput, type HoldView } from "./commands/list-holds.js";
 import { expireDue } from "./commands/expire.js";
 import { purgeRetained, type RetentionBatch } from "./commands/retention.js";
@@ -61,7 +65,8 @@ export type DastarCommand = "hold" | "confirm" | "cancel" | "seat" | "complete" 
   | "listUnits" | "createUnit" | "updateUnit" | "listCombos" | "createCombo" | "updateCombo"
   | "listSchedules" | "createSchedule" | "updateSchedule" | "listBlackouts" | "createBlackout" | "updateBlackout"
   | "currentStatuses" | "openSession" | "sessionVenue" | "getSession" | "beginCall" | "completeCall" | "auditInputs" | "storeAudit" | "getAudit"
-  | "openReferenceSession" | "claimTurn" | "storeReply" | "readTurns" | "listSessionHolds" | "putSessionHold" | "venueProfile";
+  | "openReferenceSession" | "claimTurn" | "storeReply" | "readTurns" | "listSessionHolds" | "putSessionHold" | "venueProfile"
+  | "dueTurns" | "judgeSource" | "judgeCurrent" | "storeJudgment" | "takeJudgeCall" | "canJudge";
 export type AcquireInfo = { command: DastarCommand; traceId: string | null; waitMs: number; acquired: boolean };
 
 /**
@@ -133,6 +138,26 @@ export interface DastarSessions {
   putSessionHold(input: PutSessionHoldInput): Promise<void>;
 }
 
+/**
+ * What the judge process does: it finds the assistant turns that are due, reads what one of them says and what its
+ * session observed, and stores a result once. Connect the pool as dastar_judge, which reads across venues; no command
+ * here binds one. The daily call count is the database's, so a cap holds across restarts and across processes.
+ */
+export interface DastarJudge {
+  /** Assistant turns with no result whose session is live and is a reference session or asked for the judge in its latest post, oldest first. */
+  dueTurns(input: DueTurnsInput): Promise<DueTurn[]>;
+  /** What judging the turn reads, in one snapshot with the database's time; null when the turn is gone. `userText` is the turn before it when that is a user turn. */
+  source(input: JudgeSourceInput): Promise<JudgeSource | null>;
+  /** The current status of each listed reservation of the venue, and the database's time, in one snapshot. */
+  current(input: JudgeCurrentInput): Promise<JudgeCurrent>;
+  /** Writes the turn's result once; false when the turn is gone or already has one. */
+  storeJudgment(input: StoreJudgmentInput): Promise<boolean>;
+  /** Counts one provider call against the current UTC day (by dastar_now); false, counting nothing, once `cap` are counted. */
+  takeCall(input: TakeCallInput): Promise<boolean>;
+  /** Whether the connected role may write judge_result. */
+  canJudge(): Promise<boolean>;
+}
+
 export interface Dastar {
   hold(input: HoldInput, hooks?: HoldHooks): Promise<HoldOutcome>;
   confirm(input: ConfirmInput, hooks?: ConfirmHooks): Promise<Receipt>;
@@ -164,6 +189,7 @@ export interface Dastar {
   venueProfile(venueId: string): Promise<VenueProfile | null>;
   admin: DastarAdmin;
   sessions: DastarSessions;
+  judge: DastarJudge;
   /** Closes the canceller connection. The pool belongs to the host and is left open. */
   close(): Promise<void>;
 }
@@ -396,6 +422,14 @@ export function createDastar(opts: DastarOptions): Dastar {
       readTurns: (input) => run("readTurns", null, (c) => readTurns(c, input)),
       listSessionHolds: (input) => run("listSessionHolds", null, (c) => listSessionHolds(c, input)),
       putSessionHold: (input) => run("putSessionHold", null, (c) => putSessionHold(c, input)),
+    },
+    judge: {
+      dueTurns: (input) => run("dueTurns", null, (c) => dueTurns(c, input)),
+      source: (input) => run("judgeSource", null, (c) => judgeSource(c, input)),
+      current: (input) => run("judgeCurrent", null, (c) => judgeCurrent(c, input)),
+      storeJudgment: (input) => run("storeJudgment", null, (c) => storeJudgment(c, input)),
+      takeCall: (input) => run("takeJudgeCall", null, (c) => takeCall(c, input)),
+      canJudge: () => run("canJudge", null, (c) => canJudge(c)),
     },
     close: async () => {
       const p = cancellerPromise;
