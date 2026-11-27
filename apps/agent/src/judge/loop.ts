@@ -1,5 +1,5 @@
 import type { Usage } from "../provider.js";
-import { judgeOne, realSleep, type JudgeDeps } from "./turn.js";
+import { judgeOne, NEVER_STOPS, realSleep, stopSignal, type JudgeDeps } from "./turn.js";
 
 /** What one read of the due turns came to: how many were read and what became of each one that was taken up. */
 export type BatchOutcome = {
@@ -91,10 +91,8 @@ export async function judgeBatch(
 export async function judgeOnce(deps: JudgeDeps, limit: number): Promise<BatchOutcome> {
   const total: BatchOutcome = { size: 0, judged: 0, failed: 0, discarded: 0, retried: 0, capped: false, usage: noUsage() };
   const sleep = deps.sleep ?? realSleep;
-  // nothing ends a run to completion early
-  const never = new AbortController().signal;
   for (;;) {
-    const batch = await judgeBatch(deps, limit, () => false, (ms) => sleep(ms, never));
+    const batch = await judgeBatch(deps, limit, () => false, (ms) => sleep(ms, NEVER_STOPS));
     total.size += batch.size;
     total.judged += batch.judged;
     total.failed += batch.failed;
@@ -148,8 +146,8 @@ export function startJudge(deps: JudgeDeps, config: JudgeLoopConfig, hooks: Judg
     config, ticks: 0, batches: 0, judged: 0, failed: 0, discarded: 0, retried: 0, errors: 0, capped: 0, usage: noUsage(),
   };
   let stopped = false;
-  // aborted by stop(), so that a wait, a pause included, ends at once
-  const stopping = new AbortController();
+  // triggered by stop(), so that a wait, a pause included, ends at once
+  const stopping = stopSignal();
   const sleep = deps.sleep ?? realSleep;
   const loop = (async (): Promise<void> => {
     while (!stopped) {
@@ -182,9 +180,9 @@ export function startJudge(deps: JudgeDeps, config: JudgeLoopConfig, hooks: Judg
       if (stopped) break;
       // the next tick comes after the interval, or after the pause a failure that may pass set when that is longer
       const pause = deps.pace.pauseMs;
-      await sleep(Math.max(config.everyMs, pause), stopping.signal);
+      await sleep(Math.max(config.everyMs, pause), stopping);
       deps.pace.pauseMs = 0;
     }
   })();
-  return { stats, stop: async () => { stopped = true; stopping.abort(); await loop; }, finished: loop };
+  return { stats, stop: async () => { stopped = true; stopping.stop(); await loop; }, finished: loop };
 }

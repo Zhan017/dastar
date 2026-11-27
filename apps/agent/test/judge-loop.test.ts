@@ -6,7 +6,7 @@ import { seedKey, seedVenue, type Seed } from "../../../packages/db/test/helpers
 import { judgeBatch, judgeOnce, startJudge, type BatchOutcome, type RunningJudge } from "../src/judge/loop.js";
 import { batchLogger, main, redact, secretsOf } from "../src/judge/main.js";
 import { loadJudgePrompt } from "../src/judge/prompt.js";
-import { PAUSE_MAX_MS, newPace, type JudgeDeps, type Sleep } from "../src/judge/turn.js";
+import { NEVER_STOPS, PAUSE_MAX_MS, newPace, realSleep, stopSignal, type JudgeDeps, type Sleep, type StopSignal } from "../src/judge/turn.js";
 import type { Completion, LLMProvider } from "../src/provider.js";
 import { replyWith, scripted, USAGE, type Step } from "./fake-provider.js";
 
@@ -433,16 +433,17 @@ describe("the judge's batches, loop and command", () => {
     let paused: () => void = () => undefined;
     const reachedPause = new Promise<void>((resolve) => { paused = resolve; });
     // each wait is recorded; the first two pass at once, and the third waits for the stop alone
-    const sleep: Sleep = (ms, signal) => {
+    const sleep: Sleep = (ms, stop) => {
       waits.push(ms);
       if (waits.length < 2) return Promise.resolve();
       paused();
-      return new Promise<void>((resolve) => { signal.addEventListener("abort", () => resolve(), { once: true }); });
+      if (stop.stopped) return Promise.resolve();
+      return new Promise<void>((resolve) => { stop.onStop(() => resolve()); });
     };
 
     const running = startJudge(deps(provider, { sleep }), { everyMs: 45_000, limit: 10, drain: true });
     await reachedPause;
-    // stopping must not wait out the 60 s pause: the call returns because the wait was aborted
+    // stopping must not wait out the 60 s pause: the call returns because the wait was stopped
     await running.stop();
     await running.finished;
 
@@ -645,5 +646,97 @@ describe("the judge's batches, loop and command", () => {
       expect(redact(message, secretsOf("postgres://dastar_judge@db.example/dastar", ""))).toBe(message);
       expect(redact(message, [])).toBe(message);
     });
+  });
+});
+
+describe("the judge's stop signal and its real wait", () => {
+  /** A stop that counts the listeners registered now and the calls each one received. */
+  function watched(): { stop: StopSignal & { stop(): void }; wakes: Array<{ calls: number }>; listening: () => number } {
+    const inner = stopSignal();
+    const wakes: Array<{ calls: number }> = [];
+    let listening = 0;
+    const stop: StopSignal & { stop(): void } = {
+      get stopped(): boolean { return inner.stopped; },
+      onStop(wake: () => void): () => void {
+        const record = { calls: 0 };
+        wakes.push(record);
+        listening += 1;
+        const off = inner.onStop(() => { record.calls += 1; wake(); });
+        return () => { listening -= 1; off(); };
+      },
+      stop: () => inner.stop(),
+    };
+    return { stop, wakes, listening: () => listening };
+  }
+
+  it("a stop wakes every listener once, and a second stop wakes none again", () => {
+    const s = stopSignal();
+    const first = vi.fn();
+    const second = vi.fn();
+    s.onStop(first);
+    s.onStop(second);
+    expect(s.stopped).toBe(false);
+    s.stop();
+    s.stop();
+    expect(s.stopped).toBe(true);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("a listener that stopped listening is not woken, and one added after the stop is never called", () => {
+    const s = stopSignal();
+    const gone = vi.fn();
+    const late = vi.fn();
+    s.onStop(gone)();
+    s.stop();
+    s.onStop(late);
+    s.stop();
+    expect(gone).not.toHaveBeenCalled();
+    expect(late).not.toHaveBeenCalled();
+  });
+
+  it("NEVER_STOPS is never stopped and registers nothing", () => {
+    const wake = vi.fn();
+    const off = NEVER_STOPS.onStop(wake);
+    off();
+    expect(NEVER_STOPS.stopped).toBe(false);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("a wait of 10 minutes ends at once when the stop comes during it", async () => {
+    const { stop, listening } = watched();
+    let ended = false;
+    const slept = realSleep(600_000, stop).then(() => { ended = true; });
+    expect(listening()).toBe(1);
+    expect(ended).toBe(false);
+    stop.stop();
+    await slept;
+    expect(ended).toBe(true);
+    expect(listening()).toBe(0);
+  });
+
+  it("a wait ends at once when the stop came before it, and listens to nothing", async () => {
+    const { stop, listening, wakes } = watched();
+    stop.stop();
+    await realSleep(600_000, stop);
+    expect(listening()).toBe(0);
+    expect(wakes).toHaveLength(0);
+  });
+
+  it("a wait that ran to its end leaves no listener behind: a later stop wakes no one", async () => {
+    const { stop, listening, wakes } = watched();
+    const started = Date.now();
+    await realSleep(20, stop);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
+    expect(listening()).toBe(0);
+    stop.stop();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.calls).toBe(0);
+  });
+
+  it("a wait with a stop that never comes lasts its time", async () => {
+    const started = Date.now();
+    await realSleep(20, NEVER_STOPS);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
   });
 });

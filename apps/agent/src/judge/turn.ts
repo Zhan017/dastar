@@ -44,22 +44,51 @@ export type JudgePace = {
 
 export const newPace = (): JudgePace => ({ failures: 0, rejections: 0, pauseMs: 0 });
 
-/** Waits `ms`, or less when `signal` aborts; it never rejects. Injected so that a test uses no real time. */
-export type Sleep = (ms: number, signal: AbortSignal) => Promise<void>;
+/** What a wait listens to for a stop: whether the stop has come, and a way to be woken when it does; `onStop` returns the function that stops listening. */
+export type StopSignal = { readonly stopped: boolean; onStop(wake: () => void): () => void };
 
-export const realSleep: Sleep = (ms, signal) =>
+/** A stop its owner triggers once: `stop()` sets `stopped` and wakes every wait listening at that moment. */
+export function stopSignal(): StopSignal & { stop(): void } {
+  const listeners = new Set<() => void>();
+  let stopped = false;
+  return {
+    get stopped(): boolean { return stopped; },
+    // a listener added after the stop is never called; callers check `stopped` first
+    onStop(wake: () => void): () => void {
+      listeners.add(wake);
+      return () => { listeners.delete(wake); };
+    },
+    stop(): void {
+      if (stopped) return;
+      stopped = true;
+      const waiting = [...listeners];
+      listeners.clear();
+      for (const wake of waiting) wake();
+    },
+  };
+}
+
+/** A stop that never comes, for a run that nothing ends early. */
+export const NEVER_STOPS: StopSignal = { stopped: false, onStop: () => () => undefined };
+
+/** Waits `ms`, or less when `stop` comes; it never rejects. Injected so that a test uses no real time. */
+export type Sleep = (ms: number, stop: StopSignal) => Promise<void>;
+
+export const realSleep: Sleep = (ms, stop) =>
   new Promise<void>((resolve) => {
-    if (signal.aborted) {
+    if (stop.stopped) {
       resolve();
       return;
     }
+    // whichever comes first, the timer or the stop, ends the wait and takes the other away
+    let unlisten: () => void = () => undefined;
     const done = (): void => {
       clearTimeout(timer);
-      signal.removeEventListener("abort", done);
+      unlisten();
       resolve();
     };
     const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
+    unlisten = stop.onStop(done);
   });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
