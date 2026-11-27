@@ -40,6 +40,18 @@ export function loadAccuracy(file: string = ACCURACY_FILE): AccuracyEntry[] {
   const entries = parsed as unknown[];
   const bad = entries.findIndex((entry) => !isEntry(entry));
   if (bad >= 0) throw new Error(`entry ${bad} of the accuracy file ${file} is not a measurement`);
+  // a read takes the first entry of a key, so a later one under the same key would never be read: it is refused, not shadowed
+  const seen = new Map<string, number>();
+  for (const [i, entry] of (entries as AccuracyEntry[]).entries()) {
+    const key = JSON.stringify([entry.model, entry.effort, entry.prompt_hash]);
+    const first = seen.get(key);
+    if (first !== undefined) {
+      throw new Error(
+        `entries ${first} and ${i} of the accuracy file ${file} share the model ${entry.model}, the effort ${entry.effort} and the prompt hash ${entry.prompt_hash}; replace the earlier one`,
+      );
+    }
+    seen.set(key, i);
+  }
   return entries as AccuracyEntry[];
 }
 

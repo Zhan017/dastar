@@ -50,6 +50,17 @@ describe("loadAccuracy", () => {
     expect(loadAccuracy(fileWith("entries.json", JSON.stringify([ENTRY])))).toEqual([ENTRY]);
   });
 
+  it("refuses a file in which two entries share a model, an effort and a prompt hash, and names the key", () => {
+    // a later measurement appended under the key of an earlier one would never be read: stampFor takes the first
+    const later: AccuracyEntry = { ...ENTRY, run: "2064-03-01-c", measured_at: "2064-03-01T10:00:00Z", undeclared: rates(0.5, 0.5) };
+    expect(() => loadAccuracy(fileWith("twice.json", JSON.stringify([ENTRY, later])))).toThrow(
+      /entries 0 and 1 of the accuracy file .*twice\.json share the model claude-opus-5-5, the effort medium and the prompt hash ab12cd34/,
+    );
+    const other: AccuracyEntry = { ...ENTRY, run: "2064-03-02-d" };
+    expect(() => loadAccuracy(fileWith("apart.json", JSON.stringify([ENTRY, { ...other, effort: "high" }, { ...other, model: "claude-sonnet-5-5" }, { ...other, prompt_hash: "00000000" }])))).not.toThrow();
+    expect(() => loadAccuracy(fileWith("third.json", JSON.stringify([ENTRY, { ...other, effort: "high" }, later])))).toThrow(/entries 0 and 2 /);
+  });
+
   it("refuses a file that is not a list of entries", () => {
     expect(() => loadAccuracy(join(dir, "missing.json"))).toThrow(/cannot be read/);
     expect(() => loadAccuracy(fileWith("broken.json", "[{"))).toThrow(/cannot be read/);

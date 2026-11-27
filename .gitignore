@@ -6,3 +6,6 @@ coverage/
 .env.*
 .DS_Store
 apps/harness/results/
+apps/agent/agent-live.json
+apps/agent/judge-accuracy.json
+apps/agent/judge-live.json
