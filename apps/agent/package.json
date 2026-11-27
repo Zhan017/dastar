@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/main.ts",
     "live": "tsx scripts/live.ts",
+    "judge": "tsx src/judge/main.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

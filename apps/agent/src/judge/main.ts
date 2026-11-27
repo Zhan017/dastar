@@ -1,0 +1,113 @@
+import { pathToFileURL } from "node:url";
+import { Pool } from "pg";
+import { createDastar } from "@dastar/db";
+import { createAnthropicProvider } from "../anthropic.js";
+import type { Usage } from "../provider.js";
+import { loadAccuracy } from "./accuracy.js";
+import { readJudgeConfig } from "./config.js";
+import { judgeOnce, startJudge, type BatchOutcome } from "./loop.js";
+import { loadJudgePrompt } from "./prompt.js";
+import type { JudgeDeps } from "./turn.js";
+
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** One JSON line on stderr; an error is reported by its message alone. */
+function logError(msg: string, error: unknown): void {
+  process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", msg, error: messageOf(error) })}\n`);
+}
+
+/** One JSON line on stdout. */
+function logInfo(msg: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...fields }));
+}
+
+/** Writes the refusal on stderr and gives the exit code of a process that did not start or did not finish. */
+function refuse(line: string): number {
+  process.stderr.write(`dastar-judge: ${line}\n`);
+  return 1;
+}
+
+const tokens = (usage: Usage): Record<string, number> => ({
+  input: usage.input, output: usage.output, cache_read: usage.cacheRead, cache_write: usage.cacheWrite,
+});
+
+const counts = (b: BatchOutcome): Record<string, unknown> => ({
+  size: b.size, judged: b.judged, failed: b.failed, discarded: b.discarded, retried: b.retried, capped: b.capped, tokens: tokens(b.usage),
+});
+
+/**
+ * Runs the judge: `--once` judges what is due and returns; with no argument it judges on a loop until SIGINT or SIGTERM.
+ * Returns the exit code: 0, or 1 for a refusal to start (settings, the database role) and for a provider that refuses the key.
+ */
+export async function main(args: string[], env: Record<string, string | undefined>): Promise<number> {
+  const extra = args.find((arg) => arg !== "--once");
+  if (extra !== undefined) return refuse(`unknown argument ${extra}; the only option is --once`);
+  const configured = readJudgeConfig(env);
+  if (!configured.ok) return refuse(configured.line);
+  const { config } = configured;
+  const once = args.includes("--once");
+
+  // pg-pool requires a listener for an idle client's error, or the process dies with it
+  const pool = new Pool({ connectionString: config.databaseUrl, application_name: "dastar-judge" });
+  pool.on("error", (error) => {
+    logError("pool error", error);
+  });
+  const dastar = createDastar({ pool });
+  try {
+    if (!(await dastar.judge.canJudge())) return refuse("the database user cannot update dastar_agent.turn.judge_result; connect as dastar_judge");
+
+    const prompt = loadJudgePrompt();
+    const accuracy = loadAccuracy();
+    // no retries in the SDK: each request the judge sends is one call counted against the day, and the three failures of a turn are three requests
+    const provider = createAnthropicProvider({ apiKey: config.anthropicApiKey, model: config.model, effort: config.effort, maxRetries: 0 });
+    const deps: JudgeDeps = {
+      dastar, provider, prompt, model: config.model, effort: config.effort, accuracy, dailyCalls: config.dailyCalls, transient: new Map(),
+    };
+    logInfo("judging", {
+      mode: once ? "once" : "loop", model: config.model, effort: config.effort,
+      every_ms: config.everyMs, limit: config.limit, daily_calls: config.dailyCalls, prompt_hash: prompt.hash,
+    });
+
+    if (once) {
+      const total = await judgeOnce(deps, config.limit);
+      logInfo("judged", counts(total));
+      return total.fatal === undefined ? 0 : refuse(total.fatal);
+    }
+
+    const running = startJudge(deps, { everyMs: config.everyMs, limit: config.limit, drain: true }, {
+      onBatch: (batch) => {
+        if (batch.size > 0) logInfo("batch", counts(batch));
+      },
+      onError: (error) => {
+        logError("judge tick failed", error);
+      },
+    });
+    const stop = (): void => {
+      void running.stop();
+    };
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+    try {
+      await running.finished;
+    } finally {
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+    }
+    return running.stats.fatal === undefined ? 0 : refuse(running.stats.fatal);
+  } catch (error) {
+    logError("the judge stopped", error);
+    return 1;
+  } finally {
+    await dastar.close().catch(() => undefined);
+    await pool.end().catch(() => undefined);
+  }
+}
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    process.exitCode = await main(process.argv.slice(2), process.env);
+  } catch (error) {
+    logError("the judge stopped", error);
+    process.exitCode = 1;
+  }
+}
