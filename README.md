@@ -8,9 +8,9 @@ Tables that seat different party sizes. Tables that combine. Holds that expire. 
 
 The name comes from *dastarkhan*, the Kazakh table where guests are honored.
 
-**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, an audit of any agent's booking claims against what its recorded calls returned, a reference agent that books by chat and has each reply checked the same way, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
+**Status: engine prototype, v0.2.** The database core, a pool-owned TypeScript API, availability search, admin commands, a reference HTTP API with a typed client, agent tools with an MCP server, an audit of any agent's booking claims against what its recorded calls returned, a reference agent that books by chat and has each reply checked the same way, a judge that reads what an agent said without declaring it, a worker for expiry and retention, a concurrency harness, and their tests are implemented and run in CI on Node.js 22, 24, and 26. A public demo is planned. The package is not yet published to npm.
 
-[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [Audit an agent](#audit-any-agent) · [Reference agent](#the-reference-agent) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
+[Try it](#try-it) · [Run the tests](#run-the-tests) · [See the race](#see-the-race) · [Run the API](#run-the-reference-api) · [Audit an agent](#audit-any-agent) · [Reference agent](#the-reference-agent) · [Judge](#the-judge) · [How it works](#how-it-works) · [Use the engine](#use-the-engine)
 
 [Correctness](CORRECTNESS.md) · [Benchmarks](BENCHMARKS.md) · [Limitations](LIMITATIONS.md) · [Security](SECURITY.md) · [Decisions](docs/adr/README.md) · [Prototype results](docs/design/results-2026-09-10-prototype.md) · [System design](docs/design/design.md)
 
@@ -247,9 +247,45 @@ What it says:
 - `confirmations` is 0. It counts the confirms made in the session. The agent's key cannot confirm, because a key that can confirm or administer cannot open a session, so a confirm in the session means someone gave the agent a confirm token.
 - `current_status` is the reservation's status when the audit ran, and `current_differs` is true when it is not the status the session last saw. It shows when someone else changed the reservation after the agent saw it, such as staff confirming it, or a hold running out.
 - `unknown_outcomes` counts calls the session recorded as started and never as completed, such as one the API stopped serving before its answer was recorded.
-- `undeclared` says what the audit does not do yet: statements the agent made without declaring them as claims are not checked.
+- `undeclared` is about the statements the agent made without declaring them as claims, which the verdicts above do not cover. It reads `"not checked"` here because the post did not ask for the judge; the next part says what it reads when it did.
 
-Posting a transcript again replaces the session's earlier transcript and result; `GET /v1/sessions/{id}/audit` reads the latest, and `GET /v1/sessions/{id}` shows the session's `calls` and `last_seen_at`. A transcript is 1 to 500 turns, with at most 50 claims on a turn. Text and quotes are stored with emails and numbers masked: an email address reads `[email]`, a number of 7 to 15 digits `[phone]`, one of 16 or more `[number]`; ids, ISO dates and times stay. Names are not detected, so redact guest details before posting. A session records up to 10,000 calls. An external session not seen for 30 days is gone, audit included. [LIMITATIONS.md](LIMITATIONS.md) lists what the audit does not cover.
+**Statements the agent did not declare.** The post takes one more field, `judge`, a boolean that is false when it is left out. With `"judge": true`, [the judge](#the-judge) reads each assistant turn of the transcript for statements about reservations that no claim declares, and sets them against the session's calls. **That sends transcript text to the operator's model provider**, so it happens only when the post asks. For each assistant turn of at most 8,000 characters (the text is stored scrubbed, as above), the provider receives the turn's text, the text of the user turn before it, cut to 2,000 characters, and the id, start time, and party size of each reservation the session's calls showed. Without `judge: true`, no part of a posted transcript is sent to a provider. The judge is a process the operator of the API runs, as [its section](#the-judge) describes; the API itself makes no call to a model, and a transcript is read only while such a process is running.
+
+`undeclared` has three states:
+
+- `"not checked"`: the latest post did not ask for the judge. The post's own answer says it too.
+- `"pending"`: the latest post asked, and some assistant turn has no result yet. The post's answer says `"pending"`, and so does every read until the judge has stored a result for each assistant turn. Where no judge process runs, it stays `"pending"`: that is all the API can say.
+- an object, once every assistant turn has a result. Suppose a transcript's assistant turn at position 3 says "Your table for two on Friday evening is confirmed." and declares no claim, while the session's calls only held the table. The object, with the observation and the hash shortened:
+
+```json
+"undeclared": {
+  "checked_turns": 1,
+  "failed_turns": 0,
+  "statements": 1,
+  "declared": 0,
+  "undeclared": { "total": 1, "backed": 0, "unbacked": 1, "unresolved": 0 },
+  "results": [
+    {
+      "turn": 3,
+      "quote": "Your table for two on Friday evening is confirmed.",
+      "claim": { "reservation_id": "0199b1c3-4a52-7c9e-9b0d-2e7f61a8c405", "status": "confirmed", "party_size": 2 },
+      "verdict": "unbacked",
+      "reason": "status_mismatch",
+      "observed": { "call": 41, "tool": "hold", "status": "held", "effective_status": "held", "…": "…" },
+      "current_status": "held",
+      "current_differs": false
+    }
+  ],
+  "judges": [{ "model": "claude-opus-5-5", "effort": "medium", "prompt_hash": "9f2c…", "accuracy": null }]
+}
+```
+
+- `checked_turns` counts the assistant turns the judge read, and `failed_turns` those it could not: a text over 8,000 characters, a refusal or a cut-off reply from the model, a reply that did not parse, or a provider that failed or rejected the request. The statements of a failed turn are unchecked, and the reason is stored with the turn, not in this summary.
+- `statements` counts every statement the judge found, and `declared` those a claim of the same turn already covers: the same reservation and status, with the same start and party size wherever both give them. Those are the audit's, above, and are not set against the calls again. The rest are `undeclared`.
+- Each undeclared statement is set against the session's calls by the audit's own matcher, and comes back `backed` or `unbacked` with the same reasons as a claim. It is read as of the turn's time when every turn has an `at`, and against the session's last call when none has. A statement that names no reservation is `unbacked` with `no_observation` when the session observed no reservation at all, and `unresolved` otherwise: it counts as neither backed nor unbacked. `turn` is the turn's 0-based position in the posted transcript, as in the results above, and `current_status` is the reservation's status when the judge read the turn.
+- `judges` lists each model, effort, and prompt the results came from, with the accuracy that was measured for exactly that model, effort, and prompt, or `null` when none has been. A `backed` or `unbacked` is the matcher's verdict on what a model read in the text; the model only says what the text states, and never whether it is true. [ADR 9](docs/adr/0009-the-judge-reads-the-matcher-decides.md) gives the reasons.
+
+Posting a transcript again replaces the session's earlier transcript and result, and the judge's results with them, and whether the post asked for the judge is the new post's; `GET /v1/sessions/{id}/audit` reads the latest, and `GET /v1/sessions/{id}` shows the session's `calls` and `last_seen_at`. A transcript is 1 to 500 turns, with at most 50 claims on a turn. Text and quotes are stored with emails and numbers masked: an email address reads `[email]`, a number of 7 to 15 digits `[phone]`, one of 16 or more `[number]`; ids, ISO dates and times stay. Names are not detected, so redact guest details before posting. A session records up to 10,000 calls. An external session not seen for 30 days is gone, audit included. [LIMITATIONS.md](LIMITATIONS.md) lists what the audit does not cover.
 
 ### The reference agent
 
@@ -326,12 +362,45 @@ curl -s -X POST localhost:8080/v1/reservations/0199b2d5-0a3c-7e14-b8d2-6f90a1c47
 
 The token never reaches the model, a log line, a stored turn, or a recorded call. The agent keeps it encrypted, with AES-256-GCM under `DASTAR_TOKEN_KEY`, in its own table, and returns it in `holds` alone. The conversation is a reference session: its turns are stored with the model that answered, a hash of the prompt, the calls and tokens the turn took, and whether it ended in the fallback, and `POST /v1/sessions/{id}/audit` refuses it, so no key can replace what the agent recorded. [SECURITY.md](SECURITY.md) and [LIMITATIONS.md](LIMITATIONS.md) list what this protects and what it leaves open.
 
-[`agent-live.yml`](.github/workflows/agent-live.yml) is the live check: it runs the agent against the real model. No push or pull request starts it. It is started by hand, from the repository's Actions tab or with `gh workflow run agent-live.yml -f mode=probe`, with a `mode` of `probe` or `conversations`, and it fails at once, saying so, unless the repository secret `ANTHROPIC_API_KEY` is set. A run costs what its calls to the model cost on that key's account.
+[`agent-live.yml`](.github/workflows/agent-live.yml) is the live check: it runs the agent against the real model. No push or pull request starts it. It is started by hand, from the repository's Actions tab or with `gh workflow run agent-live.yml -f mode=probe`, with a `mode` of `probe`, `conversations`, or `judge`, and it fails at once, saying so, unless the repository secret `ANTHROPIC_API_KEY` is set. A run costs what its calls to the model cost on that key's account.
 
 - `probe` makes at most six requests with the agent's real tools and reply format, canned tool results, and no database, to check that the provider accepts them together.
-- `conversations`, the default, sets up Postgres 18, the migrations and roles, the demo venue and a schedule for it, the three keys, and the API, then runs five conversations one after another, each in a new session, through the same turn the route runs: book a table; book and then cancel; change the party size; ask after the job has confirmed the hold with its token; ask the agent to confirm. Each is judged on state and not on wording: a live hold whose token confirms it, a recorded cancel and no hold left, one live hold at the new size, a reply claiming the reservation confirmed that is not the fallback, and every reservation the session held still held with no confirm call recorded. It then starts the agent as the section above does, sends the one chat message above, confirms the hold in the answer with its token and no key, sends one malformed request, and stops the agent, failing if the agent's log holds a token or a key.
+- `conversations`, the default, sets up Postgres 18, the migrations and roles, the demo venue and a schedule for it, the three keys, and the API, then runs five conversations one after another, each in a new session, through the same turn the route runs: book a table; book and then cancel; change the party size; ask after the job has confirmed the hold with its token; ask the agent to confirm. Each is judged on state and not on wording: a live hold whose token confirms it, a recorded cancel and no hold left, one live hold at the new size, a reply claiming the reservation confirmed that is not the fallback, and every reservation the session held still held with no confirm call recorded. It then starts the agent as the section above does, sends the one chat message above, confirms the hold in the answer with its token and no key, sends one malformed request, and stops the agent, failing if the agent's log holds a token or a key. After that it checks [the judge](#the-judge): `judge --once` runs over the job's database as `dastar_judge`, and then a check requires a judged result on every assistant turn of the reference sessions, and reports, without failing on them, the statements the judge found undeclared in the agent's own turns. The check then plants a false statement: it opens an external session, holds a table for 2 on 8 June 2030 at 19:00 under it, and posts a transcript with `judge: true` whose assistant turn says the table is confirmed, with no claim. It runs the judge and requires the audit read to report that statement as `unbacked` with the reason `status_mismatch`.
+- `judge` takes a second input, `part`, which is `dev` or `held-out` and defaults to `dev` (`-f mode=judge -f part=held-out`). It measures the judge against a labeled part of `apps/agent/judge/labeled`, one call to the real model for each item, with no database: the key is all it needs, and it has up to 150 minutes. The job writes `judge-accuracy.json`, rewritten after each item, with the model, effort, and prompt hash it ran with, the part's file name and SHA-256, the precision and recall of the undeclared statements and of all statements with 95% Wilson intervals, the share of matched statements whose start time and party size agree, the share of two-pass items whose two labeling passes agreed, the quotes dropped for not being in the text, the failures, the tokens, and the cost priced from them. The held-out run's figures are added to [`apps/agent/judge/accuracy.json`](apps/agent/judge/accuracy.json) by hand, in a commit that names the run.
 
-The job uploads `agent-live.json`, with each turn's reply, guardrail outcome, model, and token counts and never a token, and the API's and the agent's logs as `api.log` and `agent.log`. `agent-live.json` is rewritten as each conversation finishes, so a run that is cut off keeps the conversations it completed. It exits 1 unless every conversation passes.
+The job uploads `agent-live.json`, with each turn's reply, guardrail outcome, model, and token counts and never a token, and the API's and the agent's logs as `api.log` and `agent.log`; mode `judge` uploads `judge-accuracy.json`, and mode `conversations` also `judge-live.json`, the judge check's report with the planted statement's result and the tokens spent. `agent-live.json` is rewritten as each conversation finishes, so a run that is cut off keeps the conversations it completed, and for each conversation it carries the judge's input for each assistant turn: the session's reservations as its calls showed them, the user turn before it, the turn's text, and its declared claims. In mode `conversations` the job exits 1 unless every conversation passes and the judge check passes.
+
+### The judge
+
+The judge finds what an agent said about a reservation without declaring it. It asks a model to list the statements about reservations in each assistant turn, each with the status it states and the start time and party size when the text gives them. It sets the statements that no declared claim covers against the calls the session recorded, with the matcher the audit uses, so the model reads and the matcher decides ([ADR 9](docs/adr/0009-the-judge-reads-the-matcher-decides.md)). It stores a result on each turn, and [the audit read](#audit-any-agent) reports the undeclared statements for a post that asked with `judge: true`.
+
+It is a second process of [`apps/agent`](apps/agent), started with `pnpm --filter @dastar/agent judge`, and it connects as `dastar_judge`, a database role of its own that bypasses row-level security, because it works across venues. It reads the sessions, calls, and turns, a reservation's id, venue, status, and hold expiry, and a venue's time zone, and it updates a turn's `judge_result` and no other column; it has no access to the confirm tokens or the audit log ([SECURITY.md](SECURITY.md) lists its grants). `pnpm roles` sets the role's password from `DASTAR_JUDGE_PASSWORD`, and `compose.yml` sets it to a development default for its migration service. It reads two required settings and five optional ones:
+
+- `DATABASE_URL`: the connection string of `dastar_judge`. The judge checks, before it starts, that the role can update `judge_result`, and exits 1 with one line if it cannot.
+- `ANTHROPIC_API_KEY`: the model provider's key.
+- `JUDGE_MODEL`, optional: the model; `claude-opus-5-5` by default.
+- `JUDGE_EFFORT`, optional: the model's effort, one of `low`, `medium`, `high`, `xhigh`, and `max`; `medium` by default.
+- `JUDGE_EVERY_MS`, optional: the pause between passes, 10,000 by default.
+- `JUDGE_LIMIT`, optional: the most turns it reads at a time, 10 by default; a full batch is followed at once by the next.
+- `JUDGE_DAILY_CALLS`, optional: the most calls to the provider in one UTC day, 500 by default.
+
+```bash
+DASTAR_JUDGE_PASSWORD=judge pnpm roles --owner-url postgres://dastar_owner:owner@localhost:55432/postgres
+
+export DATABASE_URL=postgres://dastar_judge:judge@localhost:55432/postgres ANTHROPIC_API_KEY=the-providers-key
+pnpm --filter @dastar/agent judge --once
+pnpm --filter @dastar/agent judge
+```
+
+`--once` judges what is due and exits; without it the judge keeps going until it is stopped with SIGINT or SIGTERM. It exits 1 when its settings or its role are wrong, and when the provider refuses its key (HTTP 401 or 403), leaving that turn without a result. Its log lines are JSON, with the key, the database URL, and its password taken out of any error they carry.
+
+A turn is due when it is an assistant turn with no result, in a reference session or in an external session whose latest post asked for the judge. The judge takes the due turns oldest first, so it starts with the oldest unjudged turns, and a transcript that is posted again goes to the back of the queue. It judges one turn at a time, holds no database lock across a call to the model, and never overwrites a result: a turn that has one is not due, and a write to a turn that already has one changes nothing. Before each call to the provider it counts the call against the current UTC day in the database, and it makes none past `JUDGE_DAILY_CALLS`; that count survives a restart and a new post, and every key's posts draw on it. When the day's calls run out the remaining turns wait, and `--once` returns.
+
+A turn of more than 8,000 characters is stored as failed with the reason `too_long`, with no call, and a turn whose text is empty or only white space is stored as judged, with no statements and no call. A call has 60 seconds. A refusal, a cut-off reply, or a reply that does not parse is stored as failed with the reasons `refused`, `truncated`, or `unparsable`. A 408, 409, 429, or 5xx answer, a timeout, or a network error leaves the turn without a result for the next pass, and the third such failure of one turn in a process stores it as failed with `provider_error`; any other answer is stored at once as `provider_rejected`, since the same request would get the same answer.
+
+A judged result holds the model that answered, the effort, a hash of the prompt, the statements with whether a claim declared each, the verdict on each undeclared one, the number of quotes dropped for not being in the turn's text, the tokens used, and the accuracy entry that matches its model, effort, and prompt, or `null`. The prompt is [`apps/agent/prompts/judge-v1.md`](apps/agent/prompts/judge-v1.md).
+
+What the judge can find is measured, not claimed. [`apps/agent/judge/accuracy.json`](apps/agent/judge/accuracy.json) holds one entry for each model, effort, and prompt hash that has been measured, with the precision and recall of its undeclared statements and of all its statements and their intervals, filled by a run against the held-out labeled part (mode `judge` of the live check above). The file is an empty list until that run is added, and a result takes the accuracy of its own model, effort, and prompt only: until an entry matches, every result's `accuracy` is `null`, and so is each judge's in the audit read. [LIMITATIONS.md](LIMITATIONS.md) lists what the judge does not cover.
 
 ## Measure it
 
@@ -436,6 +505,7 @@ Each call checks out a pooled connection, runs one transaction, and returns the 
 | Agent tools | Four tools, `search_availability`, `hold`, `cancel`, and `get_reservation`, with inputs from the committed document and no confirm tool; a session keeps one idempotency key per hold request and cancels only the reservations it created; an MCP server over stdio that refuses keys able to confirm or administer, and records its calls in an audit session when `DASTAR_SESSION_ID` is set |
 | Agent audit | Audit sessions opened by a key that cannot confirm or administer; a `dastar-session` header on nine v1 routes that records each call and its receipt, never a key, confirm token, external reference, cancel reason, or problem detail; transcript intake that masks emails and numbers; a deterministic matcher that sets each declared claim against the session's calls and the reservation's current status, with receipts checked against the audit log; 30-day retention of external sessions; the client's `session` option; `starts_at` on the reservation read and the holds list |
 | Reference agent | `apps/agent`, a separate process that serves `POST /demo/chat` and calls the API over HTTP through the typed client and the agent tools, with a key that can read, hold, and cancel and the session header on every call; a provider interface with an Anthropic adapter; a turn of at most six calls to the model, a deadline of 120 seconds, and a guardrail that sets each declared claim against the session's calls and the reservation's status now, regenerates a failing reply twice, and then answers with a message built from reads; turns stored with their model, prompt hash, and token counts; confirm tokens minted with a second key and kept encrypted; the person confirms with a token and no key; start-up key checks; a live check against the model that is started by hand |
+| Judge | The second process of `apps/agent`, connected as `dastar_judge`, a role that reads the session tables across venues and updates `turn.judge_result` and nothing else; it asks a model for the reservation statements in each assistant turn of a reference session and of an external session whose post asked with `judge: true`, sets the ones no claim declares against the session's calls with the audit's matcher, and stores a result on each turn; its daily cap on calls to the provider is kept in the database; the audit read reports `undeclared` as `"not checked"`, `"pending"`, or the findings; an accuracy file that holds a measurement for each model, effort, and prompt and is empty until the held-out run is added; a live check that judges the conversations and plants a false statement it must catch, and a live mode that measures the judge against a labeled part |
 
 Authentication and capability checks belong to the host application; the reference API shows one way to do them. The library itself does not authenticate callers; token-free confirmation and token minting require authorization by the host. Webhook delivery is still planned.
 
@@ -457,12 +527,12 @@ Quantity-based inventory, such as selling individual tickets from a pool of fift
 
 ## Next
 
-1. **Finish agent integration:** a judge that finds the booking statements an agent made without declaring them as claims, which neither the audit nor the reference agent's guardrail checks yet, and the evals that measure the guardrail.
+1. **Finish agent integration:** measure the judge against its held-out labeled set and publish its numbers here and in [LIMITATIONS.md](LIMITATIONS.md), then the evals that measure the guardrail, and an `AUDIT.md` that reports both. The judge reads turns after they are sent; the reference agent's guardrail still checks only the claims a reply declares.
 2. **Add operations and a demo:** signed webhook delivery, deployment guidance, and a public example with a chat page and authentication and a spend cap on `/demo/chat`.
 
-The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. [The reference agent](#the-reference-agent) follows it, and the person's confirmation is a token and no key. [Audit any agent](#audit-any-agent) checks the declared claims of any agent.
+The agent workflow is **agents hold, humans confirm**: the tools can hold and cancel but not confirm. [The reference agent](#the-reference-agent) follows it, and the person's confirmation is a token and no key. [Audit any agent](#audit-any-agent) checks the declared claims of any agent, and with [the judge](#the-judge), when the post asks, the statements it made without declaring them.
 
-The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on, and the one that makes the reference agent an API client, are also recorded as [ADRs](docs/adr/README.md).
+The [system design](docs/design/design.md) contains the decisions, invariant definitions, and milestone acceptance criteria; the seven decisions the engine's guarantees rest on, the one that makes the reference agent an API client, and the one that has a model read the statements while the matcher decides, are also recorded as [ADRs](docs/adr/README.md).
 
 ## Explore the code
 

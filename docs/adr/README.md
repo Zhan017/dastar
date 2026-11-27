@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Each record states one decision, the context that forced it, the alternatives considered, and what it costs. The full decision log, with every alternative and review finding, is in the [system design](../design/design.md); the first seven are the ones the engine's guarantees rest on, and the eighth records why the reference agent is an API client.
+Each record states one decision, the context that forced it, the alternatives considered, and what it costs. The full decision log, with every alternative and review finding, is in the [system design](../design/design.md); the first seven are the ones the engine's guarantees rest on, the eighth records why the reference agent is an API client, and the ninth why a model reads statements for the judge and the matcher decides them.
 
 | ADR | Decision | Design |
 |---|---|---|
@@ -12,3 +12,4 @@ Each record states one decision, the context that forced it, the alternatives co
 | [6](0006-venue-isolation.md) | Venue isolation with row-level security | D26 |
 | [7](0007-venue-lock-for-blackouts.md) | A venue-level lock for blackouts | invariant 11 |
 | [8](0008-the-reference-agent-is-an-api-client.md) | The reference agent is an API client | sections 5 and 10.6 |
+| [9](0009-the-judge-reads-the-matcher-decides.md) | The judge reads; the matcher decides | D21, sections 5, 13 |
