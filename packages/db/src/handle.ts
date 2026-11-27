@@ -144,7 +144,7 @@ export interface DastarSessions {
  * here binds one. The daily call count is the database's, so a cap holds across restarts and across processes.
  */
 export interface DastarJudge {
-  /** Assistant turns with no result whose session is live and is a reference session or asked for the judge in its latest post, oldest first. */
+  /** Assistant turns marked due, with no result, whose session is live, oldest first. */
   dueTurns(input: DueTurnsInput): Promise<DueTurn[]>;
   /** What judging the turn reads, in one snapshot with the database's time; null when the turn is gone. `userText` is the turn before it when that is a user turn. */
   source(input: JudgeSourceInput): Promise<JudgeSource | null>;

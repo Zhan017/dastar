@@ -57,10 +57,15 @@ function nullableText(value: unknown, where: string): string | null {
   return value === null ? null : text(value, where);
 }
 
-/** A start time: a string that reads as a date, or null; a measurement reads and compares starts as dates. */
+/** A time that ends in `Z` or a `±hh:mm` offset. A time with none is read in the machine's own zone, so it would mean different instants on different machines. */
+const EXPLICIT_OFFSET = /(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** A start time: a string that ends in an explicit offset and reads as a date, or null; a measurement reads and compares starts as dates. */
 function nullableStart(value: unknown, where: string): string | null {
   const start = nullableText(value, where);
-  if (start !== null && Number.isNaN(Date.parse(start))) throw new Error(`${where} must be a date, not "${start}"`);
+  if (start !== null && (!EXPLICIT_OFFSET.test(start) || Number.isNaN(Date.parse(start)))) {
+    throw new Error(`${where} must be a date with an offset, not "${start}"`);
+  }
   return start;
 }
 

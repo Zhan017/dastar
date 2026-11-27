@@ -118,6 +118,20 @@ describe("which turns are due", () => {
     expect(due.some((d) => external.includes(d.sessionId))).toBe(false);
   }, 120_000);
 
+  it("a user turn marked due is not found, and the assistant turn beside it is", async () => {
+    // dastar_app may set judge_due on any turn it inserts; the owner writes the marks directly here
+    const reference = (await owner.query(
+      "insert into dastar_agent.session(venue_id, api_key_id, kind) values ($1, $2, 'reference') returning id", [A.venue, key],
+    )).rows[0].id as string;
+    await owner.query(
+      `insert into dastar_agent.turn(session_id, venue_id, seq, role, content, judge_due)
+       values ($1, $2, 0, 'user', 'hello', true), ($1, $2, 1, 'assistant', 'hi there', true)`,
+      [reference, A.venue],
+    );
+    expect(await marks(reference)).toEqual([{ seq: 0, role: "user", judge_due: true }, { seq: 1, role: "assistant", judge_due: true }]);
+    expect(await dueSeqs(reference)).toEqual([1]);
+  });
+
   it("the backfill marks a reference assistant turn due and leaves an external turn and a user turn alone", async () => {
     const file = "0030_turn_judge_due_backfill.sql";
     const sql = await readFile(join(here, "..", "migrations", file), "utf8");

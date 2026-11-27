@@ -43,16 +43,16 @@ function requireInteger(name: string, value: number, min: number): void {
 export const DUE_TURNS_SQL = `select t.id, t.session_id, t.venue_id, t.seq
          from dastar_agent.turn t
          join dastar_agent.session s on s.id = t.session_id and s.venue_id = t.venue_id
-        where t.judge_due and t.judge_result is null
+        where t.judge_due and t.judge_result is null and t.role = 'assistant'
           and dastar_agent.session_live(s.kind, s.last_seen_at)
         order by t.id
         limit $1`;
 
 /**
- * The turns that are due and have no result: the assistant turns of a reference session, and those of an external
- * session whose latest post asked for the judge (the application marks them `judge_due` as it writes them), so long as
- * the session is still live. The scan reads the partial index on the due turns with no result, so a turn nobody asked to
- * have judged costs it nothing. Oldest turn first, `limit` at most.
+ * The turns that are due and have no result: the assistant turns the application marked `judge_due` as it wrote them,
+ * so long as their session is still live. The role is checked as well, since the application marks only assistant
+ * turns but `dastar_app` may set the mark on any turn. The scan reads the partial index on the due turns with no
+ * result, so a turn nobody asked to have judged costs it nothing. Oldest turn first, `limit` at most.
  */
 export async function dueTurns(client: ClientBase, input: DueTurnsInput): Promise<DueTurn[]> {
   requireInteger("limit", input.limit, 0);

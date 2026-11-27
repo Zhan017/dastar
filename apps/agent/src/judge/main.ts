@@ -109,7 +109,10 @@ export function batchLogger(log: (msg: string, fields: Record<string, unknown>) 
 
 /**
  * Runs the judge: `--once` judges what is due and returns; with no argument it judges on a loop until SIGINT or SIGTERM.
- * Returns the exit code: 0, or 1 for a refusal to start (settings, the database role) and for a provider that refuses the key.
+ * Returns the exit code: 0, or 1 for a refusal to start (settings, the database role), for a provider that cannot serve
+ * the judge (its key is refused with 401 or 403, billing has failed with 402, the model is not there with 404, or the
+ * account's spend cap is reached with a 429 that names it), and for three turns in a row stored as rejected with no
+ * answered call between them.
  */
 export async function main(args: string[], env: Record<string, string | undefined>): Promise<number> {
   const extra = args.find((arg) => arg !== "--once");

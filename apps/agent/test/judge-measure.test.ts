@@ -303,15 +303,23 @@ describe("loadLabeled", () => {
     expect(loadLabeled(fileWith("wide.json", withText("\u{1F37D}".repeat(5_000)))).items).toHaveLength(1);
   });
 
-  it("refuses a reservation's or a label's start that is not a date, and takes null and an offset date", () => {
+  it("refuses a reservation's or a label's start that is not a date with an offset, and takes null and a date with one", () => {
     const item = fixtureItems()[0]!;
     const reservationAt = (starts_at: string | null): unknown[] => [{ ...item, input: { ...item.input, reservations: [{ id: RESERVATION_A, starts_at, party_size: 2 }] } }];
     const labelAt = (starts_at: string | null): unknown[] => [{ ...item, labels: [{ ...item.labels[0], starts_at }] }];
 
     expect(() => loadLabeled(fileWith("reservation-start.json", reservationAt("next Friday evening")))).toThrow(
-      /item 0\.input\.reservations\[0\]\.starts_at must be a date, not "next Friday evening"/,
+      /item 0\.input\.reservations\[0\]\.starts_at must be a date with an offset, not "next Friday evening"/,
     );
-    expect(() => loadLabeled(fileWith("label-start.json", labelAt("19h")))).toThrow(/item 0\.labels\[0\]\.starts_at must be a date, not "19h"/);
+    expect(() => loadLabeled(fileWith("label-start.json", labelAt("19h")))).toThrow(/item 0\.labels\[0\]\.starts_at must be a date with an offset, not "19h"/);
+    // a time with no offset would be read in each machine's own zone
+    expect(() => loadLabeled(fileWith("reservation-no-offset.json", reservationAt("2064-01-07T19:00")))).toThrow(
+      /item 0\.input\.reservations\[0\]\.starts_at must be a date with an offset, not "2064-01-07T19:00"/,
+    );
+    expect(() => loadLabeled(fileWith("label-no-offset.json", labelAt("2064-01-07T19:00")))).toThrow(
+      /item 0\.labels\[0\]\.starts_at must be a date with an offset, not "2064-01-07T19:00"/,
+    );
+    expect(() => loadLabeled(fileWith("label-no-offset-seconds.json", labelAt("2064-01-07T19:00:00")))).toThrow(/must be a date with an offset/);
     for (const fine of [null, "2064-01-07T19:00:00+05:00", "2064-01-07T14:00:00Z"]) {
       expect(loadLabeled(fileWith("fine-reservation.json", reservationAt(fine))).items).toHaveLength(1);
       expect(loadLabeled(fileWith("fine-label.json", labelAt(fine))).items).toHaveLength(1);
