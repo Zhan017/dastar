@@ -181,7 +181,9 @@ describe("the judge's batches, loop and command", () => {
   });
 
   it("judgeOnce stores a turn as provider_error after its third transient failure and goes on", async () => {
-    const { turnIds: [a, b] } = await seedTurns(["one", "two"]) as { turnIds: [number, number] };
+    const { turnIds } = await seedTurns(["one", "two"]);
+    const a = turnIds[0]!;
+    const b = turnIds[1]!;
     const handle = counted();
     // the first turn fails in each of three batches; the second is judged in the first
     const provider = scripted(failing(503), noStatements(), failing(500), failing(429));
@@ -290,7 +292,8 @@ describe("the judge's batches, loop and command", () => {
   });
 
   it("a fatal error ends the loop with stats.fatal", async () => {
-    const { turnIds: [turnId] } = await seedTurns(["one"]) as { turnIds: [number] };
+    const { turnIds } = await seedTurns(["one"]);
+    const turnId = turnIds[0]!;
     const provider = scripted(failing(403));
     const seen: BatchOutcome[] = [];
 
@@ -354,7 +357,8 @@ describe("the judge's batches, loop and command", () => {
 
     it("main --once judges what is due, logs without the key or the connection, and exits 0", async () => {
       // a blank text is judged with no call, so no request leaves the process
-      const { turnIds: [turnId] } = await seedTurns([" "]) as { turnIds: [number] };
+      const { turnIds } = await seedTurns([" "]);
+      const turnId = turnIds[0]!;
       const fetchStub = vi.fn();
       vi.stubGlobal("fetch", fetchStub);
       const { out, err } = capture();
