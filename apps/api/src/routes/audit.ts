@@ -55,7 +55,9 @@ export function register(app: OpenAPIHono<Env>, deps: Deps): void {
     const claimed = [...new Set(turns.flatMap((t) => (t.claims ?? []).map((claim) => claim.reservation_id)))];
     const inputs = await deps.dastar.sessions.auditInputs({ sessionId, venueId, reservationIds: claimed });
     const audited = auditSession({ sessionId, auditedAt: inputs.readAt, calls: inputs.calls, turns, current: inputs.current });
-    const result: AuditReport = { ...audited, undeclared: judge ? "pending" : "not checked" };
+    // a transcript with no assistant turn has nothing to wait for: the post answers as a read will, with the zero summary
+    const undeclared = !judge ? "not checked" : turns.some((t) => t.role === "assistant") ? "pending" : summarizeJudgments([]);
+    const result: AuditReport = { ...audited, undeclared };
     await deps.dastar.sessions.storeAudit({ sessionId, venueId, turns: turns.map(storedTurn), result, auditedAt: result.audited_at, judgeRequested: judge });
     return c.json(result, 200);
   });

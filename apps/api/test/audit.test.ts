@@ -452,6 +452,19 @@ describe("transcript intake and the audit", () => {
     });
   });
 
+  it("a post with judge: true and no assistant turn answers the zero summary, as the next read does", async () => {
+    const S = await openSession();
+    const r = await post(S, { turns: [{ role: "user", text: "Book me a table" }, { role: "user", text: "Are you there?" }], judge: true });
+    expect(r.status).toBe(200);
+    const result = await json<Result>(r);
+    expect(result.undeclared).toEqual({
+      checked_turns: 0, failed_turns: 0, statements: 0, declared: 0,
+      undeclared: { total: 0, backed: 0, unbacked: 0, unresolved: 0 }, results: [], judges: [],
+    });
+    expect(await judgeRequested(S)).toBe(true);
+    expect(await json(await read(S))).toEqual(result);
+  });
+
   it("a later post without judge reads 'not checked' and its turns have no result", async () => {
     const S = await openSession();
     expect((await post(S, { turns: judgeTurns, judge: true })).status).toBe(200);
