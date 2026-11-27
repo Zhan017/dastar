@@ -39,24 +39,25 @@ function requireInteger(name: string, value: number, min: number): void {
   if (!Number.isInteger(value) || value < min) throw new DastarError("invalid_input", `${name} must be an integer of at least ${min}`);
 }
 
+/** The due scan, with the limit as its one parameter; exported so a test can read its plan. */
+export const DUE_TURNS_SQL = `select t.id, t.session_id, t.venue_id, t.seq
+         from dastar_agent.turn t
+         join dastar_agent.session s on s.id = t.session_id and s.venue_id = t.venue_id
+        where t.judge_due and t.judge_result is null
+          and dastar_agent.session_live(s.kind, s.last_seen_at)
+        order by t.id
+        limit $1`;
+
 /**
- * The assistant turns that have no result and are due: those of a reference session, and those of an external session
- * whose latest post asked for the judge, so long as the session is still live. Oldest turn first, `limit` at most.
+ * The turns that are due and have no result: the assistant turns of a reference session, and those of an external
+ * session whose latest post asked for the judge (the application marks them `judge_due` as it writes them), so long as
+ * the session is still live. The scan reads the partial index on the due turns with no result, so a turn nobody asked to
+ * have judged costs it nothing. Oldest turn first, `limit` at most.
  */
 export async function dueTurns(client: ClientBase, input: DueTurnsInput): Promise<DueTurn[]> {
   requireInteger("limit", input.limit, 0);
   try {
-    const r = await client.query(
-      `select t.id, t.session_id, t.venue_id, t.seq
-         from dastar_agent.turn t
-         join dastar_agent.session s on s.id = t.session_id and s.venue_id = t.venue_id
-        where t.role = 'assistant' and t.judge_result is null
-          and (s.kind = 'reference' or s.judge_requested)
-          and dastar_agent.session_live(s.kind, s.last_seen_at)
-        order by t.id
-        limit $1`,
-      [input.limit],
-    );
+    const r = await client.query(DUE_TURNS_SQL, [input.limit]);
     return r.rows.map((row): DueTurn => ({ turnId: Number(row.id), sessionId: row.session_id, venueId: row.venue_id, seq: row.seq }));
   } catch (e) {
     throw asDastarError(e);

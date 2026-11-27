@@ -23,9 +23,15 @@ grant usage on schema dastar, dastar_agent to dastar_judge;
 grant select on dastar_agent.session, dastar_agent.tool_call, dastar_agent.turn to dastar_judge;
 grant update (judge_result) on dastar_agent.turn to dastar_judge;
 
+-- Whether the judge is to judge a turn. The application sets it when it writes an assistant turn: true for every reply of a
+-- reference session, and for the turns of an external post that asked for the judge. The judge's scan reads the turns that
+-- are due through a partial index on it (0029), so a turn nobody asked to have judged is never visited.
+alter table dastar_agent.turn add column judge_due boolean not null default false;
+comment on column dastar_agent.turn.judge_due is 'Set by the application when the turn is to be judged: a reference session''s assistant turn, or an assistant turn of an external post that asked for the judge; read by the judge, which finds the due turns with no result through turn_judge_due.';
+
 -- The application writes turns and never a result, by insert or by update, so its insert grant on turn is by column and leaves out id (generated) and judge_result. A column added to turn later needs its own insert grant.
 revoke insert on dastar_agent.turn from dastar_app;
-grant insert (session_id, venue_id, seq, role, content, claims, guardrail_fired, at, model, prompt_hash, provider_calls, regenerations, fell_back, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms) on dastar_agent.turn to dastar_app;
+grant insert (session_id, venue_id, seq, role, content, claims, guardrail_fired, at, model, prompt_hash, provider_calls, regenerations, fell_back, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, judge_due) on dastar_agent.turn to dastar_app;
 
 grant select (id, venue_id, status, hold_expires_at) on dastar.reservation to dastar_judge;
 grant select (id, timezone) on dastar.venue to dastar_judge;

@@ -3,6 +3,8 @@ import { Pool, type Client } from "pg";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "./helpers/db.js";
 import { seedVenue, seedKey, type Seed } from "./helpers/seed.js";
 import { setClock } from "./helpers/clock.js";
+import { connectAs, outcome } from "./helpers/wait.js";
+import { storeJudgment } from "../src/commands/judge.js";
 import { createDastar, type Dastar } from "../src/handle.js";
 
 describe("judge commands", () => {
@@ -23,14 +25,15 @@ describe("judge commands", () => {
       [venueId, key, kind, opts.lastSeenAt ?? null, opts.requested ?? false],
     )).rows[0].id as string;
   }
-  type TurnSeed = { claims?: unknown[]; at?: string; result?: unknown };
-  /** A turn written by the owner; returns its id. */
+  type TurnSeed = { claims?: unknown[]; at?: string; result?: unknown; due?: boolean };
+  /** A turn written by the owner; returns its id. It is due only when `due` says so, as the application writes it. */
   async function addTurn(session: string, venueId: string, seq: number, role: "user" | "assistant", content: string, over: TurnSeed = {}): Promise<number> {
     const r = await owner.query(
-      `insert into dastar_agent.turn(session_id, venue_id, seq, role, content, claims, at, judge_result)
-       values ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz, $8::jsonb) returning id::text as id`,
+      `insert into dastar_agent.turn(session_id, venue_id, seq, role, content, claims, at, judge_result, judge_due)
+       values ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz, $8::jsonb, $9) returning id::text as id`,
       [session, venueId, seq, role, content,
-        over.claims === undefined ? null : JSON.stringify(over.claims), over.at ?? null, over.result === undefined ? null : JSON.stringify(over.result)],
+        over.claims === undefined ? null : JSON.stringify(over.claims), over.at ?? null, over.result === undefined ? null : JSON.stringify(over.result),
+        over.due ?? false],
     );
     return Number(r.rows[0].id);
   }
@@ -108,21 +111,21 @@ describe("judge commands", () => {
     await dropDatabase("judge_commands_test");
   });
 
-  it("dueTurns takes assistant turns without a result of reference sessions and of external sessions that asked, oldest first", async () => {
+  it("dueTurns takes the due turns without a result of live sessions, oldest first", async () => {
     // inserted so that the order of turn ids is not the order of venues
     const askedB = await addSession(B.venue, "external", { requested: true });
-    const askedTurn = await addTurn(askedB, B.venue, 0, "assistant", "asked, due");
+    const askedTurn = await addTurn(askedB, B.venue, 0, "assistant", "asked, due", { due: true });
     const quietA = await addSession(A.venue, "external");
     const quietTurn = await addTurn(quietA, A.venue, 0, "assistant", "not asked, not due");
     const referenceA = await addSession(A.venue, "reference");
     const userTurn = await addTurn(referenceA, A.venue, 0, "user", "a user turn, not due");
-    const referenceTurn1 = await addTurn(referenceA, A.venue, 1, "assistant", "reference, due");
+    const referenceTurn1 = await addTurn(referenceA, A.venue, 1, "assistant", "reference, due", { due: true });
     await addTurn(referenceA, A.venue, 2, "user", "another user turn");
-    const referenceTurn2 = await addTurn(referenceA, A.venue, 3, "assistant", "reference again, due");
+    const referenceTurn2 = await addTurn(referenceA, A.venue, 3, "assistant", "reference again, due", { due: true });
     const referenceB = await addSession(B.venue, "reference");
-    const judgedTurn = await addTurn(referenceB, B.venue, 0, "assistant", "already judged", { result: { outcome: "failed", reason: "refused" } });
+    const judgedTurn = await addTurn(referenceB, B.venue, 0, "assistant", "already judged", { due: true, result: { outcome: "failed", reason: "refused" } });
     const staleA = await addSession(A.venue, "external", { requested: true, lastSeenAt: new Date(Date.now() - 31 * DAY).toISOString() });
-    const staleTurn = await addTurn(staleA, A.venue, 0, "assistant", "asked, but the session is gone");
+    const staleTurn = await addTurn(staleA, A.venue, 0, "assistant", "asked, but the session is gone", { due: true });
 
     const all = await j.judge.dueTurns({ limit: 1000 });
     const ids = new Set([askedTurn, referenceTurn1, referenceTurn2]);
@@ -140,8 +143,10 @@ describe("judge commands", () => {
     expect(two).toEqual(all.slice(0, 2));
     expect(await j.judge.dueTurns({ limit: 0 })).toEqual([]);
 
-    // a post that asks makes the session's turns due
+    // what makes a turn due is its own mark, which the application sets as it writes the turn: the session's flag alone does not
     await owner.query("update dastar_agent.session set judge_requested = true where id = $1", [quietA]);
+    expect((await j.judge.dueTurns({ limit: 1000 })).map((d) => d.turnId)).not.toContain(quietTurn);
+    await owner.query("update dastar_agent.turn set judge_due = true where id = $1", [quietTurn]);
     expect((await j.judge.dueTurns({ limit: 1000 })).map((d) => d.turnId)).toContain(quietTurn);
   });
 
@@ -244,9 +249,10 @@ describe("judge commands", () => {
   it("storeJudgment writes once", async () => {
     const session = await addSession(A.venue, "reference");
     await addTurn(session, A.venue, 0, "user", "hi");
-    const turn = await addTurn(session, A.venue, 1, "assistant", "hello");
+    const turn = await addTurn(session, A.venue, 1, "assistant", "hello", { due: true });
     const first = { outcome: "failed", judged_at: "2064-03-01T18:00:00.000Z", prompt_hash: "ab12", reason: "refused" };
     const second = { outcome: "failed", judged_at: "2064-03-01T18:05:00.000Z", prompt_hash: "ab12", reason: "unparsable" };
+    expect((await j.judge.dueTurns({ limit: 1000 })).map((d) => d.turnId)).toContain(turn);
     expect(await j.judge.storeJudgment({ turnId: turn, result: first })).toBe(true);
     expect(await judgeResult(turn)).toEqual(first);
     expect(await j.judge.storeJudgment({ turnId: turn, result: second })).toBe(false);
@@ -258,6 +264,40 @@ describe("judge commands", () => {
     const gone = await addTurn(session, A.venue, 2, "assistant", "removed");
     await owner.query("delete from dastar_agent.turn where id = $1", [gone]);
     expect(await j.judge.storeJudgment({ turnId: gone, result: first })).toBe(false);
+  });
+
+  it("storeJudgment of a turn another judge is writing waits for it and then writes nothing", async () => {
+    const session = await addSession(A.venue, "reference");
+    await addTurn(session, A.venue, 0, "user", "hi");
+    const turn = await addTurn(session, A.venue, 1, "assistant", "hello", { due: true });
+    const theirs = { outcome: "failed", judged_at: "2064-03-01T18:00:00.000Z", prompt_hash: "ab12", reason: "refused" };
+    const mine = { outcome: "failed", judged_at: "2064-03-01T18:05:00.000Z", prompt_hash: "ab12", reason: "unparsable" };
+    const first = await connectAs(conn.judge, "judge-write-once-a");
+    const second = await connectAs(conn.judge, "judge-write-once-b");
+    try {
+      const secondPid = (await second.query("select pg_backend_pid() as pid")).rows[0].pid as number;
+      // the first writer has set the result and has not committed
+      await first.query("begin");
+      expect((await first.query("update dastar_agent.turn set judge_result = $2::jsonb where id = $1 and judge_result is null", [turn, JSON.stringify(theirs)])).rowCount).toBe(1);
+
+      const pending = outcome(storeJudgment(second, { turnId: turn, result: mine }));
+      // the second writer is blocked on the row, which shows as a lock wait of its own backend
+      const started = Date.now();
+      for (;;) {
+        const r = await owner.query("select wait_event_type from pg_stat_activity where pid = $1 and datname = current_database()", [secondPid]);
+        if (r.rows[0]?.wait_event_type === "Lock") break;
+        if (Date.now() - started > 5_000) throw new Error(`the second writer did not wait on the row; last=${JSON.stringify(r.rows[0])}`);
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      await first.query("commit");
+
+      expect(await pending).toEqual({ ok: true, value: false });
+      expect(await judgeResult(turn)).toEqual(theirs);
+    } finally {
+      await first.query("rollback").catch(() => undefined);
+      await first.end();
+      await second.end();
+    }
   });
 
   it("takeCall counts up to the cap per UTC day", async () => {

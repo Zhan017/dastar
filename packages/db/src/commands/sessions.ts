@@ -212,10 +212,10 @@ export async function storeAudit(client: ClientBase, input: StoreAuditInput, hoo
         ...(t.at === null ? {} : { at: t.at }),
       }));
       await client.query(
-        `insert into dastar_agent.turn (session_id, venue_id, seq, role, content, claims, at)
-         select $1::uuid, $2::uuid, t.seq, t.role, t.content, t.claims, t.at
+        `insert into dastar_agent.turn (session_id, venue_id, seq, role, content, claims, at, judge_due)
+         select $1::uuid, $2::uuid, t.seq, t.role, t.content, t.claims, t.at, ($4::boolean and t.role = 'assistant')
            from jsonb_to_recordset($3::jsonb) as t(seq int, role text, content text, claims jsonb, at timestamptz)`,
-        [input.sessionId, input.venueId, JSON.stringify(rows)],
+        [input.sessionId, input.venueId, JSON.stringify(rows), input.judgeRequested],
       );
     }
     await hooks.beforeCommit?.();

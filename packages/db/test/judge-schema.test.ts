@@ -247,6 +247,62 @@ describe("judge schema", () => {
     );
     const want = (all.rows.map((r) => r.col as string)).filter((c) => c !== "id" && c !== "judge_result").sort();
     expect(held.rows.map((r) => r.col as string).sort()).toEqual(want);
+    // the application marks the turns it writes as due, and the column is among those it may insert
+    expect(want).toContain("judge_due");
+  });
+
+  it("dastar_app writes a turn with judge_due and a turn without it is not due", async () => {
+    const due = await bound(app, A.venue, async () => {
+      await app.query(
+        "insert into dastar_agent.turn(session_id, venue_id, seq, role, content, judge_due) values ($1, $2, 6, 'assistant', 'hello', true)", [externalA.session, A.venue],
+      );
+      await app.query("insert into dastar_agent.turn(session_id, venue_id, seq, role, content) values ($1, $2, 7, 'assistant', 'hello')", [externalA.session, A.venue]);
+      return (await app.query("select seq, judge_due from dastar_agent.turn where session_id = $1 and seq in (6, 7) order by seq", [externalA.session])).rows;
+    });
+    expect(due).toEqual([{ seq: 6, judge_due: true }, { seq: 7, judge_due: false }]);
+    // rolled back with the transaction
+    expect((await owner.query("select count(*)::int as n from dastar_agent.turn where session_id = $1 and seq in (6, 7)", [externalA.session])).rows[0].n).toBe(0);
+  });
+
+  it("judge_due is boolean, not null, default false", async () => {
+    const r = await owner.query(
+      `select data_type::text as data_type, is_nullable::text as is_nullable, column_default::text as column_default
+         from information_schema.columns
+        where table_schema = 'dastar_agent' and table_name = 'turn' and column_name = 'judge_due'`,
+    );
+    expect(r.rows).toEqual([{ data_type: "boolean", is_nullable: "NO", column_default: "false" }]);
+  });
+
+  it("the judge holds exactly the table privileges its work needs, and the columns of reservation and venue it reads", async () => {
+    // every table and view of the two schemas, by each privilege a table can carry
+    const held = await owner.query(
+      `select n.nspname::text || '.' || c.relname::text || ':' || p.priv as grant_
+         from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+        cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) as p(priv)
+        where n.nspname in ('dastar', 'dastar_agent') and c.relkind in ('r', 'v', 'm', 'p')
+          and has_table_privilege('dastar_judge', c.oid, p.priv)`,
+    );
+    expect(held.rows.map((r) => r.grant_ as string).sort()).toEqual([
+      "dastar_agent.judge_day:INSERT", "dastar_agent.judge_day:SELECT", "dastar_agent.judge_day:UPDATE",
+      "dastar_agent.session:SELECT", "dastar_agent.tool_call:SELECT", "dastar_agent.turn:SELECT",
+    ]);
+
+    // the columns it may use, which count a table-level privilege too
+    const columns = async (table: string, privilege: string): Promise<string[]> => (await owner.query(
+      `select a.attname::text as col from pg_attribute a
+        where a.attrelid = $1::regclass and a.attnum > 0 and not a.attisdropped
+          and has_column_privilege('dastar_judge', a.attrelid, a.attnum, $2)`,
+      [table, privilege],
+    )).rows.map((r) => r.col as string).sort();
+    expect(await columns("dastar_agent.turn", "UPDATE")).toEqual(["judge_result"]);
+    expect(await columns("dastar_agent.turn", "INSERT")).toEqual([]);
+    expect(await columns("dastar.reservation", "SELECT")).toEqual(["hold_expires_at", "id", "status", "venue_id"]);
+    expect(await columns("dastar.venue", "SELECT")).toEqual(["id", "timezone"]);
+    for (const table of ["dastar.reservation", "dastar.venue"]) {
+      expect(await columns(table, "INSERT"), `${table} insert`).toEqual([]);
+      expect(await columns(table, "UPDATE"), `${table} update`).toEqual([]);
+    }
   });
 
   it("judge_requested is boolean, not null, default false", async () => {

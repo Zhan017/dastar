@@ -87,9 +87,9 @@ export async function storeReply(client: ClientBase, input: StoreReplyInput): Pr
     const r = await client.query(
       `insert into dastar_agent.turn (session_id, venue_id, seq, role, content, claims, guardrail_fired, at, model, prompt_hash,
                                       provider_calls, regenerations, fell_back, input_tokens, output_tokens, cache_read_tokens,
-                                      cache_write_tokens, latency_ms)
+                                      cache_write_tokens, latency_ms, judge_due)
        select $1::uuid, $2::uuid, $3::int, 'assistant', $4::text, $5::jsonb, $6::boolean, coalesce($7::timestamptz, dastar.dastar_now()),
-              $8::text, $9::text, $10::smallint, $11::smallint, $12::boolean, $13::int, $14::int, $15::int, $16::int, $17::int
+              $8::text, $9::text, $10::smallint, $11::smallint, $12::boolean, $13::int, $14::int, $15::int, $16::int, $17::int, true
         where exists (select 1 from dastar_agent.turn where session_id = $1::uuid and venue_id = $2::uuid and seq = $3::int - 1 and role = 'user')
        on conflict (session_id, seq) do nothing
        returning id`,

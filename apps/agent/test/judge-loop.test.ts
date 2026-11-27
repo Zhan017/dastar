@@ -86,7 +86,7 @@ describe("the judge's batches, loop and command", () => {
         [session, A.venue, seq, USER_TEXT, at(120)],
       );
       const r = await owner.query(
-        "insert into dastar_agent.turn(session_id, venue_id, seq, role, content, at) values ($1, $2, $3, 'assistant', $4, $5::timestamptz) returning id::text as id",
+        "insert into dastar_agent.turn(session_id, venue_id, seq, role, content, at, judge_due) values ($1, $2, $3, 'assistant', $4, $5::timestamptz, true) returning id::text as id",
         [session, A.venue, seq + 1, text, at(60)],
       );
       ids.push(Number(r.rows[0].id));

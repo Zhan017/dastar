@@ -124,7 +124,7 @@ describe("the judge's live check", () => {
         [session, A.venue, 2 * i, at],
       );
       await owner.query(
-        "insert into dastar_agent.turn(session_id, venue_id, seq, role, content, judge_result, at) values ($1, $2, $3, 'assistant', 'Yes, I can.', $4::jsonb, $5::timestamptz)",
+        "insert into dastar_agent.turn(session_id, venue_id, seq, role, content, judge_result, at, judge_due) values ($1, $2, $3, 'assistant', 'Yes, I can.', $4::jsonb, $5::timestamptz, true)",
         [session, A.venue, 2 * i + 1, result === null ? null : JSON.stringify(result), at],
       );
     }
