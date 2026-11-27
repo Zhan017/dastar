@@ -1,5 +1,6 @@
 import type { RecordedCall, TurnRecord } from "@dastar/db";
 import type { HoldEntry } from "../src/holds.js";
+import { buildJudgeInput, type JudgeInput } from "../src/judge/input.js";
 import type { Reply } from "../src/reply.js";
 import { runTurn, type AgentDeps, type TurnOutcome, type TurnResponse } from "../src/turn.js";
 
@@ -13,6 +14,8 @@ export type ConversationReport = {
   passed: boolean;
   reason?: string;
   turns: { message: string; reply: Reply; holds: number; guardrail: TurnResponse["guardrail"]; record: TurnRecord }[];
+  /** What the judge reads for each assistant turn of the conversation's session: built from the session's stored turns, calls and the venue's time zone, as the judge builds it. A labeled item is cut from an entry. */
+  judge_inputs: { seq: number; input: JudgeInput }[];
 };
 
 /** How long the job waits for the API's answer to a confirm or a read of its own. */
@@ -78,14 +81,39 @@ async function confirmWithToken(http: { dastarUrl: string; fetch?: typeof fetch 
   if (response.status !== 200 || !confirmed) fail(`the token did not confirm the hold: HTTP ${response.status}`);
 }
 
-function startRun(deps: AgentDeps, http: { dastarUrl: string; fetch?: typeof fetch }): Run & { turns: ConversationReport["turns"] } {
+type StartedRun = Run & {
+  turns: ConversationReport["turns"];
+  /** The judge's input for each assistant turn of the session; empty when no message was answered. */
+  judgeInputs(): Promise<ConversationReport["judge_inputs"]>;
+};
+
+function startRun(deps: AgentDeps, http: { dastarUrl: string; fetch?: typeof fetch }): StartedRun {
   const turns: ConversationReport["turns"] = [];
   let sessionId: string | undefined;
   let answered: TurnResponse | undefined;
 
-  const run: Run & { turns: ConversationReport["turns"] } = {
+  const run: StartedRun = {
     deps,
     turns,
+    async judgeInputs() {
+      if (sessionId === undefined) return [];
+      const ref = { sessionId, venueId: deps.venue.id };
+      // the judge reads the session's whole log of calls for every turn, and each turn's text, claims and the user turn before it
+      const stored = await deps.dastar.sessions.readTurns(ref);
+      const { calls } = await deps.dastar.sessions.auditInputs({ ...ref, reservationIds: [] });
+      return stored
+        .filter((turn) => turn.role === "assistant")
+        .map((turn) => ({
+          seq: turn.seq,
+          input: buildJudgeInput({
+            text: turn.content,
+            userText: stored.find((before) => before.seq === turn.seq - 1 && before.role === "user")?.content ?? null,
+            claims: turn.claims,
+            calls,
+            timeZone: deps.venue.timezone,
+          }),
+        }));
+    },
     async say(message) {
       const n = turns.length + 1;
       let outcome: TurnOutcome;
@@ -192,10 +220,16 @@ export async function runConversations(
     let report: ConversationReport;
     try {
       await SCRIPTS[name](run);
-      report = { name, passed: true, turns: run.turns };
+      report = { name, passed: true, turns: run.turns, judge_inputs: [] };
     } catch (error) {
       const reason = error instanceof Failed ? error.message : `the check failed: ${messageOf(error)}`;
-      report = { name, passed: false, reason, turns: run.turns };
+      report = { name, passed: false, reason, turns: run.turns, judge_inputs: [] };
+    }
+    // read once the conversation is over, as the judge reads: every call the session made, whether or not the script passed
+    try {
+      report.judge_inputs = await run.judgeInputs();
+    } catch (error) {
+      if (report.passed) report = { name, passed: false, reason: `the judge input could not be read: ${messageOf(error)}`, turns: run.turns, judge_inputs: [] };
     }
     reports.push(report);
     onReport?.(report);

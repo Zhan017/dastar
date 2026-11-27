@@ -35,6 +35,7 @@ jobs:
     env:
       OWNER_URL: postgres://dastar_owner:owner@localhost:5432/dastar
       APP_URL: postgres://dastar_app:app@localhost:5432/dastar
+      JUDGE_URL: postgres://dastar_judge:judge@localhost:5432/dastar
       DASTAR_VENUE_ID: 0199a000-0000-7000-8000-000000000001
     steps:
       - name: Check the key is set
@@ -63,6 +64,7 @@ jobs:
         name: Set up the database and the demo venue
         env:
           DASTAR_APP_PASSWORD: app
+          DASTAR_JUDGE_PASSWORD: judge
         run: |
           pnpm -s migrate --owner-url "$OWNER_URL"
           pnpm -s roles --owner-url "$OWNER_URL"
@@ -220,6 +222,19 @@ jobs:
 
           # 6. neither a token nor a key reached the log
           if holds_secret; then exit 1; fi
+      - if: inputs.mode == 'conversations'
+        name: Judge the agent's turns
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ env.JUDGE_URL }}
+        run: pnpm --filter @dastar/agent judge --once
+      - if: inputs.mode == 'conversations'
+        name: Check the judge
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ env.JUDGE_URL }}
+          DASTAR_URL: http://127.0.0.1:8080
+        run: pnpm --filter @dastar/agent live judge-check
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -227,6 +242,7 @@ jobs:
           path: |
             apps/agent/agent-live.json
             apps/agent/judge-accuracy.json
+            apps/agent/judge-live.json
             api.log
             agent.log
           if-no-files-found: warn

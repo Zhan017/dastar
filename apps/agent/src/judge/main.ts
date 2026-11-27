@@ -1,10 +1,10 @@
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { createDastar } from "@dastar/db";
+import { createDastar, type Dastar } from "@dastar/db";
 import { createAnthropicProvider } from "../anthropic.js";
 import type { Usage } from "../provider.js";
 import { loadAccuracy } from "./accuracy.js";
-import { readJudgeConfig } from "./config.js";
+import { readJudgeConfig, type JudgeConfig } from "./config.js";
 import { judgeOnce, startJudge, type BatchOutcome } from "./loop.js";
 import { loadJudgePrompt } from "./prompt.js";
 import type { JudgeDeps } from "./turn.js";
@@ -68,6 +68,24 @@ const counts = (b: BatchOutcome): Record<string, unknown> => ({
   size: b.size, judged: b.judged, failed: b.failed, discarded: b.discarded, retried: b.retried, capped: b.capped, tokens: tokens(b.usage),
 });
 
+/** The judge's connection pool, named as the judge's own, with the listener pg-pool requires for an idle client's error (or the process dies with it). */
+export function openJudgePool(config: JudgeConfig, secrets: readonly string[]): Pool {
+  const pool = new Pool({ connectionString: config.databaseUrl, application_name: "dastar-judge" });
+  pool.on("error", (error) => {
+    logError("pool error", error, secrets);
+  });
+  return pool;
+}
+
+/** What the judge judges with: the prompt, the accuracy entries and a provider that does not retry, over the given handle. */
+export function judgeDepsOf(config: JudgeConfig, dastar: Dastar): JudgeDeps {
+  // no retries in the SDK: each request the judge sends is one call counted against the day, and the three failures of a turn are three requests
+  const provider = createAnthropicProvider({ apiKey: config.anthropicApiKey, model: config.model, effort: config.effort, maxRetries: 0 });
+  return {
+    dastar, provider, prompt: loadJudgePrompt(), model: config.model, effort: config.effort, accuracy: loadAccuracy(), dailyCalls: config.dailyCalls, transient: new Map(),
+  };
+}
+
 /**
  * Runs the judge: `--once` judges what is due and returns; with no argument it judges on a loop until SIGINT or SIGTERM.
  * Returns the exit code: 0, or 1 for a refusal to start (settings, the database role) and for a provider that refuses the key.
@@ -81,25 +99,15 @@ export async function main(args: string[], env: Record<string, string | undefine
   const secrets = secretsOf(config.databaseUrl, config.anthropicApiKey);
   const once = args.includes("--once");
 
-  // pg-pool requires a listener for an idle client's error, or the process dies with it
-  const pool = new Pool({ connectionString: config.databaseUrl, application_name: "dastar-judge" });
-  pool.on("error", (error) => {
-    logError("pool error", error, secrets);
-  });
+  const pool = openJudgePool(config, secrets);
   const dastar = createDastar({ pool });
   try {
     if (!(await dastar.judge.canJudge())) return refuse("the database user cannot update dastar_agent.turn.judge_result; connect as dastar_judge");
 
-    const prompt = loadJudgePrompt();
-    const accuracy = loadAccuracy();
-    // no retries in the SDK: each request the judge sends is one call counted against the day, and the three failures of a turn are three requests
-    const provider = createAnthropicProvider({ apiKey: config.anthropicApiKey, model: config.model, effort: config.effort, maxRetries: 0 });
-    const deps: JudgeDeps = {
-      dastar, provider, prompt, model: config.model, effort: config.effort, accuracy, dailyCalls: config.dailyCalls, transient: new Map(),
-    };
+    const deps = judgeDepsOf(config, dastar);
     logInfo("judging", {
       mode: once ? "once" : "loop", model: config.model, effort: config.effort,
-      every_ms: config.everyMs, limit: config.limit, daily_calls: config.dailyCalls, prompt_hash: prompt.hash,
+      every_ms: config.everyMs, limit: config.limit, daily_calls: config.dailyCalls, prompt_hash: deps.prompt.hash,
     });
 
     if (once) {

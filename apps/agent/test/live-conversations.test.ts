@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { Client } from "pg";
+import { Pool, type Client } from "pg";
 import { createDastarClient, type DastarClient } from "@dastar/client";
 import { createKey } from "@dastar/api/auth";
-import type { VenueProfile } from "@dastar/db";
+import { createDastar, type VenueProfile } from "@dastar/db";
 import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packages/db/test/helpers/db.js";
 import { seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { makeApi } from "../../api/test/helpers.js";
+import { buildJudgeInput } from "../src/judge/input.js";
 import { loadPrompt } from "../src/prompt.js";
 import type { CompletionRequest, LLMProvider } from "../src/provider.js";
 import type { Reply, ReplyClaim } from "../src/reply.js";
@@ -184,6 +185,48 @@ describe("the live check's five conversations", () => {
     expect(await statusOf(ids.change)).toBe("cancelled");
     expect(await statusOf(ids.changed)).toBe("held");
     expect(await statusOf(ids.asked)).toBe("held");
+  });
+
+  it("each report carries the judge input of each assistant turn", async () => {
+    // the judge's own handle, to read each turn as the judge reads it
+    const pool = new Pool({ connectionString: conn.judge, max: 2, application_name: "live-conversations-judge" });
+    pool.on("error", () => undefined);
+    const j = createDastar({ pool });
+    try {
+      const last = (await owner.query("select coalesce(max(id), 0)::text as id from dastar_agent.turn")).rows[0].id as string;
+      const { steps, ids } = doingSteps();
+      const reports = await runConversations(deps(scripted(...steps)), http);
+      expect(reports.every((report) => report.passed)).toBe(true);
+
+      // one entry for each assistant turn, at its seq: the user turns are 0 and 2, the assistant turns after them
+      expect(reports.map((report) => report.judge_inputs.map((entry) => entry.seq))).toEqual([[1], [1, 3], [1, 3], [1, 3], [1, 3]]);
+
+      // the reservations the session's calls showed, in the order first seen, the same for every turn of the conversation
+      const shown = [[ids.book], [ids.cancel], [ids.change, ids.changed], [ids.confirmed], [ids.asked]];
+      reports.forEach((report, i) => {
+        for (const entry of report.judge_inputs) expect(entry.input.reservations.map((r) => r.id), `${report.name} ${entry.seq}`).toEqual(shown[i]);
+      });
+
+      // the person's message before each turn, and the turn's own text
+      for (const report of reports) {
+        expect(report.judge_inputs.map((entry) => entry.input.user_text), report.name).toEqual(report.turns.map((turn) => turn.message));
+        expect(report.judge_inputs.map((entry) => entry.input.assistant_text), report.name).toEqual(report.turns.map((turn) => turn.reply.message));
+      }
+
+      // what the judge builds for each of those turns, from its own read of the turn: the same input
+      const rows = (await owner.query("select id::text as id from dastar_agent.turn where role = 'assistant' and id > $1 order by id", [last])).rows as { id: string }[];
+      const entries = reports.flatMap((report) => report.judge_inputs);
+      expect(rows).toHaveLength(entries.length);
+      expect(entries).toHaveLength(9);
+      for (const [n, row] of rows.entries()) {
+        const source = await j.judge.source({ turnId: Number(row.id) });
+        if (source === null) throw new Error(`the judge found no turn ${row.id}`);
+        expect(entries[n], `turn ${row.id}`).toEqual({ seq: source.seq, input: buildJudgeInput(source) });
+      }
+    } finally {
+      await j.close();
+      await pool.end();
+    }
   });
 
   it("no conversation passes on replies that do nothing", async () => {

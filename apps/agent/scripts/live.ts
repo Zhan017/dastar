@@ -8,8 +8,9 @@ import { createDastar, type Interval } from "@dastar/db";
 import { createAnthropicProvider } from "../src/anthropic.js";
 import { venueClock } from "../src/clock.js";
 import { readAgentConfig } from "../src/config.js";
-import { readJudgeModel } from "../src/judge/config.js";
+import { readJudgeConfig, readJudgeModel } from "../src/judge/config.js";
 import { LABELED_DIR, loadLabeled } from "../src/judge/labeled.js";
+import { judgeDepsOf, openJudgePool, redact, secretsOf } from "../src/judge/main.js";
 import { measure, predict, type Prediction } from "../src/judge/measure.js";
 import { loadJudgePrompt } from "../src/judge/prompt.js";
 import { loadPrompt, renderContext, type LoadedPrompt } from "../src/prompt.js";
@@ -20,6 +21,7 @@ import { checkStartup } from "../src/startup.js";
 import { AGENT_INPUT_SCHEMAS, AGENT_TOOLS, validateArgs } from "../src/tools.js";
 import type { AgentDeps } from "../src/turn.js";
 import { runConversations, type ConversationReport } from "./conversations.js";
+import { runJudgeCheck } from "./judge-check.js";
 
 type Schemas = components["schemas"];
 
@@ -358,12 +360,75 @@ export async function runJudgeMode(args: string[], env: Record<string, string | 
   return report.items === 0 ? 1 : 0;
 }
 
+const JUDGE_CHECK_SETTINGS = ["DASTAR_URL", "AGENT_KEY", "DASTAR_VENUE_ID"] as const;
+
+/**
+ * Checks the judge against the running API and the live database: every reference turn the judge step judged must have a
+ * judged result, and a false statement planted in a new session must come back unbacked. It reads the judge's settings
+ * (the judge's database URL, the model key) and the API's (DASTAR_URL, AGENT_KEY, DASTAR_VENUE_ID), writes
+ * judge-live.json, prints a short summary, and exits 0 only when the check passed. What it prints and writes never
+ * carries a key, the database URL or its password.
+ */
+export async function runJudgeCheckMode(env: Record<string, string | undefined>): Promise<number> {
+  const configured = readJudgeConfig(env);
+  if (!configured.ok) {
+    console.error(`dastar-agent: ${configured.line}`);
+    return 1;
+  }
+  const { config } = configured;
+  const read = (name: (typeof JUDGE_CHECK_SETTINGS)[number]): string => (env[name] ?? "").trim();
+  const missing = JUDGE_CHECK_SETTINGS.filter((name) => read(name) === "");
+  if (missing.length > 0) {
+    console.error(`dastar-agent: set DASTAR_URL, AGENT_KEY and DASTAR_VENUE_ID; missing: ${missing.join(", ")}`);
+    return 1;
+  }
+  const dastarUrl = read("DASTAR_URL");
+  const agentKey = read("AGENT_KEY");
+  const venueId = read("DASTAR_VENUE_ID");
+  const secrets = [...secretsOf(config.databaseUrl, config.anthropicApiKey), agentKey];
+  const startedAt = new Date().toISOString();
+
+  const pool = openJudgePool(config, secrets);
+  const dastar = createDastar({ pool });
+  try {
+    if (!(await dastar.judge.canJudge())) {
+      console.error("dastar-agent: the database user cannot update dastar_agent.turn.judge_result; connect as dastar_judge");
+      return 1;
+    }
+    const found = await runJudgeCheck({
+      pool,
+      judge: judgeDepsOf(config, dastar),
+      agent: (session) => createDastarClient({ baseUrl: dastarUrl, key: agentKey, session }),
+      venueId,
+      timeZone: ZONE,
+      limit: config.limit,
+    });
+    const report = { ...found, ...(found.reason !== undefined ? { reason: redact(found.reason, secrets) } : {}) };
+    writeFileSync("judge-live.json", `${JSON.stringify({ mode: "judge-check", model: config.model, started_at: startedAt, report }, null, 2)}\n`);
+
+    const { reference, planted } = report;
+    console.log(report.passed ? "judge-check passed" : `judge-check failed: ${report.reason ?? "no reason given"}`);
+    const { total, backed, unbacked, unresolved } = reference.undeclared;
+    console.log(`reference turns=${reference.turns} judged=${reference.judged} failed=${reference.failed} undeclared=${total} backed=${backed} unbacked=${unbacked} unresolved=${unresolved}`);
+    const { result } = planted;
+    console.log(`planted ${result === undefined ? "result=none" : `verdict=${result.verdict} reason=${result.reason ?? "none"}`}`);
+    return report.passed ? 0 : 1;
+  } catch (error) {
+    console.error(`dastar-agent: ${redact(error instanceof Error ? error.message : String(error), secrets)}`);
+    return 1;
+  } finally {
+    await dastar.close().catch(() => undefined);
+    await pool.end().catch(() => undefined);
+  }
+}
+
 async function main(args: string[], env: Record<string, string | undefined>): Promise<number> {
   const [mode] = args;
   if (mode === "conversations") return await runConversationsMode(env);
   if (mode === "judge") return await runJudgeMode(args.slice(1), env);
+  if (mode === "judge-check") return await runJudgeCheckMode(env);
   if (mode !== "probe") {
-    console.error("usage: live.ts probe | conversations | judge --part dev|held-out");
+    console.error("usage: live.ts probe | conversations | judge --part dev|held-out | judge-check");
     return 2;
   }
 
