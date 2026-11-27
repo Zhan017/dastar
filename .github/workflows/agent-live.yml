@@ -6,8 +6,13 @@ on:
       mode:
         description: what to run against the real model
         type: choice
-        options: [conversations, probe]
+        options: [conversations, probe, judge]
         default: conversations
+      part:
+        description: the labeled part the judge is measured against (mode judge only)
+        type: choice
+        options: [dev, held-out]
+        default: dev
 
 jobs:
   live:
@@ -47,6 +52,12 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: pnpm --filter @dastar/agent live probe
+      - if: inputs.mode == 'judge'
+        name: Measure the judge against the labeled part
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PART: ${{ inputs.part }}
+        run: pnpm --filter @dastar/agent live judge --part "$PART"
       - if: inputs.mode == 'conversations'
         name: Set up the database and the demo venue
         env:
@@ -214,6 +225,7 @@ jobs:
           name: agent-live
           path: |
             apps/agent/agent-live.json
+            apps/agent/judge-accuracy.json
             api.log
             agent.log
           if-no-files-found: warn

@@ -1,12 +1,17 @@
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import type { ToolName } from "@dastar/agent-tools";
 import { createDastarClient, type components } from "@dastar/client";
-import { createDastar } from "@dastar/db";
+import { createDastar, type Interval } from "@dastar/db";
 import { createAnthropicProvider } from "../src/anthropic.js";
 import { venueClock } from "../src/clock.js";
 import { readAgentConfig } from "../src/config.js";
+import { readJudgeModel } from "../src/judge/config.js";
+import { LABELED_DIR, loadLabeled } from "../src/judge/labeled.js";
+import { measure, predict, type Prediction } from "../src/judge/measure.js";
+import { loadJudgePrompt } from "../src/judge/prompt.js";
 import { loadPrompt, renderContext, type LoadedPrompt } from "../src/prompt.js";
 import type { ChatMessage, Completion, LLMProvider, ToolCall, ToolOutput, Usage } from "../src/provider.js";
 import { REPLY_JSON_SCHEMA, parseReply } from "../src/reply.js";
@@ -275,11 +280,90 @@ async function runConversationsMode(env: Record<string, string | undefined>): Pr
   }
 }
 
+const PARTS: readonly string[] = ["dev", "held-out"];
+
+/** The part named by `--part dev|held-out`, the only argument the judge mode takes; null for anything else. */
+function partOf(args: string[]): string | null {
+  const [flag, part, ...rest] = args;
+  return flag === "--part" && part !== undefined && rest.length === 0 && PARTS.includes(part) ? part : null;
+}
+
+const decimal = (value: number | null): string => (value === null ? "n/a" : value.toFixed(3));
+
+/** One measure as a line: its value and interval, and the counts behind it. */
+const intervalLine = (name: string, { value, low, high, k, n }: Interval): string => `${name} ${decimal(value)} [${decimal(low)}, ${decimal(high)}] (${k}/${n})`;
+
+/** What the judge mode may be given in place of what it reads from the environment and the disk: tests give a scripted provider, a folder of parts and a file to write. */
+export type JudgeModeOptions = { provider?: LLMProvider; labeledDir?: string; outFile?: string };
+
+/**
+ * Asks the model once for each item of a labeled part, in order, and sets what it found against the labels. The file is
+ * rewritten after each item, so a job cut off keeps every finished one. It needs the key and nothing else: no database.
+ */
+export async function runJudgeMode(args: string[], env: Record<string, string | undefined>, options: JudgeModeOptions = {}): Promise<number> {
+  const part = partOf(args);
+  if (part === null) {
+    console.error("dastar-agent: usage: live.ts judge --part dev|held-out");
+    return 1;
+  }
+  const asked = readJudgeModel(env);
+  if (!asked.ok) {
+    console.error(`dastar-agent: ${asked.line}`);
+    return 1;
+  }
+  const { anthropicApiKey, model, effort } = asked.settings;
+
+  let labeled: ReturnType<typeof loadLabeled>;
+  try {
+    labeled = loadLabeled(join(options.labeledDir ?? LABELED_DIR, `${part}.json`));
+  } catch (error) {
+    console.error(`dastar-agent: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  const { items, sha256 } = labeled;
+  if (items.length === 0) {
+    console.error(`dastar-agent: the labeled part ${part} has no items`);
+    return 1;
+  }
+
+  const prompt = loadJudgePrompt();
+  const provider = options.provider ?? createAnthropicProvider({ apiKey: anthropicApiKey, model, effort });
+  const startedAt = new Date().toISOString();
+  const predictions: Prediction[] = [];
+  for (const item of items) {
+    try {
+      predictions.push(await predict(provider, prompt, item));
+    } catch (error) {
+      console.error(`dastar-agent: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+    const record = {
+      mode: "judge", part, model, effort, prompt_hash: prompt.hash, labeled_set: { file: `judge/labeled/${part}.json`, sha256 },
+      started_at: startedAt, report: measure(items, predictions), predictions,
+    };
+    writeFileSync(options.outFile ?? "judge-accuracy.json", `${JSON.stringify(record, null, 2)}\n`);
+  }
+
+  const report = measure(items, predictions);
+  console.log(intervalLine("undeclared precision", report.undeclared.precision));
+  console.log(intervalLine("undeclared recall", report.undeclared.recall));
+  console.log(intervalLine("all precision", report.all.precision));
+  console.log(intervalLine("all recall", report.all.recall));
+  console.log(intervalLine("field agreement", report.field_agreement));
+  console.log(intervalLine("label agreement", report.label_agreement));
+  const { usage, cost_usd: cost } = report;
+  console.log(
+    `items=${report.items} dropped=${report.dropped} failures=${JSON.stringify(report.failures)} input=${usage.input} output=${usage.output} cache_read=${usage.cacheRead} cache_write=${usage.cacheWrite} cost_usd=${cost === null ? "n/a" : cost.toFixed(4)}`,
+  );
+  return report.items === 0 ? 1 : 0;
+}
+
 async function main(args: string[], env: Record<string, string | undefined>): Promise<number> {
   const [mode] = args;
   if (mode === "conversations") return await runConversationsMode(env);
+  if (mode === "judge") return await runJudgeMode(args.slice(1), env);
   if (mode !== "probe") {
-    console.error("usage: live.ts probe | conversations");
+    console.error("usage: live.ts probe | conversations | judge --part dev|held-out");
     return 2;
   }
 

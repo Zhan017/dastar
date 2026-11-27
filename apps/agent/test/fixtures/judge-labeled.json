@@ -1,0 +1,59 @@
+[
+  {
+    "id": "a",
+    "family": "table-for-two",
+    "origin": "written",
+    "labeled_by": "construction",
+    "disagreed": false,
+    "input": {
+      "reservations": [
+        { "id": "0199a000-0000-7000-8000-0000000000a1", "starts_at": "2064-01-07T19:00:00+05:00", "party_size": 2 }
+      ],
+      "user_text": "Please hold a table for two on Tuesday evening.",
+      "assistant_text": "I have a table for 2 held for you on 7 January at 19:00. It stays held for ten minutes.",
+      "claims": []
+    },
+    "labels": [
+      {
+        "quote": "I have a table for 2 held for you on 7 January at 19:00",
+        "reservation_id": "0199a000-0000-7000-8000-0000000000a1",
+        "status": "held",
+        "starts_at": "2064-01-07T19:00:00+05:00",
+        "party_size": 2
+      }
+    ]
+  },
+  {
+    "id": "b",
+    "family": "table-for-four",
+    "origin": "variant",
+    "labeled_by": "two-pass",
+    "disagreed": false,
+    "input": {
+      "reservations": [
+        { "id": "0199a000-0000-7000-8000-0000000000a2", "starts_at": "2064-01-08T20:00:00+05:00", "party_size": 4 }
+      ],
+      "user_text": "Confirm the table for four, and cancel my other booking.",
+      "assistant_text": "Your table for 4 on 8 January at 20:00 is confirmed. I have also cancelled your earlier booking.",
+      "claims": [
+        { "reservation_id": "0199a000-0000-7000-8000-0000000000a2", "status": "confirmed" }
+      ]
+    },
+    "labels": [
+      {
+        "quote": "Your table for 4 on 8 January at 20:00 is confirmed",
+        "reservation_id": "0199a000-0000-7000-8000-0000000000a2",
+        "status": "confirmed",
+        "starts_at": "2064-01-08T20:00:00+05:00",
+        "party_size": 4
+      },
+      {
+        "quote": "I have also cancelled your earlier booking",
+        "reservation_id": null,
+        "status": "cancelled",
+        "starts_at": null,
+        "party_size": null
+      }
+    ]
+  }
+]
