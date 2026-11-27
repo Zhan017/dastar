@@ -5,7 +5,7 @@ import { cloneDatabase, dropDatabase, connect, type Conn } from "../../../packag
 import { seedVenue, type Seed } from "../../../packages/db/test/helpers/seed.js";
 import { createApp } from "../src/app.js";
 import { createKey } from "../src/auth.js";
-import type { Dastar } from "@dastar/db";
+import type { Dastar, FailedResult, JudgedResult } from "@dastar/db";
 import { makeApi, bearer, jsonInit, MIGRATIONS } from "./helpers.js";
 
 type Key = { id: string; key: string };
@@ -14,7 +14,7 @@ type Receipt = { reservation_id: string; status: string; version: number; audit_
 type HoldOut = { receipt: Receipt; hold_expires_at: string; replayed: boolean };
 type Result = {
   session_id: string; audited_at: string; mode: string; claims: Json; results: Json[]; receipts: { recorded: number; verified: number; unverified: Json[] };
-  unknown_outcomes: number; confirmations: number; undeclared: string;
+  unknown_outcomes: number; confirmations: number; undeclared: unknown;
 };
 type Claim = { reservation_id: string; status: string; starts_at?: string; party_size?: number; quote?: string };
 type Turn = { role: "user" | "assistant"; text: string; at?: string; claims?: Claim[] };
@@ -359,5 +359,134 @@ describe("transcript intake and the audit", () => {
     const result = await json<Result>(r);
     expect(result.unknown_outcomes).toBe(1);
     expect(result.results[0]).toMatchObject({ verdict: "unbacked", reason: "no_observation" });
+  });
+
+  const JUDGED_AT = "2064-05-01T00:00:00.000Z";
+  /** A judged turn with one declared statement and one undeclared statement that no observation backs. */
+  function judged(quote: string, reservationId: string): JudgedResult {
+    const claim = { reservation_id: reservationId, status: "held" as const };
+    return {
+      outcome: "judged", judged_at: JUDGED_AT, model: "judge-model", effort: "high", prompt_hash: "hash-1", mode: "coarse",
+      statements: [{ quote: "declared", claim, declared: true }, { quote, claim, declared: false }], dropped: 0,
+      results: [{ quote, claim, verdict: "unbacked", reason: "no_observation", current_status: "unknown", current_differs: false }],
+      accuracy: null, usage: { input: 10, output: 5, cache_read: 0, cache_write: 0 },
+    };
+  }
+  const failedResult: FailedResult = { outcome: "failed", judged_at: JUDGED_AT, prompt_hash: "hash-1", reason: "refused" };
+  /** What the judge does for a turn: its result written by the owner, as the judge's role writes it. */
+  const writeResult = (session: string, seq: number, result: unknown) =>
+    owner.query("update dastar_agent.turn set judge_result = $3::jsonb where session_id = $1 and seq = $2", [session, seq, JSON.stringify(result)]);
+  const judgeRequested = async (id: string): Promise<boolean> =>
+    (await owner.query("select judge_requested from dastar_agent.session where id = $1", [id])).rows[0].judge_requested as boolean;
+  const storedResults = async (id: string): Promise<unknown[]> =>
+    (await owner.query("select judge_result from dastar_agent.turn where session_id = $1 order by seq", [id])).rows.map((r) => r.judge_result as unknown);
+  const judgeTurns: Turn[] = [
+    { role: "user", text: "Book me a table" }, { role: "assistant", text: "It is held." },
+    { role: "user", text: "And the other?" }, { role: "assistant", text: "That one is held too." },
+  ];
+
+  it("a post without judge answers and stores undeclared 'not checked'", async () => {
+    const S = await openSession();
+    const r = await post(S, { turns: judgeTurns });
+    expect(r.status).toBe(200);
+    const result = await json<Result>(r);
+    expect(result.undeclared).toBe("not checked");
+    expect(await judgeRequested(S)).toBe(false);
+    expect(await json(await read(S))).toEqual(result);
+
+    const explicit = await post(S, { turns: judgeTurns, judge: false });
+    expect(explicit.status).toBe(200);
+    expect((await json<Result>(explicit)).undeclared).toBe("not checked");
+    expect(await judgeRequested(S)).toBe(false);
+    expect((await json<Result>(await read(S))).undeclared).toBe("not checked");
+  });
+
+  it("a post with judge: true answers 'pending' and the read stays pending until every assistant turn has a result", async () => {
+    const S = await openSession();
+    const r = await post(S, { turns: judgeTurns, judge: true });
+    expect(r.status).toBe(200);
+    const result = await json<Result>(r);
+    expect(result.undeclared).toBe("pending");
+    expect(await judgeRequested(S)).toBe(true);
+    expect(await json(await read(S))).toEqual(result);
+
+    const first = judged("it is held", randomUUID());
+    const second = judged("that one is held too", randomUUID());
+    await writeResult(S, 1, first);
+    expect(await json(await read(S))).toEqual(result);
+
+    await writeResult(S, 3, second);
+    const done = await read(S);
+    expect(done.status).toBe(200);
+    expect(await json(done)).toEqual({
+      ...result,
+      undeclared: {
+        checked_turns: 2, failed_turns: 0, statements: 4, declared: 2,
+        undeclared: { total: 2, backed: 0, unbacked: 2, unresolved: 0 },
+        results: [{ ...first.results[0], turn: 1 }, { ...second.results[0], turn: 3 }],
+        judges: [{ model: "judge-model", effort: "high", prompt_hash: "hash-1", accuracy: null }],
+      },
+    });
+  });
+
+  it("a failed turn counts in failed_turns", async () => {
+    const S = await openSession();
+    const r = await post(S, { turns: judgeTurns, judge: true });
+    expect(r.status).toBe(200);
+    const first = judged("it is held", randomUUID());
+    await writeResult(S, 1, first);
+    await writeResult(S, 3, failedResult);
+    expect((await json<Result>(await read(S))).undeclared).toEqual({
+      checked_turns: 1, failed_turns: 1, statements: 2, declared: 1,
+      undeclared: { total: 1, backed: 0, unbacked: 1, unresolved: 0 },
+      results: [{ ...first.results[0], turn: 1 }],
+      judges: [{ model: "judge-model", effort: "high", prompt_hash: "hash-1", accuracy: null }],
+    });
+
+    const T = await openSession();
+    expect((await post(T, { turns: judgeTurns.slice(0, 2), judge: true })).status).toBe(200);
+    await writeResult(T, 1, failedResult);
+    expect((await json<Result>(await read(T))).undeclared).toEqual({
+      checked_turns: 0, failed_turns: 1, statements: 0, declared: 0,
+      undeclared: { total: 0, backed: 0, unbacked: 0, unresolved: 0 }, results: [], judges: [],
+    });
+  });
+
+  it("a later post without judge reads 'not checked' and its turns have no result", async () => {
+    const S = await openSession();
+    expect((await post(S, { turns: judgeTurns, judge: true })).status).toBe(200);
+    await writeResult(S, 1, judged("it is held", randomUUID()));
+    await writeResult(S, 3, judged("that one is held too", randomUUID()));
+    expect(typeof (await json<Result>(await read(S))).undeclared).toBe("object");
+
+    const later = await post(S, { turns: judgeTurns });
+    expect(later.status).toBe(200);
+    const result = await json<Result>(later);
+    expect(result.undeclared).toBe("not checked");
+    expect(await judgeRequested(S)).toBe(false);
+    expect(await storedResults(S)).toEqual([null, null, null, null]);
+    expect(await json(await read(S))).toEqual(result);
+  });
+
+  it("judge must be a boolean", async () => {
+    const S = await openSession();
+    for (const judge of ["true", 1, null]) {
+      const r = await post(S, { turns: judgeTurns, judge });
+      expect(r.status, JSON.stringify(judge)).toBe(400);
+      expect(await json(r), JSON.stringify(judge)).toMatchObject({ code: "validation" });
+    }
+    expect(await turnCount(S)).toBe(0);
+    expect(await auditedAt(S)).toBeNull();
+  });
+
+  it("an audit stored before this change reads as stored", async () => {
+    const source = await openSession();
+    const stored = await json<Result>(await post(source, { turns: judgeTurns }));
+    const S = await openSession();
+    await owner.query("update dastar_agent.session set audit = $2::jsonb, audited_at = now() where id = $1", [S, JSON.stringify(stored)]);
+    expect(await judgeRequested(S)).toBe(false);
+    const r = await read(S);
+    expect(r.status).toBe(200);
+    expect(await json(r)).toEqual(stored);
   });
 });

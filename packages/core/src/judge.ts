@@ -3,7 +3,7 @@
 
 import {
   auditSession, observedReservations, sameInstant,
-  type AuditTurn, type Claim, type ClaimStatus, type LoggedCall, type Observed, type UnbackedReason,
+  type AuditResult, type AuditTurn, type Claim, type ClaimStatus, type LoggedCall, type Observed, type UnbackedReason,
 } from "./audit.js";
 
 export type JudgeStatement = { quote: string; reservation_id: string | null; status: ClaimStatus; starts_at: string | null; party_size: number | null };
@@ -30,6 +30,8 @@ export type UndeclaredSummary = {
   results: (StatementResult & { turn: number })[];
   judges: { model: string; effort: string; prompt_hash: string; accuracy: JudgeAccuracy | null }[];
 };
+/** An audit as the API stores and reads it: the audit's result with `undeclared` saying whether the judge was asked and what it found. */
+export type AuditReport = Omit<AuditResult, "undeclared"> & { undeclared: "not checked" | "pending" | UndeclaredSummary };
 
 const FAILURES: readonly string[] = ["too_long", "refused", "truncated", "unparsable", "provider_error", "provider_rejected"];
 const VERDICTS: readonly string[] = ["backed", "unbacked", "unresolved"];

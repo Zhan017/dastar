@@ -215,7 +215,12 @@ export const TranscriptTurnSchema = z.object({
 
 const MAX_CLAIMED_RESERVATIONS = 1000;
 
-export const AuditRequestSchema = z.object({ turns: z.array(TranscriptTurnSchema).min(1).max(500) })
+export const AuditRequestSchema = z.object({
+  turns: z.array(TranscriptTurnSchema).min(1).max(500),
+  judge: z.boolean().optional().openapi({
+    description: "Ask for each assistant turn to be read for statements about reservations that no claim declared. Default false. When true, each assistant turn's text, the user turn before it, and the session's reservation ids, times and party sizes are sent to the operator's model provider, and the audit's undeclared is \"pending\" until every assistant turn has a result.",
+  }),
+})
   .superRefine((b, ctx) => {
     b.turns.forEach((t, i) => {
       if (t.role === "user" && t.claims !== undefined && t.claims.length > 0) {
@@ -249,6 +254,35 @@ const AuditClaimResultSchema = z.object({
   current_differs: z.boolean(),
 }).openapi("AuditClaimResult");
 
+const IntervalSchema = z.object({
+  value: z.number().nullable(), low: z.number().nullable(), high: z.number().nullable(), k: z.number().int(), n: z.number().int(),
+});
+const RatesSchema = z.object({ precision: IntervalSchema, recall: IntervalSchema });
+
+const JudgeAccuracySchema = z.object({
+  run: z.string(), labeled_set: z.string(), undeclared: RatesSchema, all: RatesSchema,
+}).openapi("JudgeAccuracy", { description: "How the judge scored on a labeled set of transcripts: precision and recall with their intervals, over the undeclared statements and over all statements." });
+
+const StatementResultSchema = z.object({
+  quote: z.string(),
+  claim: z.object({
+    reservation_id: z.string().nullable(), status: z.enum(CLAIM_STATUSES),
+    starts_at: z.string().optional(), party_size: z.number().int().optional(),
+  }),
+  verdict: z.enum(["backed", "unbacked", "unresolved"]),
+  reason: z.enum(["no_observation", "observed_later", "status_mismatch", "starts_at_mismatch", "party_size_mismatch"]).optional(),
+  observed: AuditObservedSchema.optional(),
+  current_status: z.string().optional(),
+  current_differs: z.boolean().optional(),
+}).openapi("StatementResult", { description: "A statement the judge found in an assistant turn that no claim declared, set against the session's calls. Unresolved when it names no reservation the session observed." });
+
+const UndeclaredSchema = z.object({
+  checked_turns: z.number().int(), failed_turns: z.number().int(), statements: z.number().int(), declared: z.number().int(),
+  undeclared: z.object({ total: z.number().int(), backed: z.number().int(), unbacked: z.number().int(), unresolved: z.number().int() }),
+  results: z.array(StatementResultSchema.and(z.object({ turn: z.number().int() }))),
+  judges: z.array(z.object({ model: z.string(), effort: z.string(), prompt_hash: z.string(), accuracy: JudgeAccuracySchema.nullable() })),
+}).openapi("UndeclaredStatements", { description: "What the judge found across the assistant turns of a post that asked for it. `turn` is the turn's 0-based position in the posted transcript." });
+
 export const AuditSchema = z.object({
   session_id: z.string(), audited_at: z.string(), mode: z.enum(["timed", "coarse"]),
   claims: z.object({ total: z.number().int(), backed: z.number().int(), unbacked: z.number().int() }),
@@ -257,5 +291,8 @@ export const AuditSchema = z.object({
     recorded: z.number().int(), verified: z.number().int(),
     unverified: z.array(z.object({ call: z.number().int(), receipt: z.unknown() })),
   }),
-  unknown_outcomes: z.number().int(), confirmations: z.number().int(), undeclared: z.literal("not checked"),
+  unknown_outcomes: z.number().int(), confirmations: z.number().int(),
+  undeclared: z.union([z.literal("not checked"), z.literal("pending"), UndeclaredSchema]).openapi({
+    description: "\"not checked\" when the post did not ask for the judge, \"pending\" while an assistant turn has no result, and the judge's findings once every one has.",
+  }),
 }).openapi("Audit");

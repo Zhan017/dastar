@@ -26,7 +26,9 @@ export type SessionRef = { sessionId: string; venueId: string };
 export type BeginCallInput = SessionRef & { tool: string; input: Record<string, unknown> };
 export type CompleteCallInput = SessionRef & { callId: number; status: number; output: Record<string, unknown>; receipt: Record<string, unknown> | null };
 export type AuditInputsInput = SessionRef & { reservationIds: string[] };
-export type StoreAuditInput = SessionRef & { turns: StoredTurn[]; result: unknown; auditedAt: string };
+export type StoreAuditInput = SessionRef & { turns: StoredTurn[]; result: unknown; auditedAt: string; judgeRequested: boolean };
+/** The latest audit, whether its post asked for the judge, and each assistant turn's result (null until judged) in seq order. */
+export type AuditRecord = { audit: unknown; judgeRequested: boolean; judgments: { turn: number; result: unknown }[] };
 
 export const SESSION_COLUMNS = "id, venue_id, kind, started_at, last_seen_at, call_count, audited_at";
 
@@ -196,9 +198,9 @@ export async function auditInputs(client: ClientBase, input: AuditInputsInput): 
 export async function storeAudit(client: ClientBase, input: StoreAuditInput, hooks: SessionHooks = {}): Promise<void> {
   await inVenue(client, input.venueId, "write", async () => {
     const u = await client.query(
-      `update dastar_agent.session set audit = $3::jsonb, audited_at = $4::timestamptz
+      `update dastar_agent.session set audit = $3::jsonb, audited_at = $4::timestamptz, judge_requested = $5
         where id = $1 and venue_id = $2 and kind = 'external' and dastar_agent.session_live(kind, last_seen_at)`,
-      [input.sessionId, input.venueId, JSON.stringify(input.result ?? null), input.auditedAt],
+      [input.sessionId, input.venueId, JSON.stringify(input.result ?? null), input.auditedAt, input.judgeRequested],
     );
     if (u.rowCount !== 1) throw new DastarError("not_found", "session not found");
     await client.query("delete from dastar_agent.turn where session_id = $1 and venue_id = $2", [input.sessionId, input.venueId]);
@@ -220,13 +222,26 @@ export async function storeAudit(client: ClientBase, input: StoreAuditInput, hoo
   });
 }
 
-/** The result of a live session's latest audit; null before the first, and for a session of another venue or one no longer live. */
-export async function getAudit(client: ClientBase, input: SessionRef): Promise<unknown | null> {
+/**
+ * A live session's latest audit with whether its post asked for the judge and each assistant turn's judged result, in one
+ * snapshot; null before the first audit, and for a session of another venue or one no longer live.
+ */
+export async function getAudit(client: ClientBase, input: SessionRef): Promise<AuditRecord | null> {
   return await inVenue(client, input.venueId, "read", async () => {
     const r = await client.query(
-      "select audit from dastar_agent.session where id = $1 and venue_id = $2 and dastar_agent.session_live(kind, last_seen_at)",
+      `select audit, judge_requested from dastar_agent.session
+        where id = $1 and venue_id = $2 and dastar_agent.session_live(kind, last_seen_at)`,
       [input.sessionId, input.venueId],
     );
-    return r.rowCount === 0 ? null : ((r.rows[0].audit as unknown) ?? null);
+    const audit = r.rowCount === 0 ? null : ((r.rows[0].audit as unknown) ?? null);
+    if (audit === null) return null;
+    const t = await client.query(
+      "select seq, judge_result from dastar_agent.turn where session_id = $1 and venue_id = $2 and role = 'assistant' order by seq",
+      [input.sessionId, input.venueId],
+    );
+    return {
+      audit, judgeRequested: r.rows[0].judge_requested as boolean,
+      judgments: t.rows.map((row) => ({ turn: row.seq as number, result: (row.judge_result as unknown) ?? null })),
+    };
   });
 }

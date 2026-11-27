@@ -18,6 +18,6 @@ export {
 export {
   quoteOccurs, statementClaim, isDeclared, screenStatements, assembleJudgment, summarizeJudgments,
   type JudgeStatement, type StatementClaim, type JudgedStatement, type StatementResult, type Interval, type Rates, type JudgeAccuracy,
-  type JudgeUsage, type JudgeFailure, type JudgedResult, type FailedResult, type JudgeResult, type UndeclaredSummary, type AssemblyInput,
+  type JudgeUsage, type JudgeFailure, type JudgedResult, type FailedResult, type JudgeResult, type UndeclaredSummary, type AuditReport, type AssemblyInput,
 } from "./judge.js";
 export { scrubText } from "./scrub.js";

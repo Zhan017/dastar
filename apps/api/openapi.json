@@ -616,10 +616,24 @@
             "type": "integer"
           },
           "undeclared": {
-            "type": "string",
-            "enum": [
-              "not checked"
-            ]
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not checked"
+                ]
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              },
+              {
+                "$ref": "#/components/schemas/UndeclaredStatements"
+              }
+            ],
+            "description": "\"not checked\" when the post did not ask for the judge, \"pending\" while an assistant turn has no result, and the judge's findings once every one has."
           }
         },
         "required": [
@@ -770,6 +784,331 @@
           "effective_status"
         ]
       },
+      "UndeclaredStatements": {
+        "type": "object",
+        "properties": {
+          "checked_turns": {
+            "type": "integer"
+          },
+          "failed_turns": {
+            "type": "integer"
+          },
+          "statements": {
+            "type": "integer"
+          },
+          "declared": {
+            "type": "integer"
+          },
+          "undeclared": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "backed": {
+                "type": "integer"
+              },
+              "unbacked": {
+                "type": "integer"
+              },
+              "unresolved": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "backed",
+              "unbacked",
+              "unresolved"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/StatementResult"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "turn": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "turn"
+                  ]
+                }
+              ]
+            }
+          },
+          "judges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "effort": {
+                  "type": "string"
+                },
+                "prompt_hash": {
+                  "type": "string"
+                },
+                "accuracy": {
+                  "$ref": "#/components/schemas/JudgeAccuracy"
+                }
+              },
+              "required": [
+                "model",
+                "effort",
+                "prompt_hash",
+                "accuracy"
+              ]
+            }
+          }
+        },
+        "required": [
+          "checked_turns",
+          "failed_turns",
+          "statements",
+          "declared",
+          "undeclared",
+          "results",
+          "judges"
+        ],
+        "description": "What the judge found across the assistant turns of a post that asked for it. `turn` is the turn's 0-based position in the posted transcript."
+      },
+      "StatementResult": {
+        "type": "object",
+        "properties": {
+          "quote": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "object",
+            "properties": {
+              "reservation_id": {
+                "type": "string",
+                "nullable": true
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "held",
+                  "confirmed",
+                  "seated",
+                  "completed",
+                  "cancelled",
+                  "expired"
+                ]
+              },
+              "starts_at": {
+                "type": "string"
+              },
+              "party_size": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "reservation_id",
+              "status"
+            ]
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "backed",
+              "unbacked",
+              "unresolved"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_observation",
+              "observed_later",
+              "status_mismatch",
+              "starts_at_mismatch",
+              "party_size_mismatch"
+            ]
+          },
+          "observed": {
+            "$ref": "#/components/schemas/AuditObserved"
+          },
+          "current_status": {
+            "type": "string"
+          },
+          "current_differs": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "quote",
+          "claim",
+          "verdict"
+        ],
+        "description": "A statement the judge found in an assistant turn that no claim declared, set against the session's calls. Unresolved when it names no reservation the session observed."
+      },
+      "JudgeAccuracy": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "labeled_set": {
+            "type": "string"
+          },
+          "undeclared": {
+            "type": "object",
+            "properties": {
+              "precision": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "low": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "high": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "k": {
+                    "type": "integer"
+                  },
+                  "n": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "value",
+                  "low",
+                  "high",
+                  "k",
+                  "n"
+                ]
+              },
+              "recall": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "low": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "high": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "k": {
+                    "type": "integer"
+                  },
+                  "n": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "value",
+                  "low",
+                  "high",
+                  "k",
+                  "n"
+                ]
+              }
+            },
+            "required": [
+              "precision",
+              "recall"
+            ]
+          },
+          "all": {
+            "type": "object",
+            "properties": {
+              "precision": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "low": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "high": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "k": {
+                    "type": "integer"
+                  },
+                  "n": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "value",
+                  "low",
+                  "high",
+                  "k",
+                  "n"
+                ]
+              },
+              "recall": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "low": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "high": {
+                    "type": "number",
+                    "nullable": true
+                  },
+                  "k": {
+                    "type": "integer"
+                  },
+                  "n": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "value",
+                  "low",
+                  "high",
+                  "k",
+                  "n"
+                ]
+              }
+            },
+            "required": [
+              "precision",
+              "recall"
+            ]
+          }
+        },
+        "required": [
+          "run",
+          "labeled_set",
+          "undeclared",
+          "all"
+        ],
+        "description": "How the judge scored on a labeled set of transcripts: precision and recall with their intervals, over the undeclared statements and over all statements."
+      },
       "AuditRequest": {
         "type": "object",
         "properties": {
@@ -780,6 +1119,10 @@
             },
             "minItems": 1,
             "maxItems": 500
+          },
+          "judge": {
+            "type": "boolean",
+            "description": "Ask for each assistant turn to be read for statements about reservations that no claim declared. Default false. When true, each assistant turn's text, the user turn before it, and the session's reservation ids, times and party sizes are sent to the operator's model provider, and the audit's undeclared is \"pending\" until every assistant turn has a result."
           }
         },
         "required": [
@@ -3069,7 +3412,7 @@
     },
     "/v1/sessions/{id}/audit": {
       "post": {
-        "summary": "Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. A reference session's transcript is written by the agent app alone, so it is refused.",
+        "summary": "Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. A reference session's transcript is written by the agent app alone, so it is refused. With judge: true, each assistant turn's text, the user turn before it, and the session's reservation ids, times and party sizes are sent to the operator's model provider to find statements no claim declared; the audit's undeclared is then \"pending\" until every assistant turn has a result, and a read reports what was found.",
         "security": [
           {
             "Bearer": []
@@ -3200,7 +3543,7 @@
         }
       },
       "get": {
-        "summary": "Read the latest audit of a session of the calling key.",
+        "summary": "Read the latest audit of a session of the calling key. When its post asked for the judge, undeclared is read from the assistant turns' results as they stand.",
         "security": [
           {
             "Bearer": []

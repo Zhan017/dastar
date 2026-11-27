@@ -10,7 +10,7 @@ export type { GetInput, ReservationView, CurrentStatusesInput } from "./commands
 export { MAX_SESSION_CALLS } from "./commands/sessions.js";
 export type {
   SessionKind, SessionView, RecordedCall, StoredTurn, BeginCallOutcome, AuditInputs, SessionHooks, OpenSessionInput, SessionVenueInput, SessionRef,
-  BeginCallInput, CompleteCallInput, AuditInputsInput, StoreAuditInput,
+  BeginCallInput, CompleteCallInput, AuditInputsInput, StoreAuditInput, AuditRecord,
 } from "./commands/sessions.js";
 export type {
   ClaimTurnInput, ClaimTurnOutcome, TurnRecord, StoreReplyInput, SessionHoldRow, PutSessionHoldInput, VenueProfile,
@@ -31,5 +31,5 @@ export {
   CLAIM_STATUSES, auditSession, scrubText, observedReservations, quoteOccurs, statementClaim, isDeclared, screenStatements, assembleJudgment, summarizeJudgments,
   type Claim, type AuditTurn, type AuditResult, type ClaimResult, type Observed, type UnbackedReason, type AuditReceipt, type LoggedCall, type AuditInput,
   type ClaimStatus, type ObservedReservation, type JudgeStatement, type StatementClaim, type JudgedStatement, type StatementResult, type Interval, type Rates,
-  type JudgeAccuracy, type JudgeUsage, type JudgeFailure, type JudgedResult, type FailedResult, type JudgeResult, type UndeclaredSummary, type AssemblyInput,
+  type JudgeAccuracy, type JudgeUsage, type JudgeFailure, type JudgedResult, type FailedResult, type JudgeResult, type UndeclaredSummary, type AuditReport, type AssemblyInput,
 } from "@dastar/core";

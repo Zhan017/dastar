@@ -1447,7 +1447,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read the latest audit of a session of the calling key. */
+        /** Read the latest audit of a session of the calling key. When its post asked for the judge, undeclared is read from the assistant turns' results as they stand. */
         get: {
             parameters: {
                 query?: never;
@@ -1552,7 +1552,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. A reference session's transcript is written by the agent app alone, so it is refused. */
+        /** Post a transcript to an audit session of the calling key. The text and quotes are scrubbed of emails and numbers, stored in place of any earlier post's turns, and set against what the session's calls observed. Takes a body of up to 1 MiB. A reference session's transcript is written by the agent app alone, so it is refused. With judge: true, each assistant turn's text, the user turn before it, and the session's reservation ids, times and party sizes are sent to the operator's model provider to find statements no claim declared; the audit's undeclared is then "pending" until every assistant turn has a result, and a read reports what was found. */
         post: {
             parameters: {
                 query?: never;
@@ -3575,8 +3575,8 @@ export interface components {
             };
             unknown_outcomes: number;
             confirmations: number;
-            /** @enum {string} */
-            undeclared: "not checked";
+            /** @description "not checked" when the post did not ask for the judge, "pending" while an assistant turn has no result, and the judge's findings once every one has. */
+            undeclared: "not checked" | "pending" | components["schemas"]["UndeclaredStatements"];
         };
         AuditClaimResult: {
             turn: number;
@@ -3614,8 +3614,87 @@ export interface components {
             /** @enum {boolean} */
             replayed?: true;
         };
+        /** @description What the judge found across the assistant turns of a post that asked for it. `turn` is the turn's 0-based position in the posted transcript. */
+        UndeclaredStatements: {
+            checked_turns: number;
+            failed_turns: number;
+            statements: number;
+            declared: number;
+            undeclared: {
+                total: number;
+                backed: number;
+                unbacked: number;
+                unresolved: number;
+            };
+            results: (components["schemas"]["StatementResult"] & {
+                turn: number;
+            })[];
+            judges: {
+                model: string;
+                effort: string;
+                prompt_hash: string;
+                accuracy: components["schemas"]["JudgeAccuracy"];
+            }[];
+        };
+        /** @description A statement the judge found in an assistant turn that no claim declared, set against the session's calls. Unresolved when it names no reservation the session observed. */
+        StatementResult: {
+            quote: string;
+            claim: {
+                reservation_id: string | null;
+                /** @enum {string} */
+                status: "held" | "confirmed" | "seated" | "completed" | "cancelled" | "expired";
+                starts_at?: string;
+                party_size?: number;
+            };
+            /** @enum {string} */
+            verdict: "backed" | "unbacked" | "unresolved";
+            /** @enum {string} */
+            reason?: "no_observation" | "observed_later" | "status_mismatch" | "starts_at_mismatch" | "party_size_mismatch";
+            observed?: components["schemas"]["AuditObserved"];
+            current_status?: string;
+            current_differs?: boolean;
+        };
+        /** @description How the judge scored on a labeled set of transcripts: precision and recall with their intervals, over the undeclared statements and over all statements. */
+        JudgeAccuracy: {
+            run: string;
+            labeled_set: string;
+            undeclared: {
+                precision: {
+                    value: number | null;
+                    low: number | null;
+                    high: number | null;
+                    k: number;
+                    n: number;
+                };
+                recall: {
+                    value: number | null;
+                    low: number | null;
+                    high: number | null;
+                    k: number;
+                    n: number;
+                };
+            };
+            all: {
+                precision: {
+                    value: number | null;
+                    low: number | null;
+                    high: number | null;
+                    k: number;
+                    n: number;
+                };
+                recall: {
+                    value: number | null;
+                    low: number | null;
+                    high: number | null;
+                    k: number;
+                    n: number;
+                };
+            };
+        } | null;
         AuditRequest: {
             turns: components["schemas"]["TranscriptTurn"][];
+            /** @description Ask for each assistant turn to be read for statements about reservations that no claim declared. Default false. When true, each assistant turn's text, the user turn before it, and the session's reservation ids, times and party sizes are sent to the operator's model provider, and the audit's undeclared is "pending" until every assistant turn has a result. */
+            judge?: boolean;
         };
         TranscriptTurn: {
             /** @enum {string} */

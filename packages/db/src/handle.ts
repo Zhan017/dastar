@@ -9,7 +9,7 @@ import { getReservation, findReservationVenue, currentStatuses, type GetInput, t
 import {
   openSession, sessionVenue, getSession, beginCall, completeCall, auditInputs, storeAudit, getAudit,
   type SessionView, type BeginCallOutcome, type AuditInputs, type SessionHooks, type OpenSessionInput, type SessionVenueInput, type SessionRef,
-  type BeginCallInput, type CompleteCallInput, type AuditInputsInput, type StoreAuditInput, type StoredTurn,
+  type BeginCallInput, type CompleteCallInput, type AuditInputsInput, type StoreAuditInput, type StoredTurn, type AuditRecord,
 } from "./commands/sessions.js";
 import {
   openReferenceSession, claimTurn, storeReply, readTurns, listSessionHolds, putSessionHold, venueProfile,
@@ -120,10 +120,10 @@ export interface DastarSessions {
   completeCall(input: CompleteCallInput): Promise<void>;
   /** The session's calls in order, each receipt checked against the audit log, with the current status of the listed reservations, in one snapshot. */
   auditInputs(input: AuditInputsInput): Promise<AuditInputs>;
-  /** Replaces the session's turns and stores the audit's result; `not_found` for a session of another venue, one that is not live, or a reference session. */
+  /** Replaces the session's turns, stores the audit's result, and sets whether the post asked for the judge; `not_found` for a session of another venue, one that is not live, or a reference session. */
   storeAudit(input: StoreAuditInput, hooks?: SessionHooks): Promise<void>;
-  /** The result of the session's latest audit; null before the first. */
-  getAudit(input: SessionRef): Promise<unknown | null>;
+  /** The session's latest audit, whether its post asked for the judge, and each assistant turn's result in seq order, in one snapshot; null before the first audit and for a session of another venue or one that is not live. */
+  getAudit(input: SessionRef): Promise<AuditRecord | null>;
   /** A new reference session for the key in the venue; `not_found` when the venue does not exist. */
   openReferenceSession(input: OpenSessionInput): Promise<SessionView>;
   /** Takes the session's next user turn: `missing` for a session that is not the key's reference session in the venue, `busy` or `stale` while the last turn is an unanswered user turn, `full` at the limit of user turns. */

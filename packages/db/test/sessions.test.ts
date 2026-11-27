@@ -186,7 +186,7 @@ describe("agent sessions", () => {
   it("storeAudit on a session that is no longer live is not_found and stores nothing", async () => {
     const s = await open();
     await ageSession(s.id, 721);
-    await expect(d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString() }))
+    await expect(d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false }))
       .rejects.toMatchObject({ name: "DastarError", code: "not_found" });
     expect(await turnRows(s.id)).toEqual([]);
     const row = await sessionRow(s.id);
@@ -196,7 +196,7 @@ describe("agent sessions", () => {
 
   it("storeAudit on a session of another venue or one that is gone is not_found", async () => {
     const s = await open(A);
-    const input = { turns: turns(1), result: { n: 1 }, auditedAt: new Date().toISOString() };
+    const input = { turns: turns(1), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false };
     await expect(d.sessions.storeAudit({ sessionId: s.id, venueId: B.venue, ...input })).rejects.toMatchObject({ code: "not_found" });
     await expect(d.sessions.storeAudit({ sessionId: ABSENT, venueId: A.venue, ...input })).rejects.toMatchObject({ code: "not_found" });
     expect(await turnRows(s.id)).toEqual([]);
@@ -208,7 +208,7 @@ describe("agent sessions", () => {
       "insert into dastar_agent.session (venue_id, api_key_id, kind) values ($1, $2, 'reference') returning id", [A.venue, key],
     )).rows[0].id as string;
     await owner.query("insert into dastar_agent.turn (session_id, venue_id, seq, role, content) values ($1, $2, 0, 'user', 'hi')", [id, A.venue]);
-    await expect(d.sessions.storeAudit({ sessionId: id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString() }))
+    await expect(d.sessions.storeAudit({ sessionId: id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false }))
       .rejects.toMatchObject({ name: "DastarError", code: "not_found" });
     expect(await turnRows(id)).toMatchObject([{ seq: 0, role: "user", content: "hi" }]);
     const row = await sessionRow(id);
@@ -326,9 +326,9 @@ describe("agent sessions", () => {
 
   it("storeAudit replaces the turns and stores the result", async () => {
     const s = await open();
-    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(3), result: { n: 1 }, auditedAt: new Date(Date.now() - 5_000).toISOString() });
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(3), result: { n: 1 }, auditedAt: new Date(Date.now() - 5_000).toISOString(), judgeRequested: false });
     expect(await turnRows(s.id)).toHaveLength(3);
-    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({ n: 1 });
+    expect((await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue }))?.audit).toEqual({ n: 1 });
 
     const claims = [{ reservation_id: ABSENT, status: "held", party_size: 2 }];
     const second: StoredTurn[] = [
@@ -336,12 +336,47 @@ describe("agent sessions", () => {
       { seq: 1, role: "assistant", content: "it is held", claims, at: "2050-03-01T18:00:05.000Z" },
     ];
     const auditedAt = new Date().toISOString();
-    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: second, result: { n: 2 }, auditedAt });
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: second, result: { n: 2 }, auditedAt, judgeRequested: false });
     const rows = await turnRows(s.id);
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => ({ seq: r.seq, role: r.role, content: r.content, claims: r.claims, at: r.at === null ? null : (r.at as Date).toISOString() }))).toEqual(second);
-    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({ n: 2 });
+    expect((await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue }))?.audit).toEqual({ n: 2 });
     expect((await d.sessions.getSession({ sessionId: s.id, venueId: A.venue }))?.auditedAt).toBe(auditedAt);
+  });
+
+  it("storeAudit sets judge_requested from each post and the new turns have no result", async () => {
+    const s = await open();
+    const requested = async (): Promise<boolean> =>
+      (await owner.query("select judge_requested from dastar_agent.session where id = $1", [s.id])).rows[0].judge_requested as boolean;
+    const results = async (): Promise<unknown[]> =>
+      (await owner.query("select judge_result from dastar_agent.turn where session_id = $1 order by seq", [s.id])).rows.map((r) => r.judge_result as unknown);
+
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(4), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: true });
+    expect(await requested()).toBe(true);
+    expect(await results()).toEqual([null, null, null, null]);
+    await owner.query("update dastar_agent.turn set judge_result = '{\"outcome\":\"failed\"}'::jsonb where session_id = $1 and seq = 1", [s.id]);
+    expect((await results())[1]).toEqual({ outcome: "failed" });
+
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 2 }, auditedAt: new Date().toISOString(), judgeRequested: false });
+    expect(await requested()).toBe(false);
+    expect(await results()).toEqual([null, null]);
+  });
+
+  it("getAudit returns the assistant turns' results in seq order with the request flag", async () => {
+    const s = await open();
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(4), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: true });
+    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({
+      audit: { n: 1 }, judgeRequested: true, judgments: [{ turn: 1, result: null }, { turn: 3, result: null }],
+    });
+    const result = { outcome: "failed", judged_at: "2050-03-01T18:00:10.000Z", prompt_hash: "h", reason: "refused" };
+    await owner.query("update dastar_agent.turn set judge_result = $2::jsonb where session_id = $1 and seq = 1", [s.id, JSON.stringify(result)]);
+    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({
+      audit: { n: 1 }, judgeRequested: true, judgments: [{ turn: 1, result }, { turn: 3, result: null }],
+    });
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 2 }, auditedAt: new Date().toISOString(), judgeRequested: false });
+    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({
+      audit: { n: 2 }, judgeRequested: false, judgments: [{ turn: 1, result: null }],
+    });
   });
 
   it("getAudit is null before the first audit", async () => {
@@ -352,27 +387,27 @@ describe("agent sessions", () => {
 
   it("getAudit reads a session in its own venue only", async () => {
     const s = await open();
-    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: [], result: { n: 1 }, auditedAt: new Date().toISOString() });
-    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({ n: 1 });
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: [], result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false });
+    expect((await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue }))?.audit).toEqual({ n: 1 });
     expect(await d.sessions.getAudit({ sessionId: s.id, venueId: B.venue })).toBeNull();
   });
 
   it("getSession and getAudit of a session no longer live are null", async () => {
     const s = await open();
-    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(1), result: { n: 1 }, auditedAt: new Date().toISOString() });
+    await d.sessions.storeAudit({ sessionId: s.id, venueId: A.venue, turns: turns(1), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false });
     await ageSession(s.id, 721);
     expect(await d.sessions.getSession({ sessionId: s.id, venueId: A.venue })).toBeNull();
     expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toBeNull();
     await owner.query("update dastar_agent.session set last_seen_at = now() where id = $1", [s.id]);
     expect(await d.sessions.getSession({ sessionId: s.id, venueId: A.venue })).toMatchObject({ id: s.id, venueId: A.venue });
-    expect(await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue })).toEqual({ n: 1 });
+    expect((await d.sessions.getAudit({ sessionId: s.id, venueId: A.venue }))?.audit).toEqual({ n: 1 });
   });
 
   it("a call begun while an audit is being stored waits for it, then both finish", async () => {
     const s = await open();
     const deadlocks = await deadlockCount(owner);
     const r = await raceForSession(
-      (hooks) => storeAudit(lockA, { sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString() }, hooks),
+      (hooks) => storeAudit(lockA, { sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false }, hooks),
       () => beginCall(lockB, { sessionId: s.id, venueId: A.venue, tool: "hold", input: {} }),
     );
     expect(r.first.ok).toBe(true);
@@ -389,7 +424,7 @@ describe("agent sessions", () => {
     const deadlocks = await deadlockCount(owner);
     const r = await raceForSession(
       (hooks) => beginCall(lockA, { sessionId: s.id, venueId: A.venue, tool: "hold", input: {} }, hooks),
-      () => storeAudit(lockB, { sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString() }),
+      () => storeAudit(lockB, { sessionId: s.id, venueId: A.venue, turns: turns(2), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false }),
     );
     expect(value(r.first)).toEqual({ ok: true, callId: expect.any(Number) });
     expect(r.second.ok).toBe(true);
@@ -404,7 +439,7 @@ describe("agent sessions", () => {
     const s = await open();
     const id = await begun(s);
     const p = pause();
-    const audit = outcome(storeAudit(lockA, { sessionId: s.id, venueId: A.venue, turns: turns(1), result: { n: 1 }, auditedAt: new Date().toISOString() }, { beforeCommit: p.hook }));
+    const audit = outcome(storeAudit(lockA, { sessionId: s.id, venueId: A.venue, turns: turns(1), result: { n: 1 }, auditedAt: new Date().toISOString(), judgeRequested: false }, { beforeCommit: p.hook }));
     try {
       await p.reached;
       const blocked = Symbol("blocked");
