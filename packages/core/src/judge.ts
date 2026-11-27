@@ -33,7 +33,6 @@ export type UndeclaredSummary = {
 /** An audit as the API stores and reads it: the audit's result with `undeclared` saying whether the judge was asked and what it found. */
 export type AuditReport = Omit<AuditResult, "undeclared"> & { undeclared: "not checked" | "pending" | UndeclaredSummary };
 
-const FAILURES: readonly string[] = ["too_long", "refused", "truncated", "unparsable", "provider_error", "provider_rejected"];
 const VERDICTS: readonly string[] = ["backed", "unbacked", "unresolved"];
 /** What a JSON encoder writes for `<`: a backslash, then u003c. The judge's message carries each block's text in that form. */
 const LESS_THAN_ESCAPE = /\\u003c/g;
@@ -148,7 +147,8 @@ function asJudgeResult(value: unknown): JudgeResult | undefined {
   if (outcome === "failed") {
     const reason = field(value, "reason");
     const model = field(value, "model");
-    if (typeof reason !== "string" || !FAILURES.includes(reason)) return undefined;
+    // any reason string counts: a result stored by a newer judge, with a reason this API does not list, is still a failed turn
+    if (typeof reason !== "string") return undefined;
     if (model !== undefined && typeof model !== "string") return undefined;
     return value as FailedResult;
   }

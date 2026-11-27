@@ -259,6 +259,17 @@ describe("summarizeJudgments", () => {
     ]);
   });
 
+  it("counts a failed result with a reason it does not list as a failed turn, not as pending", () => {
+    const failed = { outcome: "failed", judged_at: T(59), prompt_hash: "hash-a", reason: "a_reason_added_later" };
+    const summary = summarizeJudgments([{ turn: 1, result: judged() }, { turn: 3, result: failed }]);
+    expect(summary).not.toBe("pending");
+    if (summary === "pending") return;
+    expect(summary.failed_turns).toBe(1);
+    expect(summary.checked_turns).toBe(1);
+    // a failure with no reason at all is not a result
+    expect(summarizeJudgments([{ turn: 1, result: { outcome: "failed", judged_at: T(59), prompt_hash: "hash-a" } }])).toBe("pending");
+  });
+
   it("over no assistant turns is all zeros", () => {
     expect(summarizeJudgments([])).toEqual({
       checked_turns: 0, failed_turns: 0, statements: 0, declared: 0,
